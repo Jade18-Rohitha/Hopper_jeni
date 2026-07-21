@@ -923,7 +923,7 @@ gqa_backward_dQ_v3(
     }
     __syncthreads();
 
-    float dq[32]; zero32(dq);   // persistent dQ accumulator (Br x D)
+    float dq[32]; zero32(dq);   // dQ running total (Br x D) — folded via register adds, NOT a wgmma accumulator
 
     for (int kc = 0; kc < nKTiles; kc++) {
         if (kc * Bc >= q_row0 + Br) break;   // causal: remaining K tiles fully masked
@@ -937,27 +937,6 @@ gqa_backward_dQ_v3(
         __syncthreads();
         { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t); store_acc_smem(acc, sS, tid, scale); }
         __syncthreads();
-
-#ifdef V3_DEBUG
-        // Isolate S = Q·K^T·scale: compare the wgmma result (sS) against a trivial
-        // scalar reference computed straight from sQ/sK, for block (0,0,0), kc==0,
-        // row 0, cols 0..7.  If these two rows agree, the wgmma S-GEMM (descriptor,
-        // tiled layout, trans flags, readout) is correct and any remaining error is
-        // downstream (softmax / dS / the transposed dK/dV GEMMs).  Build with
-        //   nvcc ... -DV3_DEBUG ...   (guarded; normal builds are unaffected).
-        if (b == 0 && hq == 0 && q_tile == 0 && kc == 0 && tid == 0) {
-            printf("[V3_DEBUG] S=Q.K^T*scale  block(0,0,0) kc=0 row0:\n");
-            for (int c = 0; c < 8; c++) {
-                float ref = 0.f;
-                for (int d = 0; d < D; d++)
-                    ref += __bfloat162float(sQ[0 * D + d]) * __bfloat162float(sK[c * D + d]);
-                ref *= scale;
-                printf("  col %d : wgmma sS=% .6f   scalar ref=% .6f   diff=% .3e\n",
-                       c, sS[c], ref, sS[c] - ref);
-            }
-        }
-        __syncthreads();
-#endif
 
         // P = exp(S - LSE) with causal mask
         for (int i = tid; i < Br * Bc; i += 128) {
@@ -981,9 +960,16 @@ gqa_backward_dQ_v3(
         __syncthreads();
 
         // dQ += dS·K   (A=dS[i][j] copy; B K-major [D][Bc] with j contiguous = K^T -> transpose sK)
+        // Compute this tile's dS·K into a FRESH transient accumulator, then fold it
+        // into dq with ordinary register adds.  We must NOT hold dq as a wgmma
+        // accumulator across the interleaved S/dP wgmma groups of the next tile:
+        // that persistent-accumulator-across-groups pattern was non-deterministic
+        // / produced +inf on the H200.  reg i maps to the same (row,col) every
+        // tile, so dq[i]+=acc[i] accumulates the correct output element.
         fill_copy(sA_t, sP, tid); fill_trans(sB_t, sK, tid);
         __syncthreads();
-        run_gemm(dq, sA_t, sB_t);   // accumulate
+        { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t);
+          for (int i = 0; i < 32; i++) dq[i] += acc[i]; }
         __syncthreads();
     }
 
@@ -1030,8 +1016,8 @@ gqa_backward_dKdV_v3(
     for (int i = tid; i < Bc * D; i += 128) { sK[i] = d_K[kvBase + i]; sV[i] = d_V[kvBase + i]; }
     __syncthreads();
 
-    float dv[32]; zero32(dv);   // dV accumulator (Bc x D)
-    float dk[32]; zero32(dk);   // dK accumulator (Bc x D)
+    float dv[32]; zero32(dv);   // dV running total (Bc x D) — folded via register adds, NOT a wgmma accumulator
+    float dk[32]; zero32(dk);   // dK running total (Bc x D) — folded via register adds, NOT a wgmma accumulator
 
     for (int g = 0; g < G; g++) {
         const int hq = hkv * G + g;
@@ -1069,9 +1055,12 @@ gqa_backward_dKdV_v3(
             __syncthreads();
 
             // dV += P^T·dO   (A tiled[j][i]=P[i][j] -> transpose sP; B [D][Br] i-contig = dO^T -> transpose sdO)
+            // Fresh transient accumulator + ordinary register add (see dQ note):
+            // never hold dv as a wgmma accumulator across the other GEMM groups.
             fill_trans(sA_t, sP, tid); fill_trans(sB_t, sdO, tid);
             __syncthreads();
-            run_gemm(dv, sA_t, sB_t);   // accumulate
+            { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t);
+              for (int i = 0; i < 32; i++) dv[i] += acc[i]; }
             __syncthreads();
 
             // dP = dO·V^T
@@ -1088,9 +1077,11 @@ gqa_backward_dKdV_v3(
             __syncthreads();
 
             // dK += dS^T·Q   (A tiled[j][i]=dS[i][j] -> transpose sP; B [D][Br] i-contig = Q^T -> transpose sQ)
+            // Fresh transient accumulator + ordinary register add (see dQ note).
             fill_trans(sA_t, sP, tid); fill_trans(sB_t, sQ, tid);
             __syncthreads();
-            run_gemm(dk, sA_t, sB_t);   // accumulate
+            { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t);
+              for (int i = 0; i < 32; i++) dk[i] += acc[i]; }
             __syncthreads();
         }
     }
