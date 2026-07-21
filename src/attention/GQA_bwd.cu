@@ -742,6 +742,350 @@ void launch_gqa_backward_v2(
         d_Q, d_K, d_V, d_O, d_dO, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// V3 — Hopper wgmma (warpgroup MMA) tensor-core baseline  [SM_90a only]
+//
+//   Direct, correctness-first port of V2: identical (Br=Bc=D=64) tiling, grids,
+//   two-kernel split, softmax / causal mask / D-correction math, and plain
+//   row-major shared-memory staging.  The ONLY change is that every V2
+//   `wmma::mma_sync` (16x16x16) becomes a single Hopper warpgroup MMA
+//   `wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16`.
+//   One block = ONE warpgroup = 128 threads.  bf16 in/out, fp32 accumulate.
+//   NOTE: wgmma.* is sm_90a-only, so V3 needs a real Hopper GPU to RUN; on
+//   non-Hopper it is compile-only.  (The wgmma PTX coexists fine with the wmma
+//   V1/V2 in this file — they are just never reached on non-Hopper at runtime.)
+// ═════════════════════════════════════════════════════════════════════════════
+using bf16 = __nv_bfloat16;
+
+// ── wgmma shared-memory matrix descriptor (64-bit) ───────────────────────────
+// Bit layout (PTX ISA §9.7.14): [13:0]=start addr(enc), [29:16]=leading byte
+// offset LBO(enc), [45:32]=stride byte offset SBO(enc), [51:49]=matrix base
+// offset (swizzle only), [63:62]=swizzle mode (0=none).  enc(x)=(x&0x3FFFF)>>4.
+__device__ __forceinline__ uint64_t desc_encode(uint64_t x) { return (x & 0x3FFFFull) >> 4; }
+
+// ── Core-matrix-tiled shared-memory layout, NO SWIZZLE ───────────────────────
+// A 16-bit "core matrix" is 8 rows (strided) x 16 bytes (contiguous) = 8x8 bf16,
+// stored as 128 CONTIGUOUS bytes.  wgmma has NO within-core-matrix row-stride
+// field, so a plain row-major [R][C] tile is not directly consumable — operands
+// are re-tiled so each 8x8 core matrix is contiguous.  Every wgmma operand is a
+// [R][C=64] K-major tile (C = contraction dim = contiguous), core matrices in
+// row-block-major / col-block-minor order:
+//   tiled_off(r,c) = ((r/8)*(C/8) + (c/8))*64 + (r%8)*8 + (c%8)     (C=64 -> C/8=8)
+// For one wgmma k-step (K=16 = 2 col-blocks): base = &tile[128*kt], LBO=128B
+// (stride between the 2 K core-matrices), SBO=1024B (stride between the 8 M/N
+// core-matrices), base advances 128 elements (256B) per step.  (Matches the
+// Colfax / accelerated-computing.academy no-swizzle m64n_k16 example.)
+__device__ __forceinline__ int tiled_off(int r, int c) {
+    return ((r >> 3) * 8 + (c >> 3)) * 64 + (r & 7) * 8 + (c & 7);
+}
+__device__ __forceinline__ uint64_t make_desc(const bf16 *smem_ptr) {
+    uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(smem_ptr));
+    uint64_t d = 0;
+    d |= desc_encode((uint64_t)addr);          // start address  -> bits [13:0]
+    d |= desc_encode((uint64_t)128)  << 16;    // LBO = 128 bytes -> bits [29:16]
+    d |= desc_encode((uint64_t)1024) << 32;    // SBO = 1024 bytes-> bits [45:32]
+    return d;                                   // swizzle=0, matrix base offset=0
+}
+
+// Fill a K-major tiled operand buffer from a plain row-major [64][64] tile.
+__device__ __forceinline__ void fill_copy(bf16 *dst, const bf16 *src, int tid) {  // dst_tiled(r,c)=src[r][c]
+    for (int i = tid; i < 64 * 64; i += 128) { int r = i >> 6, c = i & 63; dst[tiled_off(r, c)] = src[r * 64 + c]; }
+}
+__device__ __forceinline__ void fill_trans(bf16 *dst, const bf16 *src, int tid) { // dst_tiled(r,c)=src[c][r]
+    for (int i = tid; i < 64 * 64; i += 128) { int r = i >> 6, c = i & 63; dst[tiled_off(r, c)] = src[c * 64 + r]; }
+}
+
+// One warpgroup MMA: D(m64,n64) += A(m64,k16)*B(k16,n64).  scaleD=1 (accumulate),
+// scaleA=1, scaleB=1, transA=0, transB=1.  32 fp32 accumulators/thread in regs.
+__device__ __forceinline__ void wgmma_m64n64k16(float d[32], uint64_t descA, uint64_t descB) {
+    asm volatile(
+        "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 "
+        "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
+        "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
+        "%32, %33, 1, 1, 1, 0, 1;\n"
+        : "+f"(d[0]),  "+f"(d[1]),  "+f"(d[2]),  "+f"(d[3]),
+          "+f"(d[4]),  "+f"(d[5]),  "+f"(d[6]),  "+f"(d[7]),
+          "+f"(d[8]),  "+f"(d[9]),  "+f"(d[10]), "+f"(d[11]),
+          "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]),
+          "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]),
+          "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]),
+          "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]),
+          "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31])
+        : "l"(descA), "l"(descB));
+}
+__device__ __forceinline__ void wgmma_fence()  { asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory"); }
+__device__ __forceinline__ void wgmma_commit() { asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory"); }
+__device__ __forceinline__ void wgmma_wait0()  { asm volatile("wgmma.wait_group.sync.aligned 0;\n" ::: "memory"); }
+
+// One full m64n64 GEMM (K=64 = 4 k-steps of 16), accumulating into `acc`.
+// fence -> 4 wgmma (one group) -> commit -> wait, per the async discipline.
+__device__ __forceinline__ void run_gemm(float acc[32], const bf16 *sA_t, const bf16 *sB_t) {
+    wgmma_fence();                    // order the (non-wgmma) zeroing / prior writes of acc
+#pragma unroll
+    for (int kt = 0; kt < 4; kt++) {  // base advances 128 elems per k-step
+        wgmma_m64n64k16(acc, make_desc(sA_t + 128 * kt), make_desc(sB_t + 128 * kt));
+    }
+    wgmma_commit();
+    wgmma_wait0();
+}
+
+// Accumulator-register -> memory mapping (m64n64k16 f32): standard mma.m16n8k16
+// D-fragment tiled over 4 warps (rows) x 8 n-subtiles (cols).
+//   warp w=tid/32 owns rows [16w,16w+16); r0=lane/4, r1=r0+8, col_base=(lane%4)*2
+//   nt(0..7): d[nt*4+{0,1,2,3}] -> (r0,c),(r0,c+1),(r1,c),(r1,c+1), c=nt*8+col_base
+__device__ __forceinline__ void store_acc_smem(const float d[32], float *smem, int tid, float scl) {
+    int w = tid >> 5, lane = tid & 31;
+    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+#pragma unroll
+    for (int nt = 0; nt < 8; nt++) {
+        int c = nt * 8 + cc;
+        smem[r0 * 64 + c + 0] = d[nt * 4 + 0] * scl;
+        smem[r0 * 64 + c + 1] = d[nt * 4 + 1] * scl;
+        smem[r1 * 64 + c + 0] = d[nt * 4 + 2] * scl;
+        smem[r1 * 64 + c + 1] = d[nt * 4 + 3] * scl;
+    }
+}
+__device__ __forceinline__ void store_acc_global(const float d[32], bf16 *g, long base, int D, int tid, float scl) {
+    int w = tid >> 5, lane = tid & 31;
+    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+#pragma unroll
+    for (int nt = 0; nt < 8; nt++) {
+        int c = nt * 8 + cc;
+        g[base + (long)r0 * D + c + 0] = __float2bfloat16(d[nt * 4 + 0] * scl);
+        g[base + (long)r0 * D + c + 1] = __float2bfloat16(d[nt * 4 + 1] * scl);
+        g[base + (long)r1 * D + c + 0] = __float2bfloat16(d[nt * 4 + 2] * scl);
+        g[base + (long)r1 * D + c + 1] = __float2bfloat16(d[nt * 4 + 3] * scl);
+    }
+}
+__device__ __forceinline__ void zero32(float d[32]) {
+#pragma unroll
+    for (int i = 0; i < 32; i++) d[i] = 0.0f;
+}
+
+// ── V3 — Kernel 1 — dQ ──  Grid (B,Hq,S/Br), 128 threads (one warpgroup).
+//   S = Q·K^T·scale , dP = dO·V^T , dQ += (dS·K)·scale.  All natural K-major.
+template<int Br, int Bc, int D>
+__global__ void __launch_bounds__(128, 1)
+gqa_backward_dQ_v3(
+    const bf16 * __restrict__ d_Q, const bf16 * __restrict__ d_K,
+    const bf16 * __restrict__ d_V, const bf16 * __restrict__ d_O,
+    const bf16 * __restrict__ d_dO, const float * __restrict__ d_LSE,
+          bf16 * __restrict__ d_dQ,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 64, "V3 requires Br=Bc=D=64");
+
+    __shared__ __align__(16)  bf16  sQ [Br * D];
+    __shared__ __align__(16)  bf16  sdO[Br * D];
+    __shared__ __align__(16)  bf16  sO [Br * D];
+    __shared__ __align__(16)  bf16  sK [Bc * D];
+    __shared__ __align__(16)  bf16  sV [Bc * D];
+    __shared__ __align__(16)  float sS [Br * Bc];
+    __shared__ __align__(16)  float sdP[Br * Bc];
+    __shared__ __align__(16)  bf16  sP [Br * Bc];   // reused as sdS
+    __shared__                float sLSE[Br];
+    __shared__                float sD  [Br];
+    __shared__ __align__(128) bf16  sA_t[64 * 64];  // wgmma K-major tiled scratch
+    __shared__ __align__(128) bf16  sB_t[64 * 64];
+
+    const int tid = threadIdx.x;
+    const int b = blockIdx.x, hq = blockIdx.y, q_tile = blockIdx.z;
+    const int hkv = hq / G;
+    const int q_row0 = q_tile * Br;
+    const int nKTiles = S / Bc;
+
+    const long qBase  = ((long)(b * Hq  + hq)  * S + q_row0) * D;
+    const long kvBase = ((long)(b * Hkv + hkv) * S) * D;
+    const long lBase  =  (long)(b * Hq  + hq)  * S + q_row0;
+
+    for (int i = tid; i < Br * D; i += 128) {
+        sQ [i] = d_Q [qBase + i];
+        sdO[i] = d_dO[qBase + i];
+        sO [i] = d_O [qBase + i];
+    }
+    if (tid < Br) sLSE[tid] = d_LSE[lBase + tid];
+    __syncthreads();
+
+    if (tid < Br) {
+        float acc = 0.f;
+        for (int j = 0; j < D; j++)
+            acc += __bfloat162float(sdO[tid * D + j]) * __bfloat162float(sO[tid * D + j]);
+        sD[tid] = acc;
+    }
+    __syncthreads();
+
+    float dq[32]; zero32(dq);   // persistent dQ accumulator (Br x D)
+
+    for (int kc = 0; kc < nKTiles; kc++) {
+        if (kc * Bc >= q_row0 + Br) break;   // causal: remaining K tiles fully masked
+
+        const long kBase = kvBase + (long)kc * Bc * D;
+        for (int i = tid; i < Bc * D; i += 128) { sK[i] = d_K[kBase + i]; sV[i] = d_V[kBase + i]; }
+        __syncthreads();
+
+        // S = Q·K^T·scale   (A=Q[i][d], B=K[j][d]; K-major, no transpose)
+        fill_copy(sA_t, sQ, tid); fill_copy(sB_t, sK, tid);
+        __syncthreads();
+        { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t); store_acc_smem(acc, sS, tid, scale); }
+        __syncthreads();
+
+        // P = exp(S - LSE) with causal mask
+        for (int i = tid; i < Br * Bc; i += 128) {
+            int r = i / Bc, c = i % Bc;
+            sP[i] = (kc * Bc + c > q_row0 + r) ? __float2bfloat16(0.f)
+                                               : __float2bfloat16(expf(sS[i] - sLSE[r]));
+        }
+        __syncthreads();
+
+        // dP = dO·V^T   (A=dO[i][d], B=V[j][d])
+        fill_copy(sA_t, sdO, tid); fill_copy(sB_t, sV, tid);
+        __syncthreads();
+        { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t); store_acc_smem(acc, sdP, tid, 1.0f); }
+        __syncthreads();
+
+        // dS = P ⊙ (dP - D)   (into sP)
+        for (int i = tid; i < Br * Bc; i += 128) {
+            int r = i / Bc;
+            sP[i] = __float2bfloat16(__bfloat162float(sP[i]) * (sdP[i] - sD[r]));
+        }
+        __syncthreads();
+
+        // dQ += dS·K   (A=dS[i][j] copy; B K-major [D][Bc] with j contiguous = K^T -> transpose sK)
+        fill_copy(sA_t, sP, tid); fill_trans(sB_t, sK, tid);
+        __syncthreads();
+        run_gemm(dq, sA_t, sB_t);   // accumulate
+        __syncthreads();
+    }
+
+    store_acc_global(dq, d_dQ, qBase, D, tid, scale);   // row=i, col=d; *scale
+}
+
+// ── V3 — Kernel 2 — dK, dV ──  Grid (B,Hkv,S/Bc), 128 threads (one warpgroup).
+//   S=Q·K^T·scale , dV += P^T·dO , dP=dO·V^T , dK += (dS^T·Q)·scale.
+//   The transposed GEMMs (dV, dK) are handled by transposing the A tile (P/dS)
+//   and B tile (dO/Q) during the smem repack, so they too use the single
+//   K-major descriptor convention (transA=0, transB=1) — see the report notes.
+template<int Br, int Bc, int D>
+__global__ void __launch_bounds__(128, 1)
+gqa_backward_dKdV_v3(
+    const bf16 * __restrict__ d_Q, const bf16 * __restrict__ d_K,
+    const bf16 * __restrict__ d_V, const bf16 * __restrict__ d_O,
+    const bf16 * __restrict__ d_dO, const float * __restrict__ d_LSE,
+          bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 64, "V3 requires Br=Bc=D=64");
+
+    __shared__ __align__(16)  bf16  sK [Bc * D];
+    __shared__ __align__(16)  bf16  sV [Bc * D];
+    __shared__ __align__(16)  bf16  sQ [Br * D];
+    __shared__ __align__(16)  bf16  sdO[Br * D];
+    __shared__ __align__(16)  bf16  sO [Br * D];
+    __shared__ __align__(16)  float sS [Br * Bc];
+    __shared__ __align__(16)  float sdP[Br * Bc];
+    __shared__ __align__(16)  bf16  sP [Br * Bc];   // reused as sdS
+    __shared__                float sLSE[Br];
+    __shared__                float sD  [Br];
+    __shared__ __align__(128) bf16  sA_t[64 * 64];
+    __shared__ __align__(128) bf16  sB_t[64 * 64];
+
+    const int tid = threadIdx.x;
+    const int b = blockIdx.x, hkv = blockIdx.y, k_tile = blockIdx.z;
+    const int k_row0 = k_tile * Bc;
+    const int nQTiles = S / Br;
+
+    const long kvBase = ((long)(b * Hkv + hkv) * S + k_row0) * D;
+
+    for (int i = tid; i < Bc * D; i += 128) { sK[i] = d_K[kvBase + i]; sV[i] = d_V[kvBase + i]; }
+    __syncthreads();
+
+    float dv[32]; zero32(dv);   // dV accumulator (Bc x D)
+    float dk[32]; zero32(dk);   // dK accumulator (Bc x D)
+
+    for (int g = 0; g < G; g++) {
+        const int hq = hkv * G + g;
+        for (int qc = k_row0 / Br; qc < nQTiles; qc++) {
+            const int  q_row0 = qc * Br;
+            const long qBase  = ((long)(b * Hq + hq) * S + q_row0) * D;
+            const long lBase  =  (long)(b * Hq + hq) * S + q_row0;
+
+            for (int i = tid; i < Br * D; i += 128) {
+                sQ [i] = d_Q [qBase + i]; sdO[i] = d_dO[qBase + i]; sO [i] = d_O [qBase + i];
+            }
+            if (tid < Br) sLSE[tid] = d_LSE[lBase + tid];
+            __syncthreads();
+
+            if (tid < Br) {
+                float acc = 0.f;
+                for (int j = 0; j < D; j++)
+                    acc += __bfloat162float(sdO[tid * D + j]) * __bfloat162float(sO[tid * D + j]);
+                sD[tid] = acc;
+            }
+            __syncthreads();
+
+            // S = Q·K^T·scale
+            fill_copy(sA_t, sQ, tid); fill_copy(sB_t, sK, tid);
+            __syncthreads();
+            { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t); store_acc_smem(acc, sS, tid, scale); }
+            __syncthreads();
+
+            // P = exp(S - LSE) with causal mask
+            for (int i = tid; i < Br * Bc; i += 128) {
+                int r = i / Bc, c = i % Bc;
+                sP[i] = (k_row0 + c > q_row0 + r) ? __float2bfloat16(0.f)
+                                                  : __float2bfloat16(expf(sS[i] - sLSE[r]));
+            }
+            __syncthreads();
+
+            // dV += P^T·dO   (A tiled[j][i]=P[i][j] -> transpose sP; B [D][Br] i-contig = dO^T -> transpose sdO)
+            fill_trans(sA_t, sP, tid); fill_trans(sB_t, sdO, tid);
+            __syncthreads();
+            run_gemm(dv, sA_t, sB_t);   // accumulate
+            __syncthreads();
+
+            // dP = dO·V^T
+            fill_copy(sA_t, sdO, tid); fill_copy(sB_t, sV, tid);
+            __syncthreads();
+            { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t); store_acc_smem(acc, sdP, tid, 1.0f); }
+            __syncthreads();
+
+            // dS = P ⊙ (dP - D)   (into sP)
+            for (int i = tid; i < Br * Bc; i += 128) {
+                int r = i / Bc;
+                sP[i] = __float2bfloat16(__bfloat162float(sP[i]) * (sdP[i] - sD[r]));
+            }
+            __syncthreads();
+
+            // dK += dS^T·Q   (A tiled[j][i]=dS[i][j] -> transpose sP; B [D][Br] i-contig = Q^T -> transpose sQ)
+            fill_trans(sA_t, sP, tid); fill_trans(sB_t, sQ, tid);
+            __syncthreads();
+            run_gemm(dk, sA_t, sB_t);   // accumulate
+            __syncthreads();
+        }
+    }
+
+    store_acc_global(dv, d_dV, kvBase, D, tid, 1.0f);    // dV : no scale
+    store_acc_global(dk, d_dK, kvBase, D, tid, scale);   // dK : *scale
+}
+
+// ── V3 launcher — same signature as launch_gqa_backward_v2 ──
+template<int Br, int Bc, int D>
+void launch_gqa_backward_v3(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 64, "V3 requires Br=Bc=D=64");
+    constexpr dim3 BLOCK(128);
+    dim3 GRID1(B, Hq,  S / Br);
+    dim3 GRID2(B, Hkv, S / Bc);
+    gqa_backward_dQ_v3  <Br,Bc,D><<<GRID1, BLOCK>>>(
+        d_Q, d_K, d_V, d_O, d_dO, d_LSE, d_dQ, B, Hq, Hkv, G, S, scale);
+    gqa_backward_dKdV_v3<Br,Bc,D><<<GRID2, BLOCK>>>(
+        d_Q, d_K, d_V, d_O, d_dO, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
@@ -841,6 +1185,10 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V2  Br=64, Bc=64 ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
+    launch_gqa_backward_v3<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── V3  Br=64, Bc=64  wgmma ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
     // iterations with the L2 flushed between reps (mirrors triton.testing.do_bench).
@@ -867,6 +1215,13 @@ int main(){
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats("GQA bwd V2  Br=64, Bc=64  (Hopper SM_90)", s);
+    }
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v3<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V3  Br=64, Bc=64  wgmma  (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
