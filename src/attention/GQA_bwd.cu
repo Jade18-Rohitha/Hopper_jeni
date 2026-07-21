@@ -841,6 +841,34 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V2  Br=64, Bc=64 ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
+    // iterations with the L2 flushed between reps (mirrors triton.testing.do_bench).
+    // FLOP convention matches baseline_gqa.py: bwd_flops = 4 * (4·B·Hq·S·S·D),
+    // the non-causal algorithmic count, so these TFLOP/s are directly comparable
+    // to the SDPA / Triton numbers that script prints (our kernels are causal, so
+    // the effective work is ~½ that — treat TFLOP/s as a comparison metric, not
+    // a hardware-utilization figure).
+    // ─────────────────────────────────────────────────────────────────────────
+    const long long bwd_flops = 16LL * B * Hq * (long long)S * S * D;
+
+    std::cout << "=== Latency  (B=" << B << " Hq=" << Hq << " Hkv=" << Hkv
+              << " S=" << S << " D=" << D << ", GQA G=" << G << ", bf16, causal) ===\n";
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v1<Br,Bc,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V1  Br=16, Bc=32  (Hopper SM_90)", s);
+    }
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v2<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V2  Br=64, Bc=64  (Hopper SM_90)", s);
+    }
+
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
     CUDA_CHECK(cudaFree(d_dQ)); CUDA_CHECK(cudaFree(d_dK)); CUDA_CHECK(cudaFree(d_dV));

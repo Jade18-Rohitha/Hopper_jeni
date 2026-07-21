@@ -22,7 +22,10 @@ so they run unchanged on H200:
 - **V2** — `Br=64, Bc=64`, 4 warps (128 threads) per block.
 
 Config: `B=8, Hq=12, Hkv=4, S=4096, D=64` (GQA G=3), bf16 in/out, fp32 accumulate.
-Each version's `dQ/dK/dV` is checked against the PyTorch bf16 SDPA autograd reference.
+Each version's `dQ/dK/dV` is checked against the PyTorch bf16 SDPA autograd reference,
+then benchmarked (median over 100 L2-flushed iters, ms + TFLOP/s). The TFLOP/s use the
+same `4×forward` FLOP convention as `baseline_gqa.py`, so they compare directly to the
+SDPA / Triton backward numbers that script prints.
 
 ## Run
 
