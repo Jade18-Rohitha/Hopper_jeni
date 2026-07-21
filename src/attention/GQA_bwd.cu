@@ -796,13 +796,22 @@ __device__ __forceinline__ void fill_trans(bf16 *dst, const bf16 *src, int tid) 
 }
 
 // One warpgroup MMA: D(m64,n64) += A(m64,k16)*B(k16,n64).  scaleD=1 (accumulate),
-// scaleA=1, scaleB=1, transA=0, transB=1.  32 fp32 accumulators/thread in regs.
+// scaleA=1, scaleB=1, transA=0, transB=0.
+//
+// TRANS SEMANTICS (the subtle part — got this wrong in the first cut): for bf16
+// wgmma the NATIVE ("TN") layout is trans=0 => K-contiguous (contraction dim is
+// the contiguous 16-byte core-matrix direction) for BOTH A and B.  trans=1 flips
+// an operand to MN-contiguous.  We stage EVERY operand contraction-contiguous
+// (via fill_copy / fill_trans), so both flags are 0.  Using transB=1 here made
+// wgmma read the K-contiguous B tile as if it were N-contiguous, contracting the
+// wrong index (Σ_k Q[i][k]·K[k][n] instead of Q·K^T) -> huge S -> expf overflow
+// -> dQ NaN.  32 fp32 accumulators/thread in registers.
 __device__ __forceinline__ void wgmma_m64n64k16(float d[32], uint64_t descA, uint64_t descB) {
     asm volatile(
         "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 "
         "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
         "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
-        "%32, %33, 1, 1, 1, 0, 1;\n"
+        "%32, %33, 1, 1, 1, 0, 0;\n"
         : "+f"(d[0]),  "+f"(d[1]),  "+f"(d[2]),  "+f"(d[3]),
           "+f"(d[4]),  "+f"(d[5]),  "+f"(d[6]),  "+f"(d[7]),
           "+f"(d[8]),  "+f"(d[9]),  "+f"(d[10]), "+f"(d[11]),
@@ -929,6 +938,27 @@ gqa_backward_dQ_v3(
         { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t); store_acc_smem(acc, sS, tid, scale); }
         __syncthreads();
 
+#ifdef V3_DEBUG
+        // Isolate S = Q·K^T·scale: compare the wgmma result (sS) against a trivial
+        // scalar reference computed straight from sQ/sK, for block (0,0,0), kc==0,
+        // row 0, cols 0..7.  If these two rows agree, the wgmma S-GEMM (descriptor,
+        // tiled layout, trans flags, readout) is correct and any remaining error is
+        // downstream (softmax / dS / the transposed dK/dV GEMMs).  Build with
+        //   nvcc ... -DV3_DEBUG ...   (guarded; normal builds are unaffected).
+        if (b == 0 && hq == 0 && q_tile == 0 && kc == 0 && tid == 0) {
+            printf("[V3_DEBUG] S=Q.K^T*scale  block(0,0,0) kc=0 row0:\n");
+            for (int c = 0; c < 8; c++) {
+                float ref = 0.f;
+                for (int d = 0; d < D; d++)
+                    ref += __bfloat162float(sQ[0 * D + d]) * __bfloat162float(sK[c * D + d]);
+                ref *= scale;
+                printf("  col %d : wgmma sS=% .6f   scalar ref=% .6f   diff=% .3e\n",
+                       c, sS[c], ref, sS[c] - ref);
+            }
+        }
+        __syncthreads();
+#endif
+
         // P = exp(S - LSE) with causal mask
         for (int i = tid; i < Br * Bc; i += 128) {
             int r = i / Bc, c = i % Bc;
@@ -963,8 +993,9 @@ gqa_backward_dQ_v3(
 // ── V3 — Kernel 2 — dK, dV ──  Grid (B,Hkv,S/Bc), 128 threads (one warpgroup).
 //   S=Q·K^T·scale , dV += P^T·dO , dP=dO·V^T , dK += (dS^T·Q)·scale.
 //   The transposed GEMMs (dV, dK) are handled by transposing the A tile (P/dS)
-//   and B tile (dO/Q) during the smem repack, so they too use the single
-//   K-major descriptor convention (transA=0, transB=1) — see the report notes.
+//   and B tile (dO/Q) during the smem repack so their contraction dim is also
+//   contiguous, letting all six GEMMs use the single native config
+//   (transA=0, transB=0, K-major both operands) — see the report notes.
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(128, 1)
 gqa_backward_dKdV_v3(
@@ -1090,7 +1121,7 @@ void launch_gqa_backward_v3(
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 int main(){
-    std::cout << "GQA Backward — precision test (V1 + V2 vs PyTorch reference)  [Hopper SM_90 / H200]\n";
+    std::cout << "GQA Backward — precision test  [Hopper SM_90 / H200]\n";
     std::cout << "Prerequisite: python precision/baseline_gqa.py\n\n";
 
     constexpr int B   = 8, Hq  = 12, Hkv = 4, G = Hq / Hkv;
