@@ -842,9 +842,26 @@ __device__ __forceinline__ void fence_operand32(float d[32]) {
     for (int i = 0; i < 32; i++) asm volatile("" : "+f"(d[i]) :: "memory");
 }
 
+// Cross-proxy shared-memory fence.  fill_copy/fill_trans/fill_trans_A write the
+// wgmma operand buffers sA_t/sB_t with ORDINARY stores (the GENERIC proxy).
+// wgmma.mma_async READS those operands through the ASYNC proxy.  __syncthreads
+// orders the generic proxy across threads, but it does NOT bridge to the async
+// proxy — so at full speed the async operand read can observe STALE smem (the
+// result is correct ONLY when the sanitizer/serialization happens to let the
+// generic writes drain first).  `fence.proxy.async.shared::cta` establishes the
+// generic→async ordering for CTA-scoped shared memory; it is the SAME fence
+// CUTLASS issues before a TMA store that reads generically-written smem
+// (cute::tma_store_fence / cutlass::arch::fence_view_async_shared).  It must be
+// executed by the whole warpgroup AFTER the fills' __syncthreads and BEFORE the
+// wgmma — hence it is the first thing run_gemm / run_gemm_tA do.
+__device__ __forceinline__ void fence_proxy_async_shared() {
+    asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
+}
+
 // One full m64n64 GEMM (K=64 = 4 k-steps of 16), accumulating into `acc`.
 // fence -> 4 wgmma (one group) -> commit -> wait, per the async discipline.
 __device__ __forceinline__ void run_gemm(float acc[32], const bf16 *sA_t, const bf16 *sB_t) {
+    fence_proxy_async_shared();       // generic (fill) writes → async (wgmma) operand reads
     fence_operand32(acc);             // bracket the async region (see fence_operand32 note)
     wgmma_fence();                    // order the (non-wgmma) zeroing / prior writes of acc
 #pragma unroll
@@ -908,6 +925,7 @@ __device__ __forceinline__ void wgmma_m64n64k16_tA(float d[32], uint64_t descA, 
 // One full m64n64 GEMM with a transposed (Major::MN) A operand.  Identical
 // discipline to run_gemm; base advances 128 elems/k-step for BOTH operands.
 __device__ __forceinline__ void run_gemm_tA(float acc[32], const bf16 *sA_t, const bf16 *sB_t) {
+    fence_proxy_async_shared();       // generic (fill) writes → async (wgmma) operand reads
     fence_operand32(acc);
     wgmma_fence();
 #pragma unroll
