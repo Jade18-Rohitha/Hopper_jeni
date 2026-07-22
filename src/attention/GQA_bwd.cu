@@ -826,9 +826,26 @@ __device__ __forceinline__ void wgmma_fence()  { asm volatile("wgmma.fence.sync.
 __device__ __forceinline__ void wgmma_commit() { asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory"); }
 __device__ __forceinline__ void wgmma_wait0()  { asm volatile("wgmma.wait_group.sync.aligned 0;\n" ::: "memory"); }
 
+// Accumulator-operand fence (CUTLASS `warpgroup_fence_operand`, mma_sm90_gmma.hpp).
+// wgmma.mma_async writes its accumulator registers ASYNCHRONOUSLY; they only become
+// valid at wgmma.wait_group.  `wgmma.fence` (a "memory" clobber) orders MEMORY but
+// NOT these register accesses, so without a per-register compiler barrier ptxas is
+// free to hoist the post-GEMM reads of `acc` (store_acc_smem / dq[i]+=acc[i]) ahead
+// of the async writes retiring — reading garbage.  That is exactly the multi-tile
+// hazard here: it was masked in the single-tile probe (the probe's extra
+// store+sync+printf perturbs scheduling) but fired in the `for kc` / `for g,qc`
+// loops → non-deterministic dV/dK and, via garbage S → expf overflow, dQ = +inf.
+// Bracket the accumulator with this barrier BEFORE wgmma.fence and AFTER wait_group,
+// exactly as CUTLASS does.  It is a no-op asm (0 extra registers / 0 spills).
+__device__ __forceinline__ void fence_operand32(float d[32]) {
+#pragma unroll
+    for (int i = 0; i < 32; i++) asm volatile("" : "+f"(d[i]) :: "memory");
+}
+
 // One full m64n64 GEMM (K=64 = 4 k-steps of 16), accumulating into `acc`.
 // fence -> 4 wgmma (one group) -> commit -> wait, per the async discipline.
 __device__ __forceinline__ void run_gemm(float acc[32], const bf16 *sA_t, const bf16 *sB_t) {
+    fence_operand32(acc);             // bracket the async region (see fence_operand32 note)
     wgmma_fence();                    // order the (non-wgmma) zeroing / prior writes of acc
 #pragma unroll
     for (int kt = 0; kt < 4; kt++) {  // base advances 128 elems per k-step
@@ -836,6 +853,7 @@ __device__ __forceinline__ void run_gemm(float acc[32], const bf16 *sA_t, const 
     }
     wgmma_commit();
     wgmma_wait0();
+    fence_operand32(acc);             // block hoisting acc reads before wait_group retires
 }
 
 // ── Transposed-A GEMM (dV = Pᵀ·dO, dK = dSᵀ·Q) ───────────────────────────────
@@ -890,6 +908,7 @@ __device__ __forceinline__ void wgmma_m64n64k16_tA(float d[32], uint64_t descA, 
 // One full m64n64 GEMM with a transposed (Major::MN) A operand.  Identical
 // discipline to run_gemm; base advances 128 elems/k-step for BOTH operands.
 __device__ __forceinline__ void run_gemm_tA(float acc[32], const bf16 *sA_t, const bf16 *sB_t) {
+    fence_operand32(acc);
     wgmma_fence();
 #pragma unroll
     for (int kt = 0; kt < 4; kt++) {
@@ -897,6 +916,7 @@ __device__ __forceinline__ void run_gemm_tA(float acc[32], const bf16 *sA_t, con
     }
     wgmma_commit();
     wgmma_wait0();
+    fence_operand32(acc);
 }
 
 // Accumulator-register -> memory mapping (m64n64k16 f32): standard mma.m16n8k16
@@ -998,6 +1018,25 @@ gqa_backward_dQ_v3(
         __syncthreads();
         { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t); store_acc_smem(acc, sS, tid, scale); }
         __syncthreads();
+
+#ifdef V3_DEBUG
+        // MULTI-TILE probe: verify S for a SECOND k-tile of a q_tile>0 block — the
+        // path the single-tile probes never touch and where the async-accumulator
+        // hazard / reload race surfaced (garbage S → expf overflow → dQ=+inf).
+        // block(0,0,1): q_row0=64, kc runs {0,1}; kc==1 is the multi-iteration tile.
+        if (b == 0 && hq == 0 && q_tile == 1 && kc == 1 && tid == 0) {
+            int nbad_s = 0;
+            for (int c = 0; c < 64; c++) {
+                float sref = 0.f;
+                for (int d = 0; d < D; d++)
+                    sref += __bfloat162float(sQ[0 * D + d]) * __bfloat162float(sK[c * D + d]);
+                sref *= scale;
+                if (fabsf(sS[c] - sref) > 1e-2f) { if (++nbad_s <= 4) printf("  S1[0][%2d] got=% .5f ref=% .5f\n", c, sS[c], sref); }
+            }
+            printf("[V3_DEBUG] block(0,0,1) kc=1 (multi-tile) row0: S mismatches=%d/64\n", nbad_s);
+        }
+        __syncthreads();
+#endif
 
         // P = exp(S - LSE) with causal mask
         for (int i = tid; i < Br * Bc; i += 128) {
