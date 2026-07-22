@@ -1083,50 +1083,51 @@ gqa_backward_dQ_v3(
         __syncthreads();
 
         // dQ += dS·K   (A=dS[i][j] copy; B K-major [D][Bc] with j contiguous = K^T -> transpose sK)
-        // Compute this tile's dS·K into a FRESH transient accumulator, then fold it
-        // into dq with ordinary register adds.  We must NOT hold dq as a wgmma
-        // accumulator across the interleaved S/dP wgmma groups of the next tile:
-        // that persistent-accumulator-across-groups pattern was non-deterministic
-        // / produced +inf on the H200.  reg i maps to the same (row,col) every
-        // tile, so dq[i]+=acc[i] accumulates the correct output element.
+        // PERSISTENT wgmma accumulator: dq is accumulated IN-HARDWARE (scaleD=1) across
+        // the kc loop and NEVER read mid-loop — only stored once after the loop.  dq was
+        // zeroed once before the loop, so the first tile's scaleD=1 gives dq = dS·K + 0.
+        // This is the CUTLASS / FlashAttention accumulate-across-K mainloop pattern.  It
+        // replaces the earlier fresh-acc + `dq[i]+=acc[i]` fold, whose per-tile async
+        // accumulator READ raced (read-early) even with fence_operand32 → non-deterministic
+        // dV/dK and, via garbage S → expf overflow, dQ=+inf.  Holding dq live across the
+        // interleaved S/dP groups is safe: each GEMM commits+waits its own group (dq is
+        // never in-flight across them) and run_gemm brackets dq with fence_operand32.
         fill_copy(sA_t, sP, tid); fill_trans(sB_t, sK, tid);
         __syncthreads();
-        { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t);
+        run_gemm(dq, sA_t, sB_t);   // dq += dS·K  (in-hardware accumulate)
 #ifdef V3_DEBUG
-          // Verify the transposed-B GEMM dQ=dS·K directly. block(0,0,0) has only
-          // kc==0, so `acc` IS the complete (unscaled) dQ tile. sP holds dS (bf16),
-          // sK holds K (bf16); sS is free (S already consumed into P). If this
-          // matches, fill_trans + the transposed wgmma are correct and the bug is
-          // in accumulation; if not, the transposed path itself is broken.
-          if (kc == 0 && b == 0 && hq == 0 && q_tile == 0) {
-              store_acc_smem(acc, sS, tid, 1.0f);
-              __syncthreads();
-              if (tid == 0) {
-                  int nbad = 0;
-                  for (int d = 0; d < 64; d++) {
-                      float ref = 0.f;
-                      for (int j = 0; j < 64; j++)
-                          ref += __bfloat162float(sP[0 * 64 + j]) * __bfloat162float(sK[j * 64 + d]);
-                      if (fabsf(sS[d] - ref) > 1e-2f) { if (++nbad <= 6) printf("  dSK[0][%2d] got=% .5f ref=% .5f\n", d, sS[d], ref); }
-                  }
-                  printf("[V3_DEBUG] block(0,0,0) dQ=dS.K row0 (transposed-B GEMM): mismatches=%d/64\n", nbad);
-              }
-              __syncthreads();
-          }
+        // block(0,0,0) runs a single kc tile, so after this accumulate dq == the full
+        // (unscaled) dQ tile.  store_acc_smem only READS dq (fenced) → safe to probe.
+        if (kc == 0 && b == 0 && hq == 0 && q_tile == 0) {
+            store_acc_smem(dq, sS, tid, 1.0f);
+            __syncthreads();
+            if (tid == 0) {
+                int nbad = 0;
+                for (int d = 0; d < 64; d++) {
+                    float ref = 0.f;
+                    for (int j = 0; j < 64; j++)
+                        ref += __bfloat162float(sP[0 * 64 + j]) * __bfloat162float(sK[j * 64 + d]);
+                    if (fabsf(sS[d] - ref) > 1e-2f) { if (++nbad <= 6) printf("  dSK[0][%2d] got=% .5f ref=% .5f\n", d, sS[d], ref); }
+                }
+                printf("[V3_DEBUG] block(0,0,0) dQ=dS.K row0 (persistent-acc GEMM): mismatches=%d/64\n", nbad);
+            }
+            __syncthreads();
+        }
 #endif
-          for (int i = 0; i < 32; i++) dq[i] += acc[i]; }
         __syncthreads();
     }
 
+    fence_operand32(dq);                                // ensure final read follows all wgmma
     store_acc_global(dq, d_dQ, qBase, D, tid, scale);   // row=i, col=d; *scale
 }
 
 // ── V3 — Kernel 2 — dK, dV ──  Grid (B,Hkv,S/Bc), 128 threads (one warpgroup).
 //   S=Q·K^T·scale , dV += P^T·dO , dP=dO·V^T , dK += (dS^T·Q)·scale.
-//   The transposed GEMMs (dV, dK) are handled by transposing the A tile (P/dS)
-//   and B tile (dO/Q) during the smem repack so their contraction dim is also
-//   contiguous, letting all six GEMMs use the single native config
-//   (transA=0, transB=0, K-major both operands) — see the report notes.
+//   S/dP contract over the head dim (K-major both operands, trans-a=0/trans-b=0).
+//   dV/dK contract over the row dim i, so their A operand (P/dS) is transposed via
+//   Major::MN staging (mn_off) + trans-a=1, while B (dO/Q) stays K-major + trans-b=0
+//   (see fill_trans_A / run_gemm_tA).  dV, dK, dQ are PERSISTENT wgmma accumulators
+//   accumulated in-hardware (scaleD=1) across the loop and read only once at the end.
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(128, 1)
 gqa_backward_dKdV_v3(
@@ -1202,32 +1203,30 @@ gqa_backward_dKdV_v3(
             // dV += P^T·dO   (A = Pᵀ, contraction over row i → transposed A operand:
             // Major::MN staging + trans-a=1, see fill_trans_A/run_gemm_tA notes.
             // B = dOᵀ stays K-major via fill_trans (verified-good B path, trans-b=0).
-            // Fresh transient accumulator + ordinary register add (see dQ note):
-            // never hold dv as a wgmma accumulator across the other GEMM groups.
+            // PERSISTENT wgmma accumulator dv (scaleD=1), accumulated in-hardware across
+            // the G×qc loop, never read mid-loop — see the dQ persistent-accumulator note.
             fill_trans_A(sA_t, sP, tid); fill_trans(sB_t, sdO, tid);
             __syncthreads();
-            { float acc[32]; zero32(acc); run_gemm_tA(acc, sA_t, sB_t);
+            run_gemm_tA(dv, sA_t, sB_t);   // dv += Pᵀ·dO  (persistent in-hardware accumulate)
 #ifdef V3_DEBUG
-              // Verify dV = P^T·dO (the trans-A, trans-B GEMM) on the FIRST iteration
-              // of block(0,0,0). acc is this iteration's contribution. Output row j:
-              // dV[j][d] = sum_i P[i][j]·dO[i][d].  sP holds P (bf16), sdO holds dO.
-              if (b == 0 && hkv == 0 && k_tile == 0 && g == 0 && qc == k_row0 / Br) {
-                  store_acc_smem(acc, sS, tid, 1.0f);
-                  __syncthreads();
-                  if (tid == 0) {
-                      int nbad = 0;
-                      for (int d = 0; d < 64; d++) {
-                          float ref = 0.f;
-                          for (int i = 0; i < 64; i++)
-                              ref += __bfloat162float(sP[i * 64 + 0]) * __bfloat162float(sdO[i * 64 + d]);
-                          if (fabsf(sS[d] - ref) > 1e-2f) { if (++nbad <= 6) printf("  dV[0][%2d] got=% .5f ref=% .5f\n", d, sS[d], ref); }
-                      }
-                      printf("[V3_DEBUG] block(0,0,0) dV=P^T.dO row0 (trans-A GEMM): mismatches=%d/64\n", nbad);
-                  }
-                  __syncthreads();
-              }
+            // On the FIRST iteration dv was zeroed before the loop, so after this
+            // accumulate dv == this tile's Pᵀ·dO contribution.  store_acc reads dv (fenced).
+            if (b == 0 && hkv == 0 && k_tile == 0 && g == 0 && qc == k_row0 / Br) {
+                store_acc_smem(dv, sS, tid, 1.0f);
+                __syncthreads();
+                if (tid == 0) {
+                    int nbad = 0;
+                    for (int d = 0; d < 64; d++) {
+                        float ref = 0.f;
+                        for (int i = 0; i < 64; i++)
+                            ref += __bfloat162float(sP[i * 64 + 0]) * __bfloat162float(sdO[i * 64 + d]);
+                        if (fabsf(sS[d] - ref) > 1e-2f) { if (++nbad <= 6) printf("  dV[0][%2d] got=% .5f ref=% .5f\n", d, sS[d], ref); }
+                    }
+                    printf("[V3_DEBUG] block(0,0,0) dV=P^T.dO row0 (persistent-acc GEMM): mismatches=%d/64\n", nbad);
+                }
+                __syncthreads();
+            }
 #endif
-              for (int i = 0; i < 32; i++) dv[i] += acc[i]; }
             __syncthreads();
 
             // dP = dO·V^T
@@ -1245,35 +1244,35 @@ gqa_backward_dKdV_v3(
 
             // dK += dS^T·Q   (A = dSᵀ, contraction over row i → transposed A operand:
             // Major::MN staging + trans-a=1.  B = Qᵀ K-major via fill_trans, trans-b=0.)
-            // Fresh transient accumulator + ordinary register add (see dQ note).
+            // PERSISTENT wgmma accumulator dk (scaleD=1), accumulated in-hardware across
+            // the G×qc loop, never read mid-loop — see the dQ persistent-accumulator note.
             fill_trans_A(sA_t, sP, tid); fill_trans(sB_t, sQ, tid);
             __syncthreads();
-            { float acc[32]; zero32(acc); run_gemm_tA(acc, sA_t, sB_t);
+            run_gemm_tA(dk, sA_t, sB_t);   // dk += dSᵀ·Q  (persistent in-hardware accumulate)
 #ifdef V3_DEBUG
-              // Verify dK = dSᵀ·Q (trans-A GEMM) on the FIRST iteration of block(0,0,0).
-              // acc is this iteration's contribution. Output row j:
-              //   dK[j][d] = sum_i dS[i][j]·Q[i][d].  sP holds dS (bf16), sQ holds Q.
-              if (b == 0 && hkv == 0 && k_tile == 0 && g == 0 && qc == k_row0 / Br) {
-                  store_acc_smem(acc, sS, tid, 1.0f);
-                  __syncthreads();
-                  if (tid == 0) {
-                      int nbad = 0;
-                      for (int d = 0; d < 64; d++) {
-                          float ref = 0.f;
-                          for (int i = 0; i < 64; i++)
-                              ref += __bfloat162float(sP[i * 64 + 0]) * __bfloat162float(sQ[i * 64 + d]);
-                          if (fabsf(sS[d] - ref) > 1e-2f) { if (++nbad <= 6) printf("  dK[0][%2d] got=% .5f ref=% .5f\n", d, sS[d], ref); }
-                      }
-                      printf("[V3_DEBUG] block(0,0,0) dK=dSᵀ.Q row0 (trans-A GEMM): mismatches=%d/64\n", nbad);
-                  }
-                  __syncthreads();
-              }
+            // On the FIRST iteration dk was zeroed before the loop, so after this
+            // accumulate dk == this tile's dSᵀ·Q contribution.  store_acc reads dk (fenced).
+            if (b == 0 && hkv == 0 && k_tile == 0 && g == 0 && qc == k_row0 / Br) {
+                store_acc_smem(dk, sS, tid, 1.0f);
+                __syncthreads();
+                if (tid == 0) {
+                    int nbad = 0;
+                    for (int d = 0; d < 64; d++) {
+                        float ref = 0.f;
+                        for (int i = 0; i < 64; i++)
+                            ref += __bfloat162float(sP[i * 64 + 0]) * __bfloat162float(sQ[i * 64 + d]);
+                        if (fabsf(sS[d] - ref) > 1e-2f) { if (++nbad <= 6) printf("  dK[0][%2d] got=% .5f ref=% .5f\n", d, sS[d], ref); }
+                    }
+                    printf("[V3_DEBUG] block(0,0,0) dK=dSᵀ.Q row0 (persistent-acc GEMM): mismatches=%d/64\n", nbad);
+                }
+                __syncthreads();
+            }
 #endif
-              for (int i = 0; i < 32; i++) dk[i] += acc[i]; }
             __syncthreads();
         }
     }
 
+    fence_operand32(dv); fence_operand32(dk);            // ensure final reads follow all wgmma
     store_acc_global(dv, d_dV, kvBase, D, tid, 1.0f);    // dV : no scale
     store_acc_global(dk, d_dK, kvBase, D, tid, scale);   // dK : *scale
 }
