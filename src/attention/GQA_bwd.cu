@@ -838,6 +838,67 @@ __device__ __forceinline__ void run_gemm(float acc[32], const bf16 *sA_t, const 
     wgmma_wait0();
 }
 
+// ── Transposed-A GEMM (dV = Pᵀ·dO, dK = dSᵀ·Q) ───────────────────────────────
+// The contraction here is over the ROW dim `i` of BOTH operands, so operand A
+// must be supplied transposed (A[m][k] = src[k][m]).  Emulating that transpose
+// by simply feeding transposed data into the K-major `tiled_off` layout works
+// for operand B (verified on dQ) but NOT for operand A — because wgmma's SS
+// operand-layout rules are asymmetric for the two source matrices.
+//
+// ISA rule (PTX ISA §9.7.14 / CUTLASS make_gmma_desc, mma_traits_sm90_gmma.hpp):
+// each shared operand is read as a grid of 8×8 (16-bit) "core matrices".  A
+// K-major operand (trans=0) has intra-core element order  (mn_local*8 + k_local)
+// — i.e. the 16-byte-contiguous dimension is K.  To *transpose* an operand you do
+// NOT re-lay-out the K-major data; you present it in Major::MN form (trans=1),
+// whose canonical core matrix is the TRANSPOSE of the K-major one: the contiguous
+// dimension is MN and the intra-core order is  (k_local*8 + mn_local).  Crucially
+// the descriptor's leading/stride byte offsets are assigned identically for
+// Major::K and Major::MN in the no-swizzle (INTERLEAVE) case
+// (leading=LBO=K-core stride=128 B, stride=SBO=MN-core stride=1024 B), so
+// `make_desc` is reused verbatim.  Only two things change vs the K-major path:
+//   1. the intra-core element order is transposed  →  `mn_off` below;
+//   2. the wgmma `trans-a` immediate flips 0 → 1   →  `wgmma_m64n64k16_tA`.
+// Operand B is left exactly as before (K-major, trans-b=0, `fill_trans`+`make_desc`).
+//
+// mn_off(r,c): r = M (output row), c = K (contraction).  Same 8×2-of-core-matrices
+// block arrangement as tiled_off (so base still advances 128 elems / k-step and the
+// descriptor is unchanged) — ONLY the intra-core term (c&7)*8+(r&7) is transposed.
+__device__ __forceinline__ int mn_off(int r, int c) {
+    return ((r >> 3) * 8 + (c >> 3)) * 64 + (c & 7) * 8 + (r & 7);
+}
+// Stage operand A = srcᵀ (A[m][k] = src[k][m]) into the Major::MN core layout.
+__device__ __forceinline__ void fill_trans_A(bf16 *dst, const bf16 *src, int tid) {
+    for (int i = tid; i < 64 * 64; i += 128) { int r = i >> 6, c = i & 63; dst[mn_off(r, c)] = src[c * 64 + r]; }
+}
+// Same as wgmma_m64n64k16 but with trans-a = 1 (Major::MN A), trans-b = 0 (K-major B).
+__device__ __forceinline__ void wgmma_m64n64k16_tA(float d[32], uint64_t descA, uint64_t descB) {
+    asm volatile(
+        "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 "
+        "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
+        "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
+        "%32, %33, 1, 1, 1, 1, 0;\n"   // scaleD, scaleA, scaleB, transA=1, transB=0
+        : "+f"(d[0]),  "+f"(d[1]),  "+f"(d[2]),  "+f"(d[3]),
+          "+f"(d[4]),  "+f"(d[5]),  "+f"(d[6]),  "+f"(d[7]),
+          "+f"(d[8]),  "+f"(d[9]),  "+f"(d[10]), "+f"(d[11]),
+          "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]),
+          "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]),
+          "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]),
+          "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]),
+          "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31])
+        : "l"(descA), "l"(descB));
+}
+// One full m64n64 GEMM with a transposed (Major::MN) A operand.  Identical
+// discipline to run_gemm; base advances 128 elems/k-step for BOTH operands.
+__device__ __forceinline__ void run_gemm_tA(float acc[32], const bf16 *sA_t, const bf16 *sB_t) {
+    wgmma_fence();
+#pragma unroll
+    for (int kt = 0; kt < 4; kt++) {
+        wgmma_m64n64k16_tA(acc, make_desc(sA_t + 128 * kt), make_desc(sB_t + 128 * kt));
+    }
+    wgmma_commit();
+    wgmma_wait0();
+}
+
 // Accumulator-register -> memory mapping (m64n64k16 f32): standard mma.m16n8k16
 // D-fragment tiled over 4 warps (rows) x 8 n-subtiles (cols).
 //   warp w=tid/32 owns rows [16w,16w+16); r0=lane/4, r1=r0+8, col_base=(lane%4)*2
@@ -1099,12 +1160,14 @@ gqa_backward_dKdV_v3(
             }
             __syncthreads();
 
-            // dV += P^T·dO   (A tiled[j][i]=P[i][j] -> transpose sP; B [D][Br] i-contig = dO^T -> transpose sdO)
+            // dV += P^T·dO   (A = Pᵀ, contraction over row i → transposed A operand:
+            // Major::MN staging + trans-a=1, see fill_trans_A/run_gemm_tA notes.
+            // B = dOᵀ stays K-major via fill_trans (verified-good B path, trans-b=0).
             // Fresh transient accumulator + ordinary register add (see dQ note):
             // never hold dv as a wgmma accumulator across the other GEMM groups.
-            fill_trans(sA_t, sP, tid); fill_trans(sB_t, sdO, tid);
+            fill_trans_A(sA_t, sP, tid); fill_trans(sB_t, sdO, tid);
             __syncthreads();
-            { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t);
+            { float acc[32]; zero32(acc); run_gemm_tA(acc, sA_t, sB_t);
 #ifdef V3_DEBUG
               // Verify dV = P^T·dO (the trans-A, trans-B GEMM) on the FIRST iteration
               // of block(0,0,0). acc is this iteration's contribution. Output row j:
@@ -1141,11 +1204,32 @@ gqa_backward_dKdV_v3(
             }
             __syncthreads();
 
-            // dK += dS^T·Q   (A tiled[j][i]=dS[i][j] -> transpose sP; B [D][Br] i-contig = Q^T -> transpose sQ)
+            // dK += dS^T·Q   (A = dSᵀ, contraction over row i → transposed A operand:
+            // Major::MN staging + trans-a=1.  B = Qᵀ K-major via fill_trans, trans-b=0.)
             // Fresh transient accumulator + ordinary register add (see dQ note).
-            fill_trans(sA_t, sP, tid); fill_trans(sB_t, sQ, tid);
+            fill_trans_A(sA_t, sP, tid); fill_trans(sB_t, sQ, tid);
             __syncthreads();
-            { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t);
+            { float acc[32]; zero32(acc); run_gemm_tA(acc, sA_t, sB_t);
+#ifdef V3_DEBUG
+              // Verify dK = dSᵀ·Q (trans-A GEMM) on the FIRST iteration of block(0,0,0).
+              // acc is this iteration's contribution. Output row j:
+              //   dK[j][d] = sum_i dS[i][j]·Q[i][d].  sP holds dS (bf16), sQ holds Q.
+              if (b == 0 && hkv == 0 && k_tile == 0 && g == 0 && qc == k_row0 / Br) {
+                  store_acc_smem(acc, sS, tid, 1.0f);
+                  __syncthreads();
+                  if (tid == 0) {
+                      int nbad = 0;
+                      for (int d = 0; d < 64; d++) {
+                          float ref = 0.f;
+                          for (int i = 0; i < 64; i++)
+                              ref += __bfloat162float(sP[i * 64 + 0]) * __bfloat162float(sQ[i * 64 + d]);
+                          if (fabsf(sS[d] - ref) > 1e-2f) { if (++nbad <= 6) printf("  dK[0][%2d] got=% .5f ref=% .5f\n", d, sS[d], ref); }
+                      }
+                      printf("[V3_DEBUG] block(0,0,0) dK=dSᵀ.Q row0 (trans-A GEMM): mismatches=%d/64\n", nbad);
+                  }
+                  __syncthreads();
+              }
+#endif
               for (int i = 0; i < 32; i++) dk[i] += acc[i]; }
             __syncthreads();
         }
