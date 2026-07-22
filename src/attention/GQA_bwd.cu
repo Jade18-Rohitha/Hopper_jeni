@@ -992,6 +992,28 @@ gqa_backward_dQ_v3(
         fill_copy(sA_t, sP, tid); fill_trans(sB_t, sK, tid);
         __syncthreads();
         { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t);
+#ifdef V3_DEBUG
+          // Verify the transposed-B GEMM dQ=dS·K directly. block(0,0,0) has only
+          // kc==0, so `acc` IS the complete (unscaled) dQ tile. sP holds dS (bf16),
+          // sK holds K (bf16); sS is free (S already consumed into P). If this
+          // matches, fill_trans + the transposed wgmma are correct and the bug is
+          // in accumulation; if not, the transposed path itself is broken.
+          if (kc == 0 && b == 0 && hq == 0 && q_tile == 0) {
+              store_acc_smem(acc, sS, tid, 1.0f);
+              __syncthreads();
+              if (tid == 0) {
+                  int nbad = 0;
+                  for (int d = 0; d < 64; d++) {
+                      float ref = 0.f;
+                      for (int j = 0; j < 64; j++)
+                          ref += __bfloat162float(sP[0 * 64 + j]) * __bfloat162float(sK[j * 64 + d]);
+                      if (fabsf(sS[d] - ref) > 1e-2f) { if (++nbad <= 6) printf("  dSK[0][%2d] got=% .5f ref=% .5f\n", d, sS[d], ref); }
+                  }
+                  printf("[V3_DEBUG] block(0,0,0) dQ=dS.K row0 (transposed-B GEMM): mismatches=%d/64\n", nbad);
+              }
+              __syncthreads();
+          }
+#endif
           for (int i = 0; i < 32; i++) dq[i] += acc[i]; }
         __syncthreads();
     }
