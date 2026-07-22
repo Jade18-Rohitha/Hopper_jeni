@@ -67,7 +67,7 @@ __global__ void gqa_backward_dQ(
     }
     if(lane < Br) sLSE[lane] = d_LSE[lBase + lane];
     __syncwarp();
-
+//D
     if(lane < Br){
         float d = 0.0f;
         for(int j = 0; j < D; j++)
@@ -244,7 +244,7 @@ __global__ void gqa_backward_dKdV(
             }
             if(lane < Br) sLSE[lane] = d_LSE[lBase + lane];
             __syncwarp();
-
+//D
             if(lane < Br){
                 float d = 0.0f;
                 for(int j = 0; j < D; j++)
@@ -458,7 +458,7 @@ gqa_backward_dQ_v2(
     }
     if (tid < Br) sLSE[tid] = d_LSE[lBase + tid];
     __syncthreads();
-
+//D
     if (lane < 16) {
         int r = row0 + lane;
         float d = 0.f;
@@ -480,7 +480,7 @@ gqa_backward_dQ_v2(
             sV[i] = d_V[kBase + i];
         }
         __syncthreads();
-
+//S
         {
             wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> qf;
             wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::col_major> kf;
@@ -506,7 +506,7 @@ gqa_backward_dQ_v2(
                 : __float2bfloat16(expf(sS[i] - sLSE[r]));
         }
         __syncthreads();
-
+//dP
         {
             wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> dof;
             wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::col_major> vf;
@@ -522,13 +522,13 @@ gqa_backward_dQ_v2(
             }
         }
         __syncthreads();
-
+//dS
         for (int i = tid; i < Br * Bc; i += 128) {
             int r = i / Bc;
             sP[i] = __float2bfloat16(__bfloat162float(sP[i]) * (sdP[i] - sD[r]));
         }
         __syncthreads();
-
+//dQ
         {
             wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> dsf;
             wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::row_major> kf;
@@ -620,7 +620,7 @@ gqa_backward_dKdV_v2(
             }
             if (tid < Br) sLSE[tid] = d_LSE[lBase + tid];
             __syncthreads();
-
+//D
             if (tid < Br) {
                 float d = 0.f;
                 for (int j = 0; j < D; j++)
@@ -628,7 +628,7 @@ gqa_backward_dKdV_v2(
                 sD[tid] = d;
             }
             __syncthreads();
-
+//S
             {
                 wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> qf;
                 wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::col_major> kf;
@@ -684,7 +684,7 @@ gqa_backward_dKdV_v2(
                 }
             }
             __syncthreads();
-
+//dS
             for (int i = tid; i < Br * Bc; i += 128) {
                 int r = i / Bc;
                 sP[i] = __float2bfloat16(__bfloat162float(sP[i]) * (sdP[i] - sD[r]));
@@ -951,6 +951,29 @@ gqa_backward_dQ_v3(
         __syncthreads();
         { float acc[32]; zero32(acc); run_gemm(acc, sA_t, sB_t); store_acc_smem(acc, sdP, tid, 1.0f); }
         __syncthreads();
+
+#ifdef V3_DEBUG
+        // Decisive probe: dump FULL row 0 of S (Q·Kᵀ·scale) and dP (dO·Vᵀ) vs a
+        // scalar hand-compute, for block(0,0,0), kc==0. If BOTH match across all 64
+        // columns, the straight-GEMM path (descriptor + readout) is fully correct
+        // and the bug is downstream (transposed dV/dK GEMMs or accumulation). If
+        // they diverge at some column, the descriptor/readout is wrong there.
+        if (b == 0 && hq == 0 && q_tile == 0 && kc == 0 && tid == 0) {
+            int nbad_s = 0, nbad_dp = 0;
+            for (int c = 0; c < 64; c++) {
+                float sref = 0.f, dpref = 0.f;
+                for (int d = 0; d < D; d++) {
+                    sref  += __bfloat162float(sQ [0 * D + d]) * __bfloat162float(sK[c * D + d]);
+                    dpref += __bfloat162float(sdO[0 * D + d]) * __bfloat162float(sV[c * D + d]);
+                }
+                sref *= scale;
+                if (fabsf(sS [c] - sref)  > 1e-2f) { if (++nbad_s  <= 4) printf("  S[0][%2d]  got=% .5f ref=% .5f\n", c, sS [c], sref);  }
+                if (fabsf(sdP[c] - dpref) > 1e-2f) { if (++nbad_dp <= 4) printf("  dP[0][%2d] got=% .5f ref=% .5f\n", c, sdP[c], dpref); }
+            }
+            printf("[V3_DEBUG] block(0,0,0) row0: S mismatches=%d/64, dP mismatches=%d/64\n", nbad_s, nbad_dp);
+        }
+        __syncthreads();
+#endif
 
         // dS = P ⊙ (dP - D)   (into sP)
         for (int i = tid; i < Br * Bc; i += 128) {
