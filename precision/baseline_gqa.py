@@ -16,7 +16,7 @@ start from identical input bits):
   - gqa_o_fp64.bin            fp64 ground-truth output,                   [B, Hq, S, D]
   - gqa_lse.bin               fp64 ground-truth log-sum-exp of the logits,[B, Hq, S]
 
-Dimensions match GQA_bwd.cu: B=8, Hq=12, Hkv=4, S=4096, D=64.
+Dimensions match GQA_bwd.cu: B=8, Hq=12, Hkv=4, S=4096, D=128.
 """
 
 import torch
@@ -27,7 +27,7 @@ import triton
 import triton.language as tl
 import triton.testing
 
-B, Hq, Hkv, S, D = 8, 12, 4, 4096, 64
+B, Hq, Hkv, S, D = 8, 12, 4, 4096, 128
 G = Hq // Hkv
 
 DATA_DIR = Path(__file__).parent.parent / "data"
