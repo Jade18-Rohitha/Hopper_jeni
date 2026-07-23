@@ -1743,6 +1743,325 @@ void launch_gqa_backward_v4(
         B, Hq, Hkv, G, S, scale);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// V5 — SINGLE FUSED, KV-CENTRIC kernel (replaces V4's two-kernel dQ + dKdV split)
+//                                                            [SM_90a only]
+//
+// One kernel, grid (B, Hkv, S/Bc) — one block per (batch, kv-head, kv-tile).  The
+// block OWNS its KV-tile's dK and dV (they reduce over the QUERY axis, so a single
+// block sees every contribution → persistent wgmma accumulators dk[64]/dv[64], no
+// atomics, one writeback at the end — identical to V4's dKdV kernel).
+//
+// dQ reduces over the KEY axis, so a given query row receives a partial from EVERY
+// KV-tile it attends → NOT owned by one block.  Each (g, qc) iteration computes that
+// Q-tile's dQ contribution from THIS block's KV-tile alone into a TRANSIENT wgmma
+// accumulator dq[64] (m64n128, dQ_tile = dS·K), then flushes it via fp32 atomicAdd
+// into a scratch d_dq_accum[B*Hq*S*D] buffer (the FA2/FA3 dq_accum pattern the
+// Blackwell GQA_sm103_bwd.cu v11_kv kernel uses).  A tiny convert kernel turns the
+// fp32 scratch into the final bf16 d_dQ once the fused kernel is done.  The launcher
+// owns the scratch: cudaMalloc + cudaMemset(0) before, convert + cudaFree after.
+//
+// WHY fp32 atomic + convert (not a bf16 atomic on d_dQ directly): bf16 atomicAdd is
+// unsupported on sm_90, and even where a 16-bit atomic exists, summing many KV-tile
+// partials in bf16 would lose precision catastrophically (each Q row accumulates
+// O(S/Bc) terms).  Accumulating in fp32 then a single bf16 round matches the
+// reference math and V4's dQ (which also accumulates in fp32 registers, then rounds
+// once in store_acc_global).
+//
+// The per-(g,qc) compute is V4's dKdV body VERBATIM (same TMA double-buffer, same
+// swizzled/plain operand roles, same fences, same fill_*/run_gemm_* helpers) with
+// ONE addition: the dQ = dS·K wgmma + atomic flush, reusing V4's dQ-kernel dQ path
+// (fill_copy dS  →  A;  fill_trans of PLAIN K  →  B;  run_gemm_n128, SBO=1024).
+// That fill_trans needs K in the PLAIN (D-contiguous) layout, whereas S=Q·Kᵀ reads K
+// SWIZZLED — so V5 loads K BOTH ways into two persistent buffers (sK_sw + sK_pl),
+// each on its own already-verified path (V4 dKdV's swizzled-K S-GEMM; V4 dQ's
+// plain-K fill_trans dQ-GEMM).  +16 KB of persistent smem vs V4 dKdV.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Register-accumulator → fp32 scratch, ATOMIC accumulate.  Same m64nNk16 D-fragment
+// mapping as store_acc_global, but atomicAdd into an fp32 buffer instead of a plain
+// bf16 store (many KV-tiles race to the same query rows).  NCOL = output width = D.
+// `coloff` is the D-column base for the fragment (0 or 64 for the two m64n64 halves
+// of the D=128 dQ tile — see the split note in the kernel).
+template<int NCOL>
+__device__ __forceinline__ void atomic_acc_global(const float *d, float *g, long base, int D, int coloff, int tid, float scl) {
+    int w = tid >> 5, lane = tid & 31;
+    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+#pragma unroll
+    for (int nt = 0; nt < NCOL / 8; nt++) {
+        int c = coloff + nt * 8 + cc;
+        atomicAdd(&g[base + (long)r0 * D + c + 0], d[nt * 4 + 0] * scl);
+        atomicAdd(&g[base + (long)r0 * D + c + 1], d[nt * 4 + 1] * scl);
+        atomicAdd(&g[base + (long)r1 * D + c + 0], d[nt * 4 + 2] * scl);
+        atomicAdd(&g[base + (long)r1 * D + c + 1], d[nt * 4 + 3] * scl);
+    }
+}
+
+// Converts the fp32 dq_accum scratch (written via atomicAdd by V5) to bf16 d_dQ.
+__global__ void convert_dq_accum_to_bf16_v5(
+    const float * __restrict__ d_dq_accum, bf16 * __restrict__ d_dQ, long n) {
+    long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) d_dQ[i] = __float2bfloat16(d_dq_accum[i]);
+}
+
+// ── V5 — fused dQ + dK + dV ──  Grid (B,Hkv,S/Bc), 128 threads (one warpgroup).
+//   Persistent (per K-tile): K swizzled (S=Q·Kᵀ B), K plain (dQ=dS·K B), V swizzled.
+//   Loop-variant (per Q-tile over G×qc, DOUBLE-BUFFERED): Q plain, dO plain, O plain.
+template<int Br, int Bc, int D>
+__global__ void __launch_bounds__(128, 1)
+gqa_backward_v5_kv(
+    const __grid_constant__ CUtensorMap tma_K_sw,   // K 128B-swizzled (S=Q·Kᵀ, B)
+    const __grid_constant__ CUtensorMap tma_K_pl,   // K plain         (dQ=dS·K, B via fill_trans)
+    const __grid_constant__ CUtensorMap tma_V_sw,   // V 128B-swizzled (dP=dO·Vᵀ, B)
+    const __grid_constant__ CUtensorMap tma_Q_pl,   // Q plain (S-A fill_copy + dK-B fill_trans)
+    const __grid_constant__ CUtensorMap tma_dO_pl,  // dO plain (dP-A fill_copy + dV-B fill_trans + D)
+    const __grid_constant__ CUtensorMap tma_O_pl,   // O  plain (D compute)
+    const float * __restrict__ d_LSE,
+    bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV, float * __restrict__ d_dq_accum,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V5 requires Br=Bc=64, D=128");
+
+    // Persistent operands (K-tile fixed for the block)
+    __shared__ __align__(128) bf16 sK_sw[Bc * D];        // 2 swizzle atoms (S-B)
+    __shared__ __align__(128) bf16 sK_pl[Bc * D];        // plain (dQ-B fill_trans)
+    __shared__ __align__(128) bf16 sV_sw[Bc * D];        // 2 swizzle atoms (dP-B)
+    // Loop-variant, double-buffered [stage]
+    __shared__ __align__(128) bf16 sQ_pl [2][Br * D];
+    __shared__ __align__(128) bf16 sdO_pl[2][Br * D];
+    __shared__ __align__(128) bf16 sO_pl [2][Br * D];
+    // Compute scratch / intermediates
+    __shared__ __align__(16)  float sS [Br * Bc];
+    __shared__ __align__(16)  float sdP[Br * Bc];
+    __shared__ __align__(16)  bf16  sP [Br * Bc];         // reused as sdS
+    __shared__                float sLSE[Br];
+    __shared__                float sD  [Br];
+    __shared__ __align__(128) bf16  sA_t[64 * 128];
+    __shared__ __align__(128) bf16  sB_t[64 * 128];
+    __shared__ __align__(8)   uint64_t mbar_p;
+    __shared__ __align__(8)   uint64_t mbar[2];
+
+    const int tid = threadIdx.x;
+    const int b = blockIdx.x, hkv = blockIdx.y, k_tile = blockIdx.z;
+    const int k_row0 = k_tile * Bc;
+    const int nQTiles = S / Br;
+
+    const long     kvBase     = ((long)(b * Hkv + hkv) * S + k_row0) * D;
+    const uint32_t kvFlatRow  = (uint32_t)((b * Hkv + hkv) * S + k_row0);
+    const uint32_t bytesTile  = (uint32_t)(Br * D * sizeof(bf16));   // 16384
+    const uint32_t bytesAtom  = (uint32_t)(Bc * 64 * sizeof(bf16));  // 8192
+
+    if (tid == 0) { mbar_init_v4(&mbar_p, 1); mbar_init_v4(&mbar[0], 1); mbar_init_v4(&mbar[1], 1); }
+    __syncthreads();
+
+    // ── Persistent loads: K swizzled (2 atoms) + K plain (1 full-D) + V swizzled (2)
+    uint32_t par_p = 0;
+    if (tid == 0) {
+        mbar_expect_tx_v4(&mbar_p, bytesAtom * 4 + bytesTile);
+        tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_p, 0,  kvFlatRow);
+        tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_p, 64, kvFlatRow);
+        tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_p, 0,  kvFlatRow);
+        tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_p, 64, kvFlatRow);
+        tma_load_2d_v4(&tma_K_pl, sK_pl,           &mbar_p, 0,  kvFlatRow);
+    }
+    mbar_wait_v4(&mbar_p, par_p);
+    __syncthreads();
+
+    float dv[64]; zeroN<64>(dv);   // PERSISTENT dV[Bc×D] accumulator (owned by this block)
+    float dk[64]; zeroN<64>(dk);   // PERSISTENT dK[Bc×D] accumulator (owned by this block)
+
+    // Flatten the G × qc causal iteration space (qc from k_row0/Br upward).
+    const int qc0    = k_row0 / Br;
+    const int perG   = nQTiles - qc0;
+    const int nIter  = G * perG;
+
+    auto qFlatRowOf = [&](int it) -> uint32_t {
+        const int g  = it / perG;
+        const int qc = qc0 + (it % perG);
+        const int hq = hkv * G + g;
+        return (uint32_t)((b * Hq + hq) * S + qc * Br);
+    };
+    auto lBaseOf = [&](int it) -> long {
+        const int g  = it / perG;
+        const int qc = qc0 + (it % perG);
+        const int hq = hkv * G + g;
+        return (long)(b * Hq + hq) * S + (long)qc * Br;
+    };
+
+    // Prologue: TMA iter 0 (Q,dO,O plain) → stage 0
+    uint32_t par[2] = {0, 0};
+    if (nIter > 0 && tid == 0) {
+        const uint32_t r0 = qFlatRowOf(0);
+        mbar_expect_tx_v4(&mbar[0], bytesTile * 3);
+        tma_load_2d_v4(&tma_Q_pl,  sQ_pl [0], &mbar[0], 0, r0);
+        tma_load_2d_v4(&tma_dO_pl, sdO_pl[0], &mbar[0], 0, r0);
+        tma_load_2d_v4(&tma_O_pl,  sO_pl [0], &mbar[0], 0, r0);
+    }
+
+    for (int it = 0; it < nIter; it++) {
+        const int s = it & 1;
+        const int q_row0 = (qc0 + (it % perG)) * Br;
+        // Prefetch NEXT iter → other stage
+        if (it + 1 < nIter && tid == 0) {
+            const uint32_t nr = qFlatRowOf(it + 1);
+            mbar_expect_tx_v4(&mbar[s ^ 1], bytesTile * 3);
+            tma_load_2d_v4(&tma_Q_pl,  sQ_pl [s ^ 1], &mbar[s ^ 1], 0, nr);
+            tma_load_2d_v4(&tma_dO_pl, sdO_pl[s ^ 1], &mbar[s ^ 1], 0, nr);
+            tma_load_2d_v4(&tma_O_pl,  sO_pl [s ^ 1], &mbar[s ^ 1], 0, nr);
+        }
+        mbar_wait_v4(&mbar[s], par[s]); par[s] ^= 1;
+        if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(it) + tid];
+        __syncthreads();
+
+        // D[r] = rowsum(dO · O)
+        if (tid < Br) {
+            float acc = 0.f;
+            for (int j = 0; j < D; j++)
+                acc += __bfloat162float(sdO_pl[s][tid * D + j]) * __bfloat162float(sO_pl[s][tid * D + j]);
+            sD[tid] = acc;
+        }
+        __syncthreads();
+
+        // S = Q·Kᵀ·scale  (A=Q no-swizzle fill_copy, B=K swizzled)
+        fill_copy<Br, D>(sA_t, sQ_pl[s], tid);
+        __syncthreads();
+        { float acc[32]; zeroN<32>(acc); run_gemm_n64_sw<false>(acc, sK_sw, sA_t); store_acc_smem<Bc>(acc, sS, tid, scale); }
+        __syncthreads();
+
+        // P = exp(S - LSE), causal mask → sP
+        for (int i = tid; i < Br * Bc; i += 128) {
+            int r = i / Bc, c = i % Bc;
+            sP[i] = (k_row0 + c > q_row0 + r) ? __float2bfloat16(0.f)
+                                              : __float2bfloat16(expf(sS[i] - sLSE[r]));
+        }
+        __syncthreads();
+
+        // dV += Pᵀ·dO  (A=Pᵀ fill_trans_A intermediate, B=dOᵀ fill_trans of plain dO)
+        fill_trans_A<Bc, Br>(sA_t, sP, tid); fill_trans<D, Br>(sB_t, sdO_pl[s], tid);
+        __syncthreads();
+        run_gemm_n128_tA<Br / 16>(dv, sA_t, sB_t, (uint64_t)(Br >> 3) * 128);   // SBO=1024
+        __syncthreads();
+
+        // dP = dO·Vᵀ  (A=dO no-swizzle fill_copy, B=V swizzled)
+        fill_copy<Br, D>(sA_t, sdO_pl[s], tid);
+        __syncthreads();
+        { float acc[32]; zeroN<32>(acc); run_gemm_n64_sw<false>(acc, sV_sw, sA_t); store_acc_smem<Bc>(acc, sdP, tid, 1.0f); }
+        __syncthreads();
+
+        // dS = P ⊙ (dP - D) → sP
+        for (int i = tid; i < Br * Bc; i += 128) {
+            int r = i / Bc;
+            sP[i] = __float2bfloat16(__bfloat162float(sP[i]) * (sdP[i] - sD[r]));
+        }
+        __syncthreads();
+
+        // dK += dSᵀ·Q  (A=dSᵀ fill_trans_A intermediate, B=Qᵀ fill_trans of plain Q)
+        fill_trans_A<Bc, Br>(sA_t, sP, tid); fill_trans<D, Br>(sB_t, sQ_pl[s], tid);
+        __syncthreads();
+        run_gemm_n128_tA<Br / 16>(dk, sA_t, sB_t, (uint64_t)(Br >> 3) * 128);
+        __syncthreads();
+
+        // dQ_tile = dS·K  (TRANSIENT; A=dS no-swizzle fill_copy, B=Kᵀ no-swizzle
+        // fill_trans of PLAIN K).  Reset every iteration (each is a different Q-tile's
+        // partial), then flush via fp32 atomicAdd into d_dq_accum.
+        //
+        // REGISTER NOTE: dv[64]+dk[64] persist across the loop, so a full m64n128 dq[64]
+        // here would peak at 192 accumulator regs → 255 + 4-byte spill.  Instead the D=128
+        // output is done as TWO m64n64 halves (acc[32] each, reused): peak transient drops
+        // to 32 regs → 0 spills.  Half 0 reads B cols [0,64) at sB_t+0; half 1 reads cols
+        // [64,128) at sB_t+4096 (= tiled_off(64,0,Bc); the 8 mn-blocks 8..15, SBO=1024
+        // strides them exactly as run_gemm_n128 does the full 16).  Both halves share the
+        // one fill of sA_t/sB_t.  run_gemm_n64 is V3's HW-verified no-swizzle GEMM.
+        fill_copy<Br, Bc>(sA_t, sP, tid); fill_trans<D, Bc>(sB_t, sK_pl, tid);
+        __syncthreads();
+        { float acc[32]; zeroN<32>(acc);
+          run_gemm_n64<Bc / 16>(acc, sA_t, sB_t, (uint64_t)(Bc >> 3) * 128);          // SBO=1024
+          atomic_acc_global<64>(acc, d_dq_accum, lBaseOf(it) * D, D, 0,  tid, scale); }
+        { float acc[32]; zeroN<32>(acc);
+          run_gemm_n64<Bc / 16>(acc, sA_t, sB_t + 4096, (uint64_t)(Bc >> 3) * 128);   // SBO=1024
+          atomic_acc_global<64>(acc, d_dq_accum, lBaseOf(it) * D, D, 64, tid, scale); }
+        __syncthreads();
+    }
+
+    fence_operandN<64>(dv); fence_operandN<64>(dk);
+    store_acc_global<D>(dv, d_dV, kvBase, D, tid, 1.0f);
+    store_acc_global<D>(dk, d_dK, kvBase, D, tid, scale);
+}
+
+// ── V5 launcher — single fused kernel + fp32 dQ-scratch (alloc/zero/convert/free).
+// Grid (B,Hkv,S/Bc).  Descriptors: K swizzled + K plain + V swizzled (persistent),
+// Q/dO/O plain (double-buffered).  Same make_tma helpers as V4.
+template<int Br, int Bc, int D>
+void launch_gqa_backward_v5(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V5 requires Br=Bc=64, D=128");
+
+    auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
+        uint32_t box[2]     = {64u, tile_rows};
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(
+            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) failed: %s\n", e); exit(1); }
+        return desc;
+    };
+    auto make_tma_plain = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
+        uint32_t box[2]     = {(uint32_t)D, tile_rows};
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(
+            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(plain) failed: %s\n", e); exit(1); }
+        return desc;
+    };
+
+    const uint64_t Rq  = (uint64_t)B * Hq  * S;
+    const uint64_t Rkv = (uint64_t)B * Hkv * S;
+
+    CUtensorMap tma_K_sw  = make_tma_sw128(d_K,  Rkv, Bc);
+    CUtensorMap tma_K_pl  = make_tma_plain(d_K,  Rkv, Bc);
+    CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
+    CUtensorMap tma_Q_pl  = make_tma_plain(d_Q,  Rq,  Br);
+    CUtensorMap tma_dO_pl = make_tma_plain(d_dO, Rq,  Br);
+    CUtensorMap tma_O_pl  = make_tma_plain(d_O,  Rq,  Br);
+
+    // fp32 dQ accumulator scratch — this launcher OWNS it (alloc/zero/convert/free).
+    // Each query row receives a partial from every KV-tile it attends; those partials
+    // race across blocks and must sum in fp32 before a single bf16 round.
+    const long dqN = (long)B * Hq * S * D;
+    float* d_dq_accum = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
+
+    constexpr dim3 BLOCK(128);
+    dim3 GRID(B, Hkv, S / Bc);
+    gqa_backward_v5_kv<Br,Bc,D><<<GRID, BLOCK>>>(
+        tma_K_sw, tma_K_pl, tma_V_sw, tma_Q_pl, tma_dO_pl, tma_O_pl,
+        d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
+
+    const int convBlock = 256;
+    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+
+    CUDA_CHECK(cudaFree(d_dq_accum));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1850,6 +2169,10 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V4  Br=64, Bc=64  TMA+wgmma (128B swizzle, double-buffered) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
+    launch_gqa_backward_v5<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── V5  Br=64, Bc=64  FUSED KV-centric TMA+wgmma (dQ fp32 atomic) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
     // iterations with the L2 flushed between reps (mirrors triton.testing.do_bench).
@@ -1890,6 +2213,13 @@ int main(){
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats("GQA bwd V4  Br=64, Bc=64  TMA+wgmma  (Hopper SM_90)", s);
+    }
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v5<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V5  Br=64, Bc=64  FUSED KV-centric  (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
