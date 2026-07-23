@@ -1260,6 +1260,489 @@ void launch_gqa_backward_v3(
         d_Q, d_K, d_V, d_O, d_dO, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// V4 — TMA (cp.async.bulk.tensor) 128B-swizzled loads + double-buffered wgmma
+//                                                            [SM_90a only]
+//
+// Same math / tiling / grids / two-kernel split / correctness mechanisms as V3.
+// Two changes vs V3:
+//   (1) The operands read in their NATURAL K-major-over-D orientation (S=Q·Kᵀ and
+//       dP=dO·Vᵀ) are TMA-loaded into a 128B-SWIZZLED smem layout and fed to wgmma
+//       DIRECTLY via a Major::K SW128 descriptor — NO per-GEMM fill_copy repack.
+//       (dQ kernel: Q,V swizzled;  dKdV kernel: K,V swizzled.)
+//   (2) The per-K-tile loads are DOUBLE-BUFFERED with mbarriers so tile k+1's TMA
+//       overlaps tile k's wgmma compute (single warpgroup, no warp-spec — that's V5).
+//
+// WHAT STILL REPACKS AND WHY (unchanged from V3, verified path):
+//   • Any operand read TRANSPOSED (contraction over the token dim Br/Bc, not D):
+//       dQ+=dS·K   B = Kᵀ  (fill_trans of plain K)
+//       dV+=Pᵀ·dO  A = Pᵀ  (fill_trans_A, intermediate), B = dOᵀ (fill_trans plain dO)
+//       dK+=dSᵀ·Q  A = dSᵀ (fill_trans_A, intermediate), B = Qᵀ (fill_trans plain Q)
+//     The 128B-swizzled buffer is D-contiguous; a transposed read would need a
+//     Major::MN SW128 descriptor whose geometry is UNVERIFIED here, so we keep the
+//     verified no-swizzle fill_trans/fill_trans_A path (source: plain-TMA copy).
+//   • S / dP intermediates (dS, P) are kernel-computed, never loaded — no TMA help.
+//   • O is only used elementwise (D[r]=rowsum(dO·O)); loaded PLAIN (swizzle would
+//     make the element-wise read opaque). dO is also plain (needed both by dP's
+//     fill_copy-A and by the D computation) — so only V (dP-B) is swizzled in dQ,
+//     and only K/V are swizzled in dKdV. This deliberately keeps EVERY wgmma read
+//     on either the verified no-swizzle path OR the Major::K SW128 path (the direct
+//     analog of the HW-confirmed single-atom SW128 case), avoiding Major::MN swz.
+//
+// D=128 ⇒ each row is 256 B = TWO 128-byte swizzle atoms. One SWIZZLE_128B TMA
+// atom box is 64 bf16 wide (128 B). So each swizzled operand is loaded as TWO
+// (rows×64) atom sub-tiles (col origins 0 and 64) stacked contiguously in smem;
+// the S/dP k-loop walks atom = k/4, lk = k%4 (see run_gemm_n64_sw). Each atom is a
+// clean single-atom SW128 tile == the B300-confirmed case, done twice.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── mbarrier + TMA device helpers (adapted from Blackwell GQA_sm103_bwd.cu) ────
+__device__ __forceinline__ void mbar_init_v4(uint64_t* mbar, uint32_t count) {
+    uint32_t p = (uint32_t)__cvta_generic_to_shared(mbar);
+    asm volatile("mbarrier.init.shared.b64 [%0], %1;\n" :: "r"(p), "r"(count) : "memory");
+}
+__device__ __forceinline__ void mbar_expect_tx_v4(uint64_t* mbar, uint32_t tx_bytes) {
+    uint32_t p = (uint32_t)__cvta_generic_to_shared(mbar);
+    asm volatile("mbarrier.arrive.expect_tx.shared.b64 _, [%0], %1;\n" :: "r"(p), "r"(tx_bytes) : "memory");
+}
+__device__ __forceinline__ void mbar_wait_v4(uint64_t* mbar, uint32_t parity) {
+    uint32_t p = (uint32_t)__cvta_generic_to_shared(mbar);
+    asm volatile(
+        "{\n .reg .pred _P;\n"
+        "_MBAR_LOOP_V4:\n"
+        "mbarrier.try_wait.parity.shared.b64 _P, [%0], %1;\n"
+        "@!_P bra _MBAR_LOOP_V4;\n }\n"
+        :: "r"(p), "r"(parity) : "memory");
+}
+// 2-D TMA bulk async: global tile → swizzled/plain smem, tracked by `mbar`.
+__device__ __forceinline__ void tma_load_2d_v4(
+    const void* tma_desc, void* smem_dst, uint64_t* mbar, uint32_t cx, uint32_t cy) {
+    uint32_t dst = (uint32_t)__cvta_generic_to_shared(smem_dst);
+    uint32_t mb  = (uint32_t)__cvta_generic_to_shared(mbar);
+    asm volatile(
+        "cp.async.bulk.tensor.2d.shared::cta.global"
+        ".mbarrier::complete_tx::bytes [%0], [%1, {%2, %3}], [%4];\n"
+        :: "r"(dst), "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(mb) : "memory");
+}
+
+// ── wgmma SS descriptor for a 128B-SWIZZLED, Major::K (K-contiguous) bf16 operand.
+// Authoritative field values from CUTLASS cute::GmmaDescriptor + make_gmma_desc
+// (pytorch/third_party/cutlass/.../mma_sm90_desc.hpp, mma_traits_sm90_gmma.hpp):
+//   start_address_ [13:0]  = smem_addr >> 4
+//   leading_byte_offset_ [29:16] : UNUSED under swizzle ("assumed to be 1"); set 1 to match CUTLASS
+//   stride_byte_offset_  [45:32] = SBO = stride between 8-row MN-blocks = one 8×64-bf16
+//                                  swizzle sub-unit = 8*128 = 1024 B → encoded 1024>>4 = 64
+//   base_offset_ [51:49] = 0  (atom buffers are 1024-B-aligned; sub-atom k-advance is in the addr)
+//   layout_type_ [63:62] = 1  (SM90::GMMA::LayoutType::B128 — 128B swizzle; NOTE this is the
+//                              wgmma 2-bit field, NOT the tcgen05 3-bit "2<<61" field)
+// The per-k16 address advance (+lk*32 B within an atom) matches the B300-confirmed
+// make_smem_desc_sw128(ptr + k*32) pattern; here lk = k%4 within each 64-wide atom.
+__device__ __forceinline__ uint64_t make_desc_sw128_K(const bf16* smem_ptr) {
+    uint32_t addr = (uint32_t)__cvta_generic_to_shared(smem_ptr);
+    uint64_t d = 0;
+    d |= (uint64_t)((addr >> 4) & 0x3FFFu);   // start_address       [13:0]
+    d |= (uint64_t)1u        << 16;           // leading_byte_offset [29:16] (unused; =1 per CUTLASS)
+    d |= (uint64_t)(1024>>4) << 32;           // stride_byte_offset  [45:32] = 1024 B (SBO)
+    d |= (uint64_t)1u        << 62;           // layout_type = B128   [63:62]
+    return d;
+}
+
+// S=Q·Kᵀ / dP=dO·Vᵀ over D=128: one operand is 128B-swizzled (2 atoms, addr math),
+// the other is a no-swizzle tiled_off K-major operand (K=D=128 → SBO=2048, base +128
+// elems/k-step, exactly V3's run_gemm_n64 B path).  Mixing one swizzled + one
+// no-swizzle operand in a single wgmma is legal (each descriptor is independent).
+//   A_swz=true  : A swizzled, B no-swizzle   (S:   A=Q_sw,  B=K_fill)
+//   A_swz=false : A no-swizzle, B swizzled   (dP:  A=dO_fill,B=V_sw )
+// ATOM_ELEMS = rows*64 = 64*64 = 4096 (fixed Br=Bc=64).  8 k16 steps over D=128.
+template<bool A_swz>
+__device__ __forceinline__ void run_gemm_n64_sw(float acc[32], const bf16* swz, const bf16* nosw) {
+    fence_proxy_async_shared();       // orders the generic fill of `nosw` before the async wgmma read
+    fence_operandN<32>(acc);          // (the swizzled operand is TMA-written + mbar-ordered already)
+    wgmma_fence();
+#pragma unroll
+    for (int k = 0; k < 8; k++) {
+        uint64_t dsw = make_desc_sw128_K(swz + (k >> 2) * 4096 + (k & 3) * 16); // atom=k/4, lk=k%4
+        uint64_t dno = make_desc(nosw + 128 * k, (uint64_t)2048);              // tiled_off K=D=128
+        if (A_swz) wgmma_m64n64k16(acc, dsw, dno);
+        else       wgmma_m64n64k16(acc, dno, dsw);
+    }
+    wgmma_commit();
+    wgmma_wait0();
+    fence_operandN<32>(acc);
+}
+
+// ── V4 — Kernel 1 — dQ ──  Grid (B,Hq,S/Br), 128 threads (one warpgroup).
+//   Persistent (per Q-tile): Q swizzled, dO plain, O plain, LSE, D.
+//   Loop-variant (per K-tile, DOUBLE-BUFFERED): K plain, V swizzled.
+template<int Br, int Bc, int D>
+__global__ void __launch_bounds__(128, 1)
+gqa_backward_dQ_v4(
+    const __grid_constant__ CUtensorMap tma_Q_sw,   // Q  128B-swizzled (S=Q·Kᵀ, A)
+    const __grid_constant__ CUtensorMap tma_V_sw,   // V  128B-swizzled (dP=dO·Vᵀ, B)
+    const __grid_constant__ CUtensorMap tma_K_pl,   // K  plain  (S-B fill_copy + dQ-B fill_trans)
+    const __grid_constant__ CUtensorMap tma_dO_pl,  // dO plain  (dP-A fill_copy + D compute)
+    const __grid_constant__ CUtensorMap tma_O_pl,   // O  plain  (D compute)
+    const float * __restrict__ d_LSE, bf16 * __restrict__ d_dQ,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V4 requires Br=Bc=64, D=128");
+
+    // Persistent operands
+    __shared__ __align__(128) bf16 sQ_sw [Br * D];        // 2 swizzle atoms, contiguous
+    __shared__ __align__(128) bf16 sdO_pl[Br * D];
+    __shared__ __align__(128) bf16 sO_pl [Br * D];
+    // Loop-variant, double-buffered [stage]
+    __shared__ __align__(128) bf16 sK_pl [2][Bc * D];
+    __shared__ __align__(128) bf16 sV_sw [2][Bc * D];     // 2 swizzle atoms per stage
+    // Compute scratch / intermediates
+    __shared__ __align__(16)  float sS [Br * Bc];
+    __shared__ __align__(16)  float sdP[Br * Bc];
+    __shared__ __align__(16)  bf16  sP [Br * Bc];         // reused as sdS
+    __shared__                float sLSE[Br];
+    __shared__                float sD  [Br];
+    __shared__ __align__(128) bf16  sA_t[64 * 128];       // no-swizzle wgmma scratch
+    __shared__ __align__(128) bf16  sB_t[64 * 128];
+    __shared__ __align__(8)   uint64_t mbar_p;            // persistent-load barrier
+    __shared__ __align__(8)   uint64_t mbar[2];           // double-buffer barriers
+
+    const int tid = threadIdx.x;
+    const int b = blockIdx.x, hq = blockIdx.y, q_tile = blockIdx.z;
+    const int hkv = hq / G;
+    const int q_row0 = q_tile * Br;
+    const int nKTiles = S / Bc;
+
+    const long     qBase    = ((long)(b * Hq  + hq)  * S + q_row0) * D;
+    const long     lBase    =  (long)(b * Hq  + hq)  * S + q_row0;
+    const uint32_t qFlatRow = (uint32_t)((b * Hq  + hq)  * S + q_row0);
+    const uint32_t kvFlatBase = (uint32_t)((b * Hkv + hkv) * S);
+    const uint32_t bytesTile  = (uint32_t)(Br * D * sizeof(bf16));   // 16384 (one full tile)
+    const uint32_t bytesAtom  = (uint32_t)(Bc * 64 * sizeof(bf16));  // 8192  (one swizzle atom)
+
+    if (tid == 0) { mbar_init_v4(&mbar_p, 1); mbar_init_v4(&mbar[0], 1); mbar_init_v4(&mbar[1], 1); }
+    __syncthreads();
+
+    // ── Persistent loads: Q swizzled (2 atoms), dO plain, O plain ──────────────
+    uint32_t par_p = 0;
+    if (tid == 0) {
+        mbar_expect_tx_v4(&mbar_p, bytesAtom * 2 + bytesTile * 2);
+        tma_load_2d_v4(&tma_Q_sw,  sQ_sw,           &mbar_p, 0,  qFlatRow);  // atom 0 (cols 0..63)
+        tma_load_2d_v4(&tma_Q_sw,  sQ_sw + 64 * 64, &mbar_p, 64, qFlatRow);  // atom 1 (cols 64..127)
+        tma_load_2d_v4(&tma_dO_pl, sdO_pl,          &mbar_p, 0,  qFlatRow);
+        tma_load_2d_v4(&tma_O_pl,  sO_pl,           &mbar_p, 0,  qFlatRow);
+    }
+    if (tid < Br) sLSE[tid] = d_LSE[lBase + tid];
+    mbar_wait_v4(&mbar_p, par_p);
+    __syncthreads();
+
+    // D[r] = rowsum(dO · O) (both plain)
+    if (tid < Br) {
+        float acc = 0.f;
+        for (int j = 0; j < D; j++)
+            acc += __bfloat162float(sdO_pl[tid * D + j]) * __bfloat162float(sO_pl[tid * D + j]);
+        sD[tid] = acc;
+    }
+    __syncthreads();
+
+    // Number of non-masked K-tiles (causal)
+    const int kc_max = min(nKTiles, (q_row0 + Br + Bc - 1) / Bc);
+
+    // Prologue: TMA K-tile 0 (K plain + V swizzled) → stage 0
+    uint32_t par[2] = {0, 0};
+    if (kc_max > 0 && tid == 0) {
+        mbar_expect_tx_v4(&mbar[0], bytesTile + bytesAtom * 2);
+        tma_load_2d_v4(&tma_K_pl, sK_pl[0],           &mbar[0], 0,  kvFlatBase);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[0],           &mbar[0], 0,  kvFlatBase);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[0] + 64 * 64, &mbar[0], 64, kvFlatBase);
+    }
+
+    float dq[64]; zeroN<64>(dq);   // PERSISTENT dQ[Br×D] wgmma accumulator (m64n128, 64 regs)
+
+    for (int kc = 0; kc < kc_max; kc++) {
+        const int s = kc & 1;
+        // Prefetch NEXT K-tile into the other stage (overlaps this tile's compute)
+        if (kc + 1 < kc_max && tid == 0) {
+            const uint32_t nr = kvFlatBase + (uint32_t)((kc + 1) * Bc);
+            mbar_expect_tx_v4(&mbar[s ^ 1], bytesTile + bytesAtom * 2);
+            tma_load_2d_v4(&tma_K_pl, sK_pl[s ^ 1],           &mbar[s ^ 1], 0,  nr);
+            tma_load_2d_v4(&tma_V_sw, sV_sw[s ^ 1],           &mbar[s ^ 1], 0,  nr);
+            tma_load_2d_v4(&tma_V_sw, sV_sw[s ^ 1] + 64 * 64, &mbar[s ^ 1], 64, nr);
+        }
+        mbar_wait_v4(&mbar[s], par[s]); par[s] ^= 1;
+        __syncthreads();
+
+        // S = Q·Kᵀ·scale  (A=Q swizzled, B=K no-swizzle via fill_copy)
+        fill_copy<Bc, D>(sB_t, sK_pl[s], tid);
+        __syncthreads();
+        { float acc[32]; zeroN<32>(acc); run_gemm_n64_sw<true>(acc, sQ_sw, sB_t); store_acc_smem<Bc>(acc, sS, tid, scale); }
+        __syncthreads();
+
+        // P = exp(S - LSE), causal mask → sP
+        for (int i = tid; i < Br * Bc; i += 128) {
+            int r = i / Bc, c = i % Bc;
+            sP[i] = (kc * Bc + c > q_row0 + r) ? __float2bfloat16(0.f)
+                                               : __float2bfloat16(expf(sS[i] - sLSE[r]));
+        }
+        __syncthreads();
+
+        // dP = dO·Vᵀ  (A=dO no-swizzle via fill_copy, B=V swizzled)
+        fill_copy<Br, D>(sA_t, sdO_pl, tid);
+        __syncthreads();
+        { float acc[32]; zeroN<32>(acc); run_gemm_n64_sw<false>(acc, sV_sw[s], sA_t); store_acc_smem<Bc>(acc, sdP, tid, 1.0f); }
+        __syncthreads();
+
+        // dS = P ⊙ (dP - D) → sP
+        for (int i = tid; i < Br * Bc; i += 128) {
+            int r = i / Bc;
+            sP[i] = __float2bfloat16(__bfloat162float(sP[i]) * (sdP[i] - sD[r]));
+        }
+        __syncthreads();
+
+        // dQ += dS·K  (A=dS no-swizzle fill_copy, B=Kᵀ no-swizzle fill_trans of plain K)
+        fill_copy<Br, Bc>(sA_t, sP, tid); fill_trans<D, Bc>(sB_t, sK_pl[s], tid);
+        __syncthreads();
+        run_gemm_n128<Bc / 16>(dq, sA_t, sB_t, (uint64_t)(Bc >> 3) * 128);   // SBO=1024
+        __syncthreads();
+    }
+
+    fence_operandN<64>(dq);
+    store_acc_global<D>(dq, d_dQ, qBase, D, tid, scale);
+}
+
+// ── V4 — Kernel 2 — dK, dV ──  Grid (B,Hkv,S/Bc), 128 threads (one warpgroup).
+//   Persistent (per K-tile): K swizzled, V swizzled.
+//   Loop-variant (per Q-tile over G×qc, DOUBLE-BUFFERED): Q plain, dO plain, O plain.
+template<int Br, int Bc, int D>
+__global__ void __launch_bounds__(128, 1)
+gqa_backward_dKdV_v4(
+    const __grid_constant__ CUtensorMap tma_K_sw,   // K  128B-swizzled (S=Q·Kᵀ, B)
+    const __grid_constant__ CUtensorMap tma_V_sw,   // V  128B-swizzled (dP=dO·Vᵀ, B)
+    const __grid_constant__ CUtensorMap tma_Q_pl,   // Q  plain (S-A fill_copy + dK-B fill_trans)
+    const __grid_constant__ CUtensorMap tma_dO_pl,  // dO plain (dP-A fill_copy + dV-B fill_trans + D)
+    const __grid_constant__ CUtensorMap tma_O_pl,   // O  plain (D compute)
+    const float * __restrict__ d_LSE, bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V4 requires Br=Bc=64, D=128");
+
+    // Persistent operands (K-tile fixed for the block)
+    __shared__ __align__(128) bf16 sK_sw[Bc * D];
+    __shared__ __align__(128) bf16 sV_sw[Bc * D];
+    // Loop-variant, double-buffered [stage]
+    __shared__ __align__(128) bf16 sQ_pl [2][Br * D];
+    __shared__ __align__(128) bf16 sdO_pl[2][Br * D];
+    __shared__ __align__(128) bf16 sO_pl [2][Br * D];
+    // Compute scratch / intermediates
+    __shared__ __align__(16)  float sS [Br * Bc];
+    __shared__ __align__(16)  float sdP[Br * Bc];
+    __shared__ __align__(16)  bf16  sP [Br * Bc];         // reused as sdS
+    __shared__                float sLSE[Br];
+    __shared__                float sD  [Br];
+    __shared__ __align__(128) bf16  sA_t[64 * 128];
+    __shared__ __align__(128) bf16  sB_t[64 * 128];
+    __shared__ __align__(8)   uint64_t mbar_p;
+    __shared__ __align__(8)   uint64_t mbar[2];
+
+    const int tid = threadIdx.x;
+    const int b = blockIdx.x, hkv = blockIdx.y, k_tile = blockIdx.z;
+    const int k_row0 = k_tile * Bc;
+    const int nQTiles = S / Br;
+
+    const long     kvBase     = ((long)(b * Hkv + hkv) * S + k_row0) * D;
+    const uint32_t kvFlatRow  = (uint32_t)((b * Hkv + hkv) * S + k_row0);
+    const uint32_t bytesTile  = (uint32_t)(Br * D * sizeof(bf16));   // 16384
+    const uint32_t bytesAtom  = (uint32_t)(Bc * 64 * sizeof(bf16));  // 8192
+
+    if (tid == 0) { mbar_init_v4(&mbar_p, 1); mbar_init_v4(&mbar[0], 1); mbar_init_v4(&mbar[1], 1); }
+    __syncthreads();
+
+    // ── Persistent loads: K swizzled (2 atoms), V swizzled (2 atoms) ───────────
+    uint32_t par_p = 0;
+    if (tid == 0) {
+        mbar_expect_tx_v4(&mbar_p, bytesAtom * 4);
+        tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_p, 0,  kvFlatRow);
+        tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_p, 64, kvFlatRow);
+        tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_p, 0,  kvFlatRow);
+        tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_p, 64, kvFlatRow);
+    }
+    mbar_wait_v4(&mbar_p, par_p);
+    __syncthreads();
+
+    float dv[64]; zeroN<64>(dv);   // PERSISTENT dV[Bc×D] accumulator (64 regs)
+    float dk[64]; zeroN<64>(dk);   // PERSISTENT dK[Bc×D] accumulator (64 regs)
+
+    // Flatten the G × qc iteration space so the double-buffer prefetch-ahead is simple.
+    const int qc0    = k_row0 / Br;
+    const int perG   = nQTiles - qc0;   // Q-tiles per group
+    const int nIter  = G * perG;
+
+    auto qFlatRowOf = [&](int it) -> uint32_t {
+        const int g  = it / perG;
+        const int qc = qc0 + (it % perG);
+        const int hq = hkv * G + g;
+        return (uint32_t)((b * Hq + hq) * S + qc * Br);
+    };
+    auto lBaseOf = [&](int it) -> long {
+        const int g  = it / perG;
+        const int qc = qc0 + (it % perG);
+        const int hq = hkv * G + g;
+        return (long)(b * Hq + hq) * S + (long)qc * Br;
+    };
+
+    // Prologue: TMA iter 0 (Q,dO,O plain) → stage 0
+    uint32_t par[2] = {0, 0};
+    if (nIter > 0 && tid == 0) {
+        const uint32_t r0 = qFlatRowOf(0);
+        mbar_expect_tx_v4(&mbar[0], bytesTile * 3);
+        tma_load_2d_v4(&tma_Q_pl,  sQ_pl [0], &mbar[0], 0, r0);
+        tma_load_2d_v4(&tma_dO_pl, sdO_pl[0], &mbar[0], 0, r0);
+        tma_load_2d_v4(&tma_O_pl,  sO_pl [0], &mbar[0], 0, r0);
+    }
+
+    for (int it = 0; it < nIter; it++) {
+        const int s = it & 1;
+        const int q_row0 = (qc0 + (it % perG)) * Br;
+        // Prefetch NEXT iter → other stage
+        if (it + 1 < nIter && tid == 0) {
+            const uint32_t nr = qFlatRowOf(it + 1);
+            mbar_expect_tx_v4(&mbar[s ^ 1], bytesTile * 3);
+            tma_load_2d_v4(&tma_Q_pl,  sQ_pl [s ^ 1], &mbar[s ^ 1], 0, nr);
+            tma_load_2d_v4(&tma_dO_pl, sdO_pl[s ^ 1], &mbar[s ^ 1], 0, nr);
+            tma_load_2d_v4(&tma_O_pl,  sO_pl [s ^ 1], &mbar[s ^ 1], 0, nr);
+        }
+        mbar_wait_v4(&mbar[s], par[s]); par[s] ^= 1;
+        if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(it) + tid];
+        __syncthreads();
+
+        // D[r] = rowsum(dO · O)
+        if (tid < Br) {
+            float acc = 0.f;
+            for (int j = 0; j < D; j++)
+                acc += __bfloat162float(sdO_pl[s][tid * D + j]) * __bfloat162float(sO_pl[s][tid * D + j]);
+            sD[tid] = acc;
+        }
+        __syncthreads();
+
+        // S = Q·Kᵀ·scale  (A=Q no-swizzle fill_copy, B=K swizzled)
+        fill_copy<Br, D>(sA_t, sQ_pl[s], tid);
+        __syncthreads();
+        { float acc[32]; zeroN<32>(acc); run_gemm_n64_sw<false>(acc, sK_sw, sA_t); store_acc_smem<Bc>(acc, sS, tid, scale); }
+        __syncthreads();
+
+        // P = exp(S - LSE), causal mask → sP
+        for (int i = tid; i < Br * Bc; i += 128) {
+            int r = i / Bc, c = i % Bc;
+            sP[i] = (k_row0 + c > q_row0 + r) ? __float2bfloat16(0.f)
+                                              : __float2bfloat16(expf(sS[i] - sLSE[r]));
+        }
+        __syncthreads();
+
+        // dV += Pᵀ·dO  (A=Pᵀ fill_trans_A intermediate, B=dOᵀ fill_trans of plain dO)
+        fill_trans_A<Bc, Br>(sA_t, sP, tid); fill_trans<D, Br>(sB_t, sdO_pl[s], tid);
+        __syncthreads();
+        run_gemm_n128_tA<Br / 16>(dv, sA_t, sB_t, (uint64_t)(Br >> 3) * 128);   // SBO=1024
+        __syncthreads();
+
+        // dP = dO·Vᵀ  (A=dO no-swizzle fill_copy, B=V swizzled)
+        fill_copy<Br, D>(sA_t, sdO_pl[s], tid);
+        __syncthreads();
+        { float acc[32]; zeroN<32>(acc); run_gemm_n64_sw<false>(acc, sV_sw, sA_t); store_acc_smem<Bc>(acc, sdP, tid, 1.0f); }
+        __syncthreads();
+
+        // dS = P ⊙ (dP - D) → sP
+        for (int i = tid; i < Br * Bc; i += 128) {
+            int r = i / Bc;
+            sP[i] = __float2bfloat16(__bfloat162float(sP[i]) * (sdP[i] - sD[r]));
+        }
+        __syncthreads();
+
+        // dK += dSᵀ·Q  (A=dSᵀ fill_trans_A intermediate, B=Qᵀ fill_trans of plain Q)
+        fill_trans_A<Bc, Br>(sA_t, sP, tid); fill_trans<D, Br>(sB_t, sQ_pl[s], tid);
+        __syncthreads();
+        run_gemm_n128_tA<Br / 16>(dk, sA_t, sB_t, (uint64_t)(Br >> 3) * 128);
+        __syncthreads();
+    }
+
+    fence_operandN<64>(dv); fence_operandN<64>(dk);
+    store_acc_global<D>(dv, d_dV, kvBase, D, tid, 1.0f);
+    store_acc_global<D>(dk, d_dK, kvBase, D, tid, scale);
+}
+
+// ── V4 launcher — builds TMA descriptors (SWIZZLE_128B for MMA operands, NONE for
+// plain), raises the dynamic-smem cap defensively, launches both kernels. ────────
+template<int Br, int Bc, int D>
+void launch_gqa_backward_v4(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V4 requires Br=Bc=64, D=128");
+
+    // 128B-swizzled descriptor: box is ONE 64-wide (128 B) atom × tile_rows; the
+    // kernel issues 2 loads (col origins 0 and 64) to cover D=128 = 2 atoms.
+    auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};              // {128, rows}, dim0 contiguous
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};           // 256 B row stride
+        uint32_t box[2]     = {64u, tile_rows};                       // one 128-B swizzle atom wide
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(
+            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) failed: %s\n", e); exit(1); }
+        return desc;
+    };
+    // Plain (row-major) descriptor: full D-wide box, no swizzle.
+    auto make_tma_plain = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
+        uint32_t box[2]     = {(uint32_t)D, tile_rows};
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(
+            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(plain) failed: %s\n", e); exit(1); }
+        return desc;
+    };
+
+    const uint64_t Rq  = (uint64_t)B * Hq  * S;
+    const uint64_t Rkv = (uint64_t)B * Hkv * S;
+
+    CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
+    CUtensorMap tma_Q_pl  = make_tma_plain(d_Q,  Rq,  Br);
+    CUtensorMap tma_K_sw  = make_tma_sw128(d_K,  Rkv, Bc);
+    CUtensorMap tma_K_pl  = make_tma_plain(d_K,  Rkv, Bc);
+    CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
+    CUtensorMap tma_dO_pl = make_tma_plain(d_dO, Rq,  Br);
+    CUtensorMap tma_O_pl  = make_tma_plain(d_O,  Rq,  Br);
+
+    // NOTE on smem: V4 uses only STATIC __shared__ (dQ 188,952 B; dKdV 205,336 B),
+    // both < the 227 KB H200 limit. This mirrors V3's large-static path (156 KB),
+    // which runs on H200 with no opt-in call — static shared is reserved at launch
+    // automatically. cudaFuncAttributeMaxDynamicSharedMemorySize governs only the
+    // *dynamic* (extern __shared__) portion, which V4 does not use, so no attribute
+    // call is needed here. FALLBACK if a driver ever rejects the large static block:
+    // move the buffers to one extern __shared__ arena + manual offsets and call
+    // cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes).
+
+    constexpr dim3 BLOCK(128);
+    dim3 GRID1(B, Hq,  S / Br);
+    dim3 GRID2(B, Hkv, S / Bc);
+    gqa_backward_dQ_v4  <Br,Bc,D><<<GRID1, BLOCK>>>(
+        tma_Q_sw, tma_V_sw, tma_K_pl, tma_dO_pl, tma_O_pl, d_LSE, d_dQ,
+        B, Hq, Hkv, G, S, scale);
+    gqa_backward_dKdV_v4<Br,Bc,D><<<GRID2, BLOCK>>>(
+        tma_K_sw, tma_V_sw, tma_Q_pl, tma_dO_pl, tma_O_pl, d_LSE, d_dK, d_dV,
+        B, Hq, Hkv, G, S, scale);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1363,6 +1846,10 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V3  Br=64, Bc=64  wgmma ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
+    launch_gqa_backward_v4<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── V4  Br=64, Bc=64  TMA+wgmma (128B swizzle, double-buffered) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
     // iterations with the L2 flushed between reps (mirrors triton.testing.do_bench).
@@ -1396,6 +1883,13 @@ int main(){
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats("GQA bwd V3  Br=64, Bc=64  wgmma  (Hopper SM_90)", s);
+    }
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v4<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V4  Br=64, Bc=64  TMA+wgmma  (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
