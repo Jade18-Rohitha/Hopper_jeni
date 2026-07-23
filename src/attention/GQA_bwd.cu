@@ -2041,12 +2041,18 @@ void launch_gqa_backward_v5(
     CUtensorMap tma_dO_pl = make_tma_plain(d_dO, Rq,  Br);
     CUtensorMap tma_O_pl  = make_tma_plain(d_O,  Rq,  Br);
 
-    // fp32 dQ accumulator scratch — this launcher OWNS it (alloc/zero/convert/free).
-    // Each query row receives a partial from every KV-tile it attends; those partials
-    // race across blocks and must sum in fp32 before a single bf16 round.
+    // fp32 dQ accumulator scratch. Each query row receives a partial from every KV-tile
+    // it attends; those partials race across blocks and must sum in fp32 before a single
+    // bf16 round. CACHED across calls (static) so the benchmark isn't dominated by per-call
+    // cudaMalloc/cudaFree; still zeroed every call since dQ atomic-accumulates.
     const long dqN = (long)B * Hq * S * D;
-    float* d_dq_accum = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
+    static float* d_dq_accum = nullptr;
+    static long   dq_cap     = 0;
+    if (dqN > dq_cap) {
+        if (d_dq_accum) CUDA_CHECK(cudaFree(d_dq_accum));
+        CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
+        dq_cap = dqN;
+    }
     CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
 
     constexpr dim3 BLOCK(128);
@@ -2058,8 +2064,7 @@ void launch_gqa_backward_v5(
     const int convBlock = 256;
     const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
-
-    CUDA_CHECK(cudaFree(d_dq_accum));
+    // d_dq_accum is cached (static) — intentionally not freed; reclaimed at process exit.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
