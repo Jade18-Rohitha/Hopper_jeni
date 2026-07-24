@@ -12,6 +12,9 @@ if cuDNN's kernel changes (new cuDNN/driver) or the target shape moves off D=128
 - **Wall-clock (do_bench, boost):** SDPA bwd **2.96 ms / 1114 TFLOP/s** (4×fwd FLOP convention); fwd 0.71 ms / 1168 TFLOP/s
 - **Sources:** `reports/sdpa_bwd_d128.{ncu-rep,txt}` (`ncu --set full`, 3 launches, cross-launch agreement <0.1%); `reports/sdpa_nsys.nsys-rep` (kernel breakdown). ncu locks SM to base 1.36 GHz — its **2.44 ms** duration is a base-clock figure (~1.68 ms at boost); use the do_bench 2.96 ms for wall-clock.
 
+> **Cross-box reconfirmation (2026-07-24, box `plain-game-shines-fin-02`, `reports/sdpa_nsys1.nsys-rep`).**
+> A **third** H200 instance dispatched the **same** backend — `cudnn_generated_fort_native_sdpa_sm90_flash_bprop_wgmma_f16_knob_26_64x64x128_1x4x1_cga1x1x1` (main kernel **1.93 ms/call**) — so this whole analysis holds unchanged. This box benchmarks **SDPA bwd (eager) 2.78 ms / 1187 TFLOP/s** (compiled 2.93 ms; fwd 0.73 ms / 1128) — a hair faster than the 2.96 ms above; treat **2.78–2.96 ms** as the box-dependent target band. Confirmed cuDNN's backward is a **multi-kernel pipeline** (per-call): `flash_bprop_wgmma` main 1.93 ms + `compute_dot_do_o_specialized` (dO·O rowsum prep) 0.10 ms + `convert_dq_to_16bits` (dQ fp32→bf16) 0.08 ms + `fmha_reduce_head` ~0.03 ms ≈ 2.14 ms GPU + launch gaps → 2.78 ms wall. This validates our fused V5 structure: cuDNN **also** accumulates dQ then converts, and computes the dO·O rowsum in a separate pass. (Two other H200 boxes seen prior: `agile-light-falls` → this same cuDNN family; `quiet-life` → FlashAttention-2 `flash_bwd_dq_dk_dv_loop_seqk_parallel`.)
+
 ---
 
 ## 0. Competitor Profile — approach, strengths, weaknesses
