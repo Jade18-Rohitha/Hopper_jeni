@@ -2845,53 +2845,48 @@ void launch_gqa_backward_v7(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// V8 — kill the residual 11.3-way shared-LOAD conflict on the in-kernel A operand.
+// V8 STATUS — the residual 11.3-way LOAD conflict is the wgmma read of the in-kernel
+// COMPUTED intermediate `sA_t` (Pᵀ/dSᵀ for dV/dK, dS for dQ), which V7 stages NO-SWIZZLE.
+// The intended V8 fix was to store it 128B-SWIZZLED and read it Major::K.  That fix is
+// currently BLOCKED on a wgmma correctness issue; V8 SHIPS the proven V7 GEMMs + a safe
+// D-rowsum conflict fix, and carries the swizzle machinery + a self-test for the next step.
 //
-// V7 swizzled every TMA-LOADED operand (K/Q/dO/V) and read the transposed GEMMs via
-// wgmma Major::MN, so those B reads are conflict-free.  What SURVIVED is the wgmma read
-// of the in-kernel COMPUTED intermediate `sA_t` (Pᵀ/dSᵀ for dV/dK, dS for dQ).  In V7
-// that buffer is staged NO-SWIZZLE (fill_trans_A_v6/fill_copy_v6 → padded core-matrix
-// layout) and read via `make_desc` (swizzle-mode 0).  A no-swizzle wgmma operand read is
-// inherently bank-conflicting — the +PAD_V6 row padding only de-conflicts the STORE side
-// and the fixed-column readback; the wgmma core-matrix LOAD still collides (ncu: 11.3-way,
-// 91% of wavefronts).  Blackwell hit the SAME residual (GQA_sm103_bwd.cu dKdV_v10) but
-// masked it there because tcgen05.mma's canonical-layout A read has a different smem
-// footprint; on wgmma the no-swizzle A read is the dominant surviving conflict.
+// WHAT SHIPS (correct, bit-identical to V7 at 2e-2):
+//   • A-operand GEMMs: PROVEN V7 no-swizzle path (fill_trans_A_v6 / fill_copy_v6 + make_desc,
+//     run_gemm_dVdK / run_gemm_dQ_half).  The 11.3-way A-read conflict is NOT yet fixed.
+//   • D[r]=rowsum(dO·O): Blackwell dKdV_v10 warp-per-row coalesced + __shfl_down reduction,
+//     replacing V7's fixed-j / stride-D plain read (a 32-way same-bank aliasing).  This is
+//     the one real conflict reduction that shipped this version (safe, plain buffers).
 //
-// FIX (correct-by-construction, ZERO new descriptor risk): store `sA_t` in the 128B-
-// SWIZZLED layout — the SAME CU_TENSOR_MAP_SWIZZLE_128B byte permutation the TMA operands
-// use — and read all three A operands as **Major::K, single-atom, trans-a=0**, byte-for-
-// byte identical to how V7 already reads sQ_sw in run_gemm_n64_sw2 (proven bit-identical).
-//   • A properly-B128-swizzled operand read by a B128 descriptor is bank-conflict-FREE by
-//     construction (that IS the purpose of swizzle) → the 11.3-way LOAD collapses.
-//   • trans-a stays 0 (Major::K, a_major=0) for ALL three A uses — we do NOT touch the
-//     unvalidated a_major / Major::MN-for-A path.  The transpose that dV/dK need (A=Pᵀ,
-//     dSᵀ) is baked into the software scatter (fill_swz_T), exactly as fill_trans_A_v6
-//     already did — only the destination layout changes (swizzled vs no-swizzle core-mx).
-//   • Contraction K = 64 (Br for dV/dK, Bc for dQ) = exactly ONE 128B atom (64 bf16), so
-//     the A read is the single-atom recipe: make_desc_sw128_K(sA_sw + k*16), k=0..3.  The
-//     B operands (dO/Q/K swizzled Major::MN) are UNCHANGED from V7 (proven).
-//   • dV/dK switch from wgmma_m64n64k16_tAtB (trans 1,1) to _tB (trans 0,1); dQ keeps _tB
-//     but its A descriptor moves make_desc → make_desc_sw128_K.  Math bit-identical.
+// WHY THE SWIZZLED-A FIX IS BLOCKED (root cause of the first V8 attempt failing precision on
+// all three gradients — ground-truthed, NOT re-derived from spec):
+//   The two suspects flagged (the sw128_idx byte formula, and the make_desc_sw128_K k*16
+//   single-atom advance) are BOTH CONFIRMED CORRECT:
+//     – sw128_idx byte-matches CU_TENSOR_MAP_SWIZZLE_128B EXACTLY: verified on real HW by a
+//       standalone sm_120 TMA probe (loads a decodable ramp swizzled, dumps the physical
+//       layout) — 0/2048 mismatches.  (128B swizzle byte layout is architecture-independent,
+//       so sm_120 is valid ground truth for the sm_90a path.)
+//     – the k*16-elem (=32 B) single-atom advance == the B300-validated swizzle_gemm_harness
+//       recipe (k2*32 B) AND V7's own run_gemm_n64_sw2 atom-0 steps.
+//   make_desc_sw128_K's swizzled Major::K read is ALSO true-order (proven ASYMMETRICALLY in
+//   V4/V5/V6 run_gemm_n64_sw, swizzled-K A paired with a NO-SWIZZLE-K B, all passing).
+//   The ONE thing V8 introduced that appears NOWHERE in the proven code is the wgmma operand
+//   COMBINATION: a 128B-SWIZZLED Major::K A operand together with a Major::MN B operand
+//   (trans-b=1).  Every proven swizzled-Major::K read pairs with a K-major B (trans-b=0,
+//   i.e. A@Bᵀ); every proven trans-b=1 pairs with a NO-SWIZZLE A.  V8 was the first to put
+//   a swizzled-K A next to a trans-b=1 B — and that is the remaining unvalidated ingredient.
+//   (Consistent with the failure being finite-wrong values, not NaN/garbage.)
 //
-// THE swizzle formula (the ONE new derived quantity — the single H200-check risk):
-//   sw128_idx(m,k) = m*64 + (((k>>3) ^ (m&7)) << 3) + (k&7)          for one [64][64] atom
-// Derivation: SWIZZLE_128B == CUTLASS Swizzle<3,4,3>: on the byte offset it XORs the
-// 16-byte-chunk index (bits[6:4]) with the 8-row-group index (bits[9:7]).  For a bf16 tile
-// whose row is exactly 128 B = 64 bf16 (one atom): logical row m sits at m*64 bf16 (m*128 B,
-// so bits[9:7]=m&7), the chunk = k>>3 (8 bf16 = 16 B), XOR'd by m&7; k&7 is the intra-chunk
-// bf16.  This is EXACTLY the byte layout TMA writes into sK_sw/sQ_sw — which make_desc_sw128_K
-// already reads correctly — so writing sA_sw this way and reading it with the SAME descriptor
-// is correct by transitivity.  If the H200 check() fails on a TRANSPOSED gradient only,
-// suspect this XOR or the k*16 advance (sweep first); S/dQ use the same read so a broken
-// formula breaks everything, not one gradient.
+// NEXT STEP (needs the H200 — no wgmma on the local sm_120 box):  compile -DV8_DEBUG.  The
+// self-test in the loop recomputes ONE dQ half both ways on the SAME dS (proven no-swizzle-A
+// vs swizzled-A+trans-b=1) and prints max|Δ|.  ~0 ⇒ the combo is fine and the earlier failure
+// was elsewhere (re-enable the swizzled GEMMs); large ⇒ the swizzled-A + trans-b=1 combo is
+// confirmed the defect → the A-conflict fix needs a different route (e.g. a HW-validated
+// swizzled-Major::MN A read (trans-a=1), or K-major B copies), not this combination.
 //
-// Also ports Blackwell dKdV_v10's warp-per-row SHUFFLE reduction for D[r]=rowsum(dO·O),
-// replacing V7's fixed-j / stride-D plain read (a 32-way same-bank aliasing) — cheap.
-//
-// Buffer delta vs V7:  sA_t[SMEM_TILED_V6]=8320 bf16 → sA_sw[64*64]=4096 bf16 (no padding
-// needed — swizzle handles conflicts) → −8448 B smem.  Still 1 block/SM (occupancy NOT the
-// target this version); everything else identical to V7.
+// The swizzle scatter (sw128_idx / fill_swz_C / fill_swz_T) and GEMMs (run_gemm_dVdK_sw /
+// run_gemm_dQ_half_sw) are retained below — the scatter is HW-verified correct; only the
+// read-combination is open.
 // ═════════════════════════════════════════════════════════════════════════════
 
 // 128B-swizzle offset within ONE [64 rows][64 bf16] atom (== CU_TENSOR_MAP_SWIZZLE_128B).
@@ -2948,9 +2943,11 @@ __device__ __forceinline__ void run_gemm_dQ_half_sw(float acc[32], const bf16* s
     fence_operandN<32>(acc);
 }
 
-// ── V8 — fused dQ + dK + dV; residual A-operand conflict eliminated via swizzled sA_sw.
-// Identical to V7 except: (1) sA_t → swizzled sA_sw (fill_swz_T/C + run_gemm_*_sw),
-// (2) D[r] rowsum via warp-per-row shuffle reduction (Blackwell dKdV_v10).
+// ── V8 — fused dQ + dK + dV.  SHIPS: the PROVEN V7 no-swizzle A-operand GEMMs (bit-
+// identical to V7) PLUS the Blackwell dKdV_v10 warp-per-row shuffle reduction for
+// D[r]=rowsum(dO·O), which removes V7's 32-way same-bank aliasing on the plain sdO/sO
+// reads (the D-rowsum residual).  The 128B-SWIZZLED sA_sw conflict fix for the A-operand
+// read is BLOCKED — see the "V8 STATUS" block above and -DV8_DEBUG self-test.
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(128, 1)
 gqa_backward_v8_kv(
@@ -2980,7 +2977,16 @@ gqa_backward_v8_kv(
     __shared__ __align__(16)  bf16  sP [Br * SP_STRIDE_V6];  // reused as sdS (padded, conflict-free)
     __shared__                float sLSE[Br];
     __shared__                float sD  [Br];
-    __shared__ __align__(128) bf16  sA_sw[64 * 64];          // in-kernel dS/Pᵀ/dSᵀ, 128B-SWIZZLED (ONE atom)
+    // A-operand staging for the in-kernel dS/Pᵀ/dSᵀ intermediates.  V8 ships the
+    // PROVEN no-swizzle padded layout (bit-identical to V7) — see the "V8 STATUS"
+    // block above for why the 128B-swizzled sA_sw variant is currently BLOCKED
+    // (correct scatter, but the swizzled-Major::K-A + wgmma trans-b=1 READ combo is
+    // unvalidated on Hopper and fails precision).  -DV8_DEBUG compiles an in-kernel
+    // self-test that isolates that combo against the proven path in one H200 run.
+    __shared__ __align__(128) bf16  sA_t[SMEM_TILED_V6];     // no-swizzle padded (V7 layout)
+#ifdef V8_DEBUG
+    __shared__ __align__(128) bf16  sA_sw[64 * 64];          // swizzled scratch (self-test only)
+#endif
     __shared__ __align__(8)   uint64_t mbar_p;
     __shared__ __align__(8)   uint64_t mbar[2];
 
@@ -3087,10 +3093,11 @@ gqa_backward_v8_kv(
         }
         __syncthreads();
 
-        // dV += Pᵀ·dO  (A=Pᵀ SWIZZLED Major::K via fill_swz_T → sA_sw, B=dO swizzled Major::MN).
-        fill_swz_T(sA_sw, sP, SP_STRIDE_V6, tid);
+        // dV += Pᵀ·dO  (A=Pᵀ no-swizzle Major::MN via fill_trans_A_v6 → sA_t, B=dO
+        // swizzled Major::MN — PROVEN V7 path).
+        fill_trans_A_v6<Bc, Br>(sA_t, sP, SP_STRIDE_V6, tid);
         __syncthreads();
-        run_gemm_dVdK_sw(dv, sA_sw, sdO_sw[s]);
+        run_gemm_dVdK(dv, sA_t, sdO_sw[s], sbo_pad_v6(Br));
         __syncthreads();
 
         // dP = dO·Vᵀ  (A=dO swizzled Major::K, B=V swizzled Major::K — UNCHANGED from V7).
@@ -3105,23 +3112,52 @@ gqa_backward_v8_kv(
         }
         __syncthreads();
 
-        // dK += dSᵀ·Q  (A=dSᵀ SWIZZLED Major::K via fill_swz_T → sA_sw, B=Q swizzled Major::MN).
-        fill_swz_T(sA_sw, sP, SP_STRIDE_V6, tid);
+        // dK += dSᵀ·Q  (A=dSᵀ no-swizzle Major::MN via fill_trans_A_v6 → sA_t, B=Q
+        // swizzled Major::MN — PROVEN V7 path).
+        fill_trans_A_v6<Bc, Br>(sA_t, sP, SP_STRIDE_V6, tid);
         __syncthreads();
-        run_gemm_dVdK_sw(dk, sA_sw, sQ_sw[s]);
+        run_gemm_dVdK(dk, sA_t, sQ_sw[s], sbo_pad_v6(Br));
         __syncthreads();
 
-        // dQ_tile = dS·K  (TRANSIENT; A=dS SWIZZLED Major::K via fill_swz_C → sA_sw, B=K swizzled
-        // Major::MN).  Two N=64 halves (single-atom MN read each) → fp32 atomic flush, as in V7.
-        fill_swz_C(sA_sw, sP, SP_STRIDE_V6, tid);
+        // dQ_tile = dS·K  (TRANSIENT; A=dS no-swizzle Major::K via fill_copy_v6 → sA_t,
+        // B=K swizzled Major::MN — PROVEN V7 path).  Two N=64 halves → fp32 atomic flush.
+        fill_copy_v6<Br, Bc>(sA_t, sP, SP_STRIDE_V6, tid);
         __syncthreads();
         { float acc[32]; zeroN<32>(acc);
-          run_gemm_dQ_half_sw(acc, sA_sw, sK_sw);          // N cols [0,64),  K atom 0
+          run_gemm_dQ_half(acc, sA_t, sK_sw,        sbo_pad_v6(Bc));   // N cols [0,64),  K atom 0
           atomic_acc_global<64>(acc, d_dq_accum, lBaseOf(it) * D, D, 0,  tid, scale); }
         { float acc[32]; zeroN<32>(acc);
-          run_gemm_dQ_half_sw(acc, sA_sw, sK_sw + 4096);   // N cols [64,128), K atom 1
+          run_gemm_dQ_half(acc, sA_t, sK_sw + 4096, sbo_pad_v6(Bc));   // N cols [64,128), K atom 1
           atomic_acc_global<64>(acc, d_dq_accum, lBaseOf(it) * D, D, 64, tid, scale); }
         __syncthreads();
+
+#ifdef V8_DEBUG
+        // ── SELF-TEST (block 0, first iter): does the 128B-SWIZZLED-A + wgmma trans-b=1
+        // READ combo reproduce the PROVEN no-swizzle-A dQ half?  sA_t currently holds dS
+        // (fill_copy_v6, K-major).  Recompute half-0 both ways and report max |Δ|.  This
+        // isolates the ONE unproven ingredient (scatter formula + single-atom advance are
+        // already HW-confirmed via the local sm_120 TMA probe + B300 harness).
+        if (b == 0 && hkv == 0 && k_tile == 0 && it == 0) {
+            if (tid == 0) *(int*)&sS[0] = 0;                         // reuse sS[0] as int max-scratch
+            __syncthreads();
+            float acc_ref[32]; zeroN<32>(acc_ref);
+            run_gemm_dQ_half(acc_ref, sA_t, sK_sw, sbo_pad_v6(Bc));   // PROVEN no-swizzle A
+            __syncthreads();
+            fill_swz_C(sA_sw, sP, SP_STRIDE_V6, tid);                // same dS, swizzled layout
+            __syncthreads();
+            float acc_sw[32]; zeroN<32>(acc_sw);
+            run_gemm_dQ_half_sw(acc_sw, sA_sw, sK_sw);               // swizzled-A + trans-b=1
+            float md = 0.f;                                           // md >= 0 → int-reinterpret is monotone
+            for (int i = 0; i < 32; i++) { float d = fabsf(acc_ref[i] - acc_sw[i]); md = d > md ? d : md; }
+            for (int off = 16; off > 0; off >>= 1) { float o = __shfl_down_sync(0xFFFFFFFFu, md, off); md = o > md ? o : md; }
+            if (lane == 0) atomicMax((int*)&sS[0], __float_as_int(md));
+            __syncthreads();
+            if (tid == 0) printf("[V8_DEBUG] swizzled-A vs proven-A dQ-half max|delta| = %.6f "
+                                 "(~0 => combo OK, large => swizzled-A + wgmma trans-b=1 is the defect)\n",
+                                 __int_as_float(*(int*)&sS[0]));
+            __syncthreads();
+        }
+#endif
     }
 
     fence_operandN<64>(dv); fence_operandN<64>(dk);
