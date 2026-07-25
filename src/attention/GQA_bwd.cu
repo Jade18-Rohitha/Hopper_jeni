@@ -3360,7 +3360,7 @@ int main(){
 
     launch_gqa_backward_v8<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V8  Br=64, Bc=64  SWIZZLED in-kernel A-operand (conflict-free sA_sw) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V8  Br=64, Bc=64  warp-shuffle D-rowsum reduction ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -3429,7 +3429,7 @@ int main(){
             [&](){ launch_gqa_backward_v8<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V8  Br=64, Bc=64  SWIZZLED sA_sw conflict-free  (Hopper SM_90)", s);
+        displayStats("GQA bwd V8  Br=64, Bc=64  warp-shuffle D-rowsum reduction  (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
