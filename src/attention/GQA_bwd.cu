@@ -4870,6 +4870,317 @@ void launch_gqa_backward_v13(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+//  V14 — bf16 sdP dP-round-trip  (shared-STORE conflict kill).  Clone of V13; the
+//  ONLY change is the dP intermediate.  V13's profile is L1/shared-THROUGHPUT-bound
+//  (Mem SOL 57% ≈ cuDNN, Compute SOL only 36% vs 59%); the #1 remaining lever is the
+//  3.8-way shared-STORE conflict on the fp32 accumulator scatters (est 33%).  wg1's
+//  dP=dO·Vᵀ fragment was scattered fp32 into sdP (store_acc_smem_v6) — stmatrix can't
+//  touch it (16-bit only), and fp32 scalar stores of this fragment are ≥2-way by
+//  construction (8 rows × 4 col-pairs can't tile 32 banks; measured 3.8-way).
+//
+//  V14 stores dP as bf16 via vectorized 32-bit (__nv_bfloat162) stores of each
+//  (c,c+1) column pair into a bf16 VIEW of the fp32 sdP buffer, stride
+//  SDPH_STRIDE_V14=72.  This is CONFLICT-FREE and halves the byte volume:
+//    word = (r·72+c)/2 = r·36 + c/2;  bank = (r·36 + nt·4 + (lane&3)) mod 32
+//    with r = w·16+(lane>>2);  (lane>>2)·36 ≡ (lane>>2)·4 (mod 32) spreads the 8
+//    rows over {0,4,…,28}, and +(lane&3) fills each → 32 distinct banks (verified).
+//  The bf16 view (Br·72·2 = 9216 B) ALIASES the fp32 sdP (Br·65·4 = 16640 B); the
+//  two roles are temporally disjoint — dP is dead after the dS pass, long before the
+//  dQ phase reuses sdP as an fp32 stage — and every phase boundary is a bar.sync, so
+//  no smem grows and no aliasing hazard exists (occ stays 18.75%, smem 223,800 B).
+//
+//  dS = P⊙(dP−D): dP is read from the bf16 view, WIDENED to fp32, and D is subtracted
+//  in fp32 (the subtraction precision is preserved; only the stored dP is bf16).
+//
+//  PRECISION (H200-validate — the ONE risk):  the stored dP loses ~2^-8 rel err.
+//  dP and D are O(1); dS feeds bf16 grads @tol 2e-2 → very likely fine, but only
+//  check() can confirm (catastrophic-cancellation edge when dP≈D).  dQ staging stays
+//  fp32 (stage_acc_f32 → sdP unchanged) to ISOLATE this single precision change; the
+//  dQ stage_acc_f32 (stride-64, 8-way) is the next lever for a V15.
+// ═════════════════════════════════════════════════════════════════════════════
+constexpr int SDPH_STRIDE_V14 = 72;    // bf16 dP-view row stride (conflict-free 32-bit stores)
+
+// m64n64 D-fragment (fp32 regs) → bf16 smem via vectorized 32-bit (__nv_bfloat162)
+// stores of each (c,c+1) column pair.  Same (r0,r1,cc) fragment map as
+// store_acc_smem_v6, but 2 half2 stores/nt instead of 4 scalar fp32 stores.
+// STRIDE (elems) must be even and 4-B-aligned for the __nv_bfloat162 stores.
+template<int NCOL, int STRIDE>
+__device__ __forceinline__ void store_acc_smem_bf16_vec(const float *d, bf16 *smem, int tid, float scl) {
+    int w = tid >> 5, lane = tid & 31;
+    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+#pragma unroll
+    for (int nt = 0; nt < NCOL / 8; nt++) {
+        int c = nt * 8 + cc;
+        __nv_bfloat162 v0 = __floats2bfloat162_rn(d[nt * 4 + 0] * scl, d[nt * 4 + 1] * scl);
+        __nv_bfloat162 v1 = __floats2bfloat162_rn(d[nt * 4 + 2] * scl, d[nt * 4 + 3] * scl);
+        *reinterpret_cast<__nv_bfloat162*>(&smem[r0 * STRIDE + c]) = v0;
+        *reinterpret_cast<__nv_bfloat162*>(&smem[r1 * STRIDE + c]) = v1;
+    }
+}
+
+// ── V14 kernel — clone of gqa_backward_v13_kv; ONLY the dP store (→ bf16 vectorized)
+//    and the dS read (→ bf16-widen) differ.  Everything else is byte-for-byte V13.
+template<int Br, int Bc, int D>
+__global__ void
+gqa_backward_v14_kv(
+    const __grid_constant__ CUtensorMap tma_K_sw,
+    const __grid_constant__ CUtensorMap tma_V_sw,
+    const __grid_constant__ CUtensorMap tma_Q_sw,
+    const __grid_constant__ CUtensorMap tma_dO_sw,
+    const __grid_constant__ CUtensorMap tma_dO_pl,
+    const __grid_constant__ CUtensorMap tma_O_pl,
+    const float * __restrict__ d_LSE,
+    bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV, float * __restrict__ d_dq_accum,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V14 requires Br=Bc=64, D=128");
+    constexpr int CONS = 256;   // consumer thread count (wg 0+1)
+
+    __shared__ __align__(128) bf16 sK_sw[Bc * D];
+    __shared__ __align__(128) bf16 sV_sw[Bc * D];
+    __shared__ __align__(128) bf16 sQ_sw [2][Br * D];
+    __shared__ __align__(128) bf16 sdO_sw[2][Br * D];
+    __shared__ __align__(128) bf16 sdO_pl[2][Br * D];
+    __shared__ __align__(128) bf16 sO_pl [2][Br * D];
+    __shared__ __align__(16)  float sS [Br * SS_STRIDE_V6];   // wg0 dQ fp32 stage
+    __shared__ __align__(16)  float sdP[Br * SS_STRIDE_V6];   // V14: bf16 dP view (dS) + fp32 dQ stage (wg1)
+    __shared__ __align__(16)  bf16  sP [Br * SP_STRIDE_V12];
+    __shared__                float sLSE[Br];
+    __shared__                float sD  [2][Br];
+    __shared__ __align__(128) bf16  sA_t[SMEM_TILED_V6];
+    __shared__ __align__(8)   uint64_t mbar_kv;
+    __shared__ __align__(8)   uint64_t full   [2];
+    __shared__ __align__(8)   uint64_t empty  [2];
+    __shared__ __align__(8)   uint64_t d_ready[2];
+
+    // bf16 VIEW of the fp32 sdP buffer for the dP round-trip (conflict-free stores).
+    bf16* const sdPh = reinterpret_cast<bf16*>(sdP);
+
+    const int tid   = threadIdx.x;
+    const int wg    = tid >> 7;
+    const int wtid  = tid & 127;
+    const int lane  = tid & 31;
+    const int b = blockIdx.x, hkv = blockIdx.y, k_tile = blockIdx.z;
+    const int k_row0 = k_tile * Bc;
+    const int nQTiles = S / Br;
+
+    const long     kvBase     = ((long)(b * Hkv + hkv) * S + k_row0) * D;
+    const uint32_t kvFlatRow  = (uint32_t)((b * Hkv + hkv) * S + k_row0);
+    const uint32_t bytesTile  = (uint32_t)(Br * D * sizeof(bf16));
+    const uint32_t bytesAtom  = (uint32_t)(Bc * 64 * sizeof(bf16));
+
+    if (tid == 0) {
+        mbar_init_v4(&mbar_kv, 1);
+        mbar_init_v4(&full[0], 1);    mbar_init_v4(&full[1], 1);
+        mbar_init_v4(&empty[0], 1);   mbar_init_v4(&empty[1], 1);
+        mbar_init_v4(&d_ready[0], 1); mbar_init_v4(&d_ready[1], 1);
+    }
+    __syncthreads();
+
+    const int qc0    = k_row0 / Br;
+    const int perG   = nQTiles - qc0;
+    const int nIter  = G * perG;
+
+    auto qFlatRowOf = [&](int it) -> uint32_t {
+        const int g  = it / perG;
+        const int qc = qc0 + (it % perG);
+        const int hq = hkv * G + g;
+        return (uint32_t)((b * Hq + hq) * S + qc * Br);
+    };
+    auto lBaseOf = [&](int it) -> long {
+        const int g  = it / perG;
+        const int qc = qc0 + (it % perG);
+        const int hq = hkv * G + g;
+        return (long)(b * Hq + hq) * S + (long)qc * Br;
+    };
+
+    // ── PRODUCER (wg 2): TMA loads + LAGGED D-rowsum ──────────────────────────
+    if (wg == 2) {
+        const bool leader = (tid == 256);
+        const int pwarp   = (tid - 256) >> 5;
+        if (leader) {
+            mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
+            tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
+            tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+            tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kvFlatRow);
+            tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+        }
+        uint32_t epar[2] = {0, 0}, fpar[2] = {0, 0};
+        auto do_drowsum = [&](int td) {
+            const int sp = td & 1;
+            mbar_wait_v4(&full[sp], fpar[sp]); fpar[sp] ^= 1;
+            producer_drowsum_v13<Br, D>(sD[sp], sdO_pl[sp], sO_pl[sp], pwarp, lane);
+            producer_sync();
+            if (leader) mbar_arrive_v11(&d_ready[sp]);
+        };
+        for (int it = 0; it < nIter; it++) {
+            const int s = it & 1;
+            if (it >= 2) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
+            if (leader) {
+                const uint32_t r = qFlatRowOf(it);
+                mbar_expect_tx_v4(&full[s], bytesTile * 4);
+                tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  r);
+                tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, r);
+                tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
+                tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
+                tma_load_2d_v4(&tma_dO_pl, sdO_pl[s],           &full[s], 0,  r);
+                tma_load_2d_v4(&tma_O_pl,  sO_pl [s],           &full[s], 0,  r);
+            }
+            if (it >= 1) do_drowsum(it - 1);
+        }
+        do_drowsum(nIter - 1);
+        return;
+    }
+
+    // ── CONSUMERS (wg 0,1) ───────────────────────────────────────────────────
+    mbar_wait_v4(&mbar_kv, 0);
+
+    float dv[32]; zeroN<32>(dv);
+    float dk[32]; zeroN<32>(dk);
+
+    uint32_t cpar[2] = {0, 0}, dpar[2] = {0, 0};
+    for (int it = 0; it < nIter; it++) {
+        const int s = it & 1;
+        const int q_row0 = (qc0 + (it % perG)) * Br;
+        mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
+        if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(it) + tid];
+        consumer_sync();
+
+        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to sP (wg0)
+        //  ∥  dP = dO·Vᵀ → sdPh as bf16 (wg1, V14 conflict-free vectorized store).
+        if (wg == 0) {
+            float acc[32]; zeroN<32>(acc);
+            run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
+            fused_p_from_acc_v13<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
+        } else {
+            float acc[32]; zeroN<32>(acc);
+            run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
+            store_acc_smem_bf16_vec<Bc, SDPH_STRIDE_V14>(acc, sdPh, wtid, 1.0f);
+        }
+        consumer_sync();
+
+        // dV += Pᵀ·dO  (Pᵀ built by ldmatrix→stmatrix; last read of sdO_sw[s]).
+        sp_to_sAt_v12<true>(sA_t, sP, tid);
+        consumer_sync();
+        run_gemm_dVdK_half(dv, sA_t, sdO_sw[s] + wg * 4096, sbo_pad_v6(Br));
+        consumer_sync();
+
+        // dS = P ⊙ (dP − D) → sP.  dP read from the bf16 view + WIDENED to fp32;
+        // D (fp32) subtracted in fp32 (subtraction precision preserved).
+        mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
+        for (int i = tid; i < Br * Bc; i += CONS) {
+            int r = i / Bc, c = i % Bc;
+            int pidx = r * SP_STRIDE_V12 + c;
+            sP[pidx] = __float2bfloat16(__bfloat162float(sP[pidx]) *
+                       (__bfloat162float(sdPh[r * SDPH_STRIDE_V14 + c]) - sD[s][r]));
+        }
+        consumer_sync();
+
+        // dK += dSᵀ·Q  (dSᵀ built by ldmatrix→stmatrix; last read of sQ_sw[s]).
+        sp_to_sAt_v12<true>(sA_t, sP, tid);
+        consumer_sync();
+        run_gemm_dVdK_half(dk, sA_t, sQ_sw[s] + wg * 4096, sbo_pad_v6(Br));
+        consumer_sync();
+        if (tid == 0) mbar_arrive_v11(&empty[s]);
+
+        // dQ_tile = dS·K (transient) — dS built by ldmatrix→stmatrix (K-major).
+        // dQ staging stays fp32 (sS/sdP) → dQ precision unchanged from V13.
+        sp_to_sAt_v12<false>(sA_t, sP, tid);
+        consumer_sync();
+        { float acc[32]; zeroN<32>(acc);
+          run_gemm_dQ_half(acc, sA_t, sK_sw + wg * 4096, sbo_pad_v6(Bc));
+          stage_acc_f32<64>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
+        consumer_sync();
+        atomic_flush_stage<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(it) * D, D, wg * 64, wtid);
+        consumer_sync();
+    }
+
+    // ── Epilogue — coalesced dV/dK writeback (identical to V13). ──
+    bf16 *stage = sA_t + wg * 4096;
+    fence_operandN<32>(dv);
+    stage_acc_bf16<64>(dv, stage, wtid, 1.0f);
+    consumer_sync();
+    store_stage_vec<Bc, 64>(stage, d_dV, kvBase, D, wg * 64, wtid);
+    consumer_sync();
+    fence_operandN<32>(dk);
+    stage_acc_bf16<64>(dk, stage, wtid, scale);
+    consumer_sync();
+    store_stage_vec<Bc, 64>(stage, d_dK, kvBase, D, wg * 64, wtid);
+}
+
+// ── V14 launcher — identical descriptors/scratch to V13; BLOCK(384), V14 kernel.
+template<int Br, int Bc, int D>
+void launch_gqa_backward_v14(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V14 requires Br=Bc=64, D=128");
+
+    auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
+        uint32_t box[2]     = {64u, tile_rows};
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(
+            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) failed: %s\n", e); exit(1); }
+        return desc;
+    };
+    auto make_tma_plain = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
+        uint32_t box[2]     = {(uint32_t)D, tile_rows};
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(
+            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(plain) failed: %s\n", e); exit(1); }
+        return desc;
+    };
+
+    const uint64_t Rq  = (uint64_t)B * Hq  * S;
+    const uint64_t Rkv = (uint64_t)B * Hkv * S;
+
+    CUtensorMap tma_K_sw  = make_tma_sw128(d_K,  Rkv, Bc);
+    CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
+    CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
+    CUtensorMap tma_dO_sw = make_tma_sw128(d_dO, Rq,  Br);
+    CUtensorMap tma_dO_pl = make_tma_plain(d_dO, Rq,  Br);
+    CUtensorMap tma_O_pl  = make_tma_plain(d_O,  Rq,  Br);
+
+    const long dqN = (long)B * Hq * S * D;
+    static float* d_dq_accum = nullptr;
+    static long   dq_cap     = 0;
+    if (dqN > dq_cap) {
+        if (d_dq_accum) CUDA_CHECK(cudaFree(d_dq_accum));
+        CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
+        dq_cap = dqN;
+    }
+    CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
+
+    constexpr dim3 BLOCK(384);
+    dim3 GRID(B, Hkv, S / Bc);
+    gqa_backward_v14_kv<Br,Bc,D><<<GRID, BLOCK>>>(
+        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
+        d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
+
+    const int convBlock = 256;
+    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5013,6 +5324,10 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V13 Br=64 Bc=64 fused-softmax + producer D-rowsum (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
+    launch_gqa_backward_v14<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── V14 Br=64 Bc=64 bf16-sdP conflict-free dP store (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
     // iterations with the L2 flushed between reps (mirrors triton.testing.do_bench).
@@ -5117,9 +5432,17 @@ int main(){
             100, 10, bwd_flops);
         displayStats("GQA bwd V13 Br=64, Bc=64  fused-softmax + producer D-rowsum  (Hopper SM_90)", s);
     }
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v14<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V14 Br=64, Bc=64  bf16-sdP conflict-free dP store  (Hopper SM_90)", s);
+    }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
     CUDA_CHECK(cudaFree(d_dQ)); CUDA_CHECK(cudaFree(d_dK)); CUDA_CHECK(cudaFree(d_dV));
     return 0;
 }
+ 
