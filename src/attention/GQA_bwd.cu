@@ -4916,11 +4916,18 @@ void launch_gqa_backward_v13(
 //    ldmatrix (read swizzled sP) / stmatrix (write sA_t) are GENERIC ops ordered by the
 //    consumer_sync before/after + run_gemm_dQ_half's own fence.proxy — unchanged.
 //
-//  RISK: the READ side is probe-proven (FA3 candidate PASSED on H200, max|Δ|=0).  The
-//    UNVALIDATED part is the STORE side — writing P/dS into the swizzled layout via
-//    sw128_idx (fused_p_from_acc_v14 and the dS pass) and the per-element elementwise on
-//    that layout.  If check() fails, the sw128_idx write/elementwise CONSISTENCY is the
-//    prime suspect (the exact class of bug that likely sank V8), NOT the descriptor read.
+//  H200 v1 BUG + FIX (the sw128_idx WRITE convention was NOT the bug):  first H200 run
+//    had dQ PASS but dV/dK FAIL with permutation-like (same-magnitude) errors.  dQ passes
+//    because it reads sP via RELATIVE ldmatrix addressing (sp_to_sAt_dQ_v14, explicit
+//    sw128_idx) → phase-independent → proves the store CONTENT is correct.  dV/dK use the
+//    HW descriptor read make_desc_sw128_MN(sP+k*1024), whose B128 swizzle XORs address
+//    bits [9:7] = ((base/128)+row)&7 into [6:4], with base_offset=0 ASSUMING sP is 1024-B
+//    (one swizzle atom) aligned.  __align__(128) let sP land at a non-1024 offset (phase
+//    ≠0), so the HW read used ((base/128)&7 + row)&7 while the sw128_idx WRITE used the
+//    relative row&7 → a fixed row-phase XOR mismatch that permuted the transposed read.
+//    FIX = align sP to 1024 B (below).  The axis/M-N/transpose convention was already
+//    correct (matches the probe + the V13-proven dV/dK output map); ONLY the buffer's
+//    swizzle-atom phase was wrong.  k*1024-elem (2048-B) advances preserve the phase.
 // ═════════════════════════════════════════════════════════════════════════════
 
 // 128-B-swizzle byte permutation for one 64-wide (128-B) bf16 atom.  row = strided
@@ -5027,7 +5034,14 @@ gqa_backward_v14_kv(
     __shared__ __align__(128) bf16 sO_pl [2][Br * D];
     __shared__ __align__(16)  float sS [Br * SS_STRIDE_V6];   // dP-free; wg0 dQ fp32 stage + wg0 epilogue bf16 stage
     __shared__ __align__(16)  float sdP[Br * SS_STRIDE_V6];   // wg1 dP + wg1 dQ fp32 stage + wg1 epilogue bf16 stage
-    __shared__ __align__(128) bf16  sP [Br * Bc];             // V14: 128-B-SWIZZLED key-contiguous (sw128_idx)
+    // V14: 128-B-SWIZZLED key-contiguous (sw128_idx).  MUST be 1024-B (one B128 swizzle
+    // atom) aligned: the HW wgmma read (make_desc_sw128_MN, base_offset=0) computes the
+    // swizzle XOR from address bits [9:7] = ((base/128)+row)&7, while the sw128_idx WRITE
+    // used the RELATIVE row&7.  They agree ONLY when base mod 1024 == 0.  __align__(128)
+    // let sP land mid-allocation (phase≠0) → a fixed row-phase XOR offset that permuted
+    // the dV/dK direct reads (H200 v1: dV/dK FAIL, dQ PASS — dQ uses relative ldmatrix,
+    // phase-independent).  k*1024-elem (2048-B) advances preserve the 1024-B phase.
+    __shared__ __align__(1024) bf16 sP [Br * Bc];
     __shared__                float sLSE[Br];
     __shared__                float sD  [2][Br];              // double-buffered, producer-written
     __shared__ __align__(128) bf16  sA_t[SA_T_DQ_V14];        // V14: dQ dS-staging ONLY (shrunk from SMEM_TILED_V6)
