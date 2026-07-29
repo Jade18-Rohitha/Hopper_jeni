@@ -4870,149 +4870,137 @@ void launch_gqa_backward_v13(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// V14 — transpose-buffer ELIMINATION (direct Pᵀ/dSᵀ read from swizzled sP)  [SM_90a]
+// V15 — de-ALU.  Pure instruction-count refactor of V13: SAME math, SAME values
+// (bit-identical except the exp-argument FFMA fusion, which changes the last mantissa
+// bit — well within the 2e-2 tolerance).  Motivated by V13's warp-stall profile
+// (reports/gqa_v13_source.txt): INT-ALU address/index math = 33.8% (#1 stall),
+// FP-elementwise = 20.5% (#2); the wgmma tensor path stalls 0.0% and SMEM 0.7%.
+// The tensor cores are STARVED by scalar bookkeeping crowding the issue slots, so
+// the lever is FEWER INT-ALU + FP instructions, NOT more/less data movement.
 //
-// The one structural move from docs/RESEARCH_next_structure.md §0/§5: delete the
-// dV/dK operand-transpose staging round-trip (V13's sp_to_sAt_v12 ldmatrix→stmatrix,
-// which re-packs Pᵀ/dSᵀ into a no-swizzle buffer for wgmma) — the #1 shared-throughput
-// cost.  `sP` itself is stored in the 128-B-SWIZZLED, KEY(N)-CONTIGUOUS layout, and the
-// dV/dK GEMMs read A = Pᵀ/dSᵀ DIRECTLY from it via a transposed swizzled descriptor —
-// the FA3 "layout-aliasing" transpose, no data movement.  This attacks the measured
-// binding resource (L1/shared throughput): each V13 dV/dK transpose window was a full
-// smem W+R.
-//
-//  sP layout:  sP[sw128_idx(query, key)] = P[query][key]  (later dS[query][key]).
-//    key(c) is the 64-wide (128-B) CONTIGUOUS atom dim; query(r) is the strided dim.
-//    sw128_idx(r,c) = r*64 + (((c>>3)^(r&7))<<3) + (c&7)  — the EXACT permutation the
-//    H200 probe (experiments/wgmma_transpose_probe.cu) validated (max|Δ|=0), byte-
-//    identical to CU_TENSOR_MAP_SWIZZLE_128B for one 64-wide bf16 atom.  sP = 64×64 =
-//    4096 bf16 (was 64×72 padded = 4608 bf16 in V12/V13).
-//
-//  dV = Pᵀ·dO,  dK = dSᵀ·Q   (probe "FA3 candidate" — PASSED on H200):
-//    A = Pᵀ/dSᵀ read make_desc_sw128_MN(sP + k*1024), trans-a=1  (contraction=query,
-//        strided; output M=key, contiguous).  B = dO/Q swizzled Major::MN (V7-proven).
-//    → wgmma_m64n64k16_tAtB.  The A read is byte-identical to V7's HW-proven B=dO read
-//    (make_desc_sw128_MN + k*1024, 4 k-steps).  NO sA_t staging for dV/dK.
-//
-//  dQ = dS·K   — CONSERVATIVE (per brief / RESEARCH §4): dS is the NON-transposed A
-//    (Major::K).  The probe did NOT validate the non-transposed swizzled read, so dQ
-//    KEEPS its no-swizzle sA_t staging: sp_to_sAt_dQ_v14 reads dS from the SWIZZLED sP
-//    (via sw128_idx — the 8 contiguous key cols within an 8-block are contiguous under
-//    the swizzle, so the ldmatrix-loaded 8×8 core CONTENT is unchanged, only WHERE it
-//    sits differs) and stmatrix's it into the no-swizzle K-major sA_t that the proven
-//    run_gemm_dQ_half reads.  Correctness over eliminating dQ's staging.
-//
-//  sA_t SHRUNK 8320 → 4160 bf16 (dQ dS-staging only; frees 8,320 B).  Epilogue dV/dK
-//    writeback reuses the now-free fp32 dQ-stage buffers sS (wg0) / sdP (wg1) viewed as
-//    bf16 (post-loop, disjoint per-WG, consumer_sync-ordered — no live data).  Total
-//    smem 223,800 → 214,456 B (−9,344 B); still 1 block/SM → occupancy 18.75% UNCHANGED.
-//
-//  FENCES — note sP's NEW dual role:  sP is now BOTH GENERICALLY written
-//    (fused_p_from_acc_v14 / the dS pass) AND ASYNC-read by wgmma (dV/dK GEMMs).  The
-//    fence.proxy.async.shared::cta at the top of run_gemm_dVdK_half_v14 is therefore
-//    ESSENTIAL (generic sP writes → async wgmma operand read); the preceding
-//    consumer_sync(256) already drained the generic writes CTA-wide.  wgmma
-//    fence/commit/wait0 + fence_operandN bracket every accumulator region.  The dQ
-//    ldmatrix (read swizzled sP) / stmatrix (write sA_t) are GENERIC ops ordered by the
-//    consumer_sync before/after + run_gemm_dQ_half's own fence.proxy — unchanged.
-//
-//  H200 v1 BUG + FIX (the sw128_idx WRITE convention was NOT the bug):  first H200 run
-//    had dQ PASS but dV/dK FAIL with permutation-like (same-magnitude) errors.  dQ passes
-//    because it reads sP via RELATIVE ldmatrix addressing (sp_to_sAt_dQ_v14, explicit
-//    sw128_idx) → phase-independent → proves the store CONTENT is correct.  dV/dK use the
-//    HW descriptor read make_desc_sw128_MN(sP+k*1024), whose B128 swizzle XORs address
-//    bits [9:7] = ((base/128)+row)&7 into [6:4], with base_offset=0 ASSUMING sP is 1024-B
-//    (one swizzle atom) aligned.  __align__(128) let sP land at a non-1024 offset (phase
-//    ≠0), so the HW read used ((base/128)&7 + row)&7 while the sw128_idx WRITE used the
-//    relative row&7 → a fixed row-phase XOR mismatch that permuted the transposed read.
-//    FIX = align sP to 1024 B (below).  The axis/M-N/transpose convention was already
-//    correct (matches the probe + the V13-proven dV/dK output map); ONLY the buffer's
-//    swizzle-atom phase was wrong.  k*1024-elem (2048-B) advances preserve the phase.
+// Three mechanical, value-preserving transforms (protocol/GEMMs/transpose untouched):
+//   (1) Strength-reduce per-element addressing: replace recomputed `r*STRIDE + c`
+//       (IMAD/LEA per element) with loop-carried pointer/index induction — the flat
+//       dS pass and atomic_flush loops collapse to a fixed column + a +STRIDE row
+//       walk (Bc,CONS,stride all power-of-2 → column is thread-invariant); the
+//       fragment scatters carry `p += 8` instead of re-deriving `r0*STRIDE + nt*8`.
+//   (2) FFMA-fuse the softmax exponent: `expf(acc*scale - LSE)` → `expf(fmaf(acc,
+//       scale, -LSE))`, one FFMA instead of an unfused FMUL+FADD (ncu flagged
+//       217M non-fused FP32 in V13).  Causal mask `k_row0+c > q_row0+r` is hoisted
+//       to a per-row integer threshold `c > cmax`, dropping the per-element adds.
+//   (3) The dS elementwise `P*(dP - D)` keeps FSUB+FMUL verbatim (distributing into
+//       an FFMA needs an extra multiply → no op saving and a rounding change), so it
+//       stays bit-identical; only its addressing is strength-reduced.
 // ═════════════════════════════════════════════════════════════════════════════
 
-// 128-B-swizzle byte permutation for one 64-wide (128-B) bf16 atom.  row = strided
-// (query, 0..63), col = contiguous (key, 0..63).  IDENTICAL to the probe's sw128_idx
-// and to CU_TENSOR_MAP_SWIZZLE_128B (HW-confirmed).  sP size = Br*Bc = 4096 bf16.
-__device__ __forceinline__ int sw128_idx(int row, int col) {
-    return row * 64 + (((col >> 3) ^ (row & 7)) << 3) + (col & 7);
-}
-
-// dV += Pᵀ·dO / dK += dSᵀ·Q, one m64n64 half.  A = Pᵀ/dSᵀ read DIRECT from swizzled sP
-// (Major::MN, trans-a=1, +k*1024 elems along the strided query contraction), B = dO/Q
-// swizzled Major::MN single atom (trans-b=1).  K = Br = 64 → 4 k-steps.  Byte-identical
-// to the probe's FA3 candidate (both operands make_desc_sw128_MN + k*1024, tAtB).
-// Caller passes B_sw_half = B_sw + wg*4096 (WG0 atom0 → cols[0,64); WG1 atom1 → [64,128)).
-__device__ __forceinline__ void run_gemm_dVdK_half_v14(float acc[32], const bf16* sP_sw,
-                                                       const bf16* B_sw_half) {
-    fence_proxy_async_shared();       // ESSENTIAL: generic sP (P/dS) writes → async wgmma A read
-    fence_operandN<32>(acc);
-    wgmma_fence();
-#pragma unroll
-    for (int k = 0; k < 4; k++) {
-        uint64_t dA = make_desc_sw128_MN(sP_sw     + k * 1024);   // Pᵀ/dSᵀ swizzled Major::MN
-        uint64_t dB = make_desc_sw128_MN(B_sw_half + k * 1024);   // dO/Q  swizzled Major::MN
-        wgmma_m64n64k16_tAtB(acc, dA, dB);
-    }
-    wgmma_commit();
-    wgmma_wait0();
-    fence_operandN<32>(acc);
-}
-
-// dQ dS-staging (CONSERVATIVE, dQ ONLY): read dS from the SWIZZLED sP (sw128_idx) and
-// stmatrix it into the no-swizzle K-major sA_t (tiled_off_v6) that run_gemm_dQ_half
-// reads.  Identical to sp_to_sAt_v12<false> EXCEPT the ldmatrix SOURCE address is the
-// swizzled position sw128_idx(8qb+ρ, 8cb): the 8 key cols [8cb,8cb+8) are contiguous
-// under the swizzle (col&7 spans 0..7, col>>3=cb fixed), so the loaded 8×8 core content
-// is exactly dS[8qb+ρ][8cb..+7] — unchanged; only WHERE the core sits in sP differs.
-__device__ __forceinline__ void sp_to_sAt_dQ_v14(bf16* sA_t, const bf16* sP, int tid) {
-    const int warp = tid >> 5, lane = tid & 31;
-    const int mm = lane >> 3, rho = lane & 7;      // matrix (0..3), row-in-matrix (0..7)
-#pragma unroll
-    for (int gg = 0; gg < 2; gg++) {
-        const int g   = warp * 2 + gg;             // ldmatrix.x4 group (0..15)
-        const int qb  = (4 * g) >> 3;              // query-block shared by the 4 sub-blocks
-        const int cb  = ((4 * g) & 7) + mm;        // this lane's kv-block (cb0 + mm)
-        const bf16* src = sP + sw128_idx(8 * qb + rho, 8 * cb);          // SWIZZLED source (dS)
-        bf16* dst = sA_t + qb * ROWPAD64_V12 + cb * 64 + rho * 8;        // tiled_off_v6 (dQ, K-major)
-        ldst_matrix_x4((uint32_t)__cvta_generic_to_shared(src),
-                       (uint32_t)__cvta_generic_to_shared(dst));
-    }
-}
-
-// wg0: P = exp(S·scale − LSE) + causal mask, DIRECT from the m64n64 S fragment →
-// SWIZZLED sP (sw128_idx).  Identical to fused_p_from_acc_v13 EXCEPT the sP index map
-// (r=query, c=key → sw128_idx(r,c) instead of r*SP_STRIDE_V12+c).
+// (2) wg0: P = exp(S·scale − LSE) + causal, DIRECT from the m64n64 S fragment → sP.
+// Same (r,c)→acc map as fused_p_from_acc_v13; de-ALU'd: exp arg is a single FFMA
+// (negated LSE), causal test is a per-row integer threshold, sP stores use pointer
+// induction (p += 8) instead of recomputing r*SP_STRIDE_V12 each column-group.
 template<int Bc>
-__device__ __forceinline__ void fused_p_from_acc_v14(
+__device__ __forceinline__ void fused_p_from_acc_v15(
     const float acc[32], bf16* sP, const float* sLSE, int wtid,
     int q_row0, int k_row0, float scale)
 {
     const int w = wtid >> 5, lane = wtid & 31;
     const int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
-    const float l0 = sLSE[r0], l1 = sLSE[r1];
-    const int gr0 = q_row0 + r0, gr1 = q_row0 + r1;
+    const float nl0 = -sLSE[r0], nl1 = -sLSE[r1];        // negate → FFMA acc*scale+(-LSE)
+    const int cmax0 = q_row0 + r0 - k_row0;              // keep col c iff c <= cmax (else 0)
+    const int cmax1 = q_row0 + r1 - k_row0;
+    bf16* p0 = sP + r0 * SP_STRIDE_V12 + cc;
+    bf16* p1 = sP + r1 * SP_STRIDE_V12 + cc;
+    int c = cc;
 #pragma unroll
     for (int nt = 0; nt < Bc / 8; nt++) {
-        const int c   = nt * 8 + cc;
-        const int gc0 = k_row0 + c, gc1 = gc0 + 1;
-        sP[sw128_idx(r0, c + 0)] = (gc0 > gr0) ? __float2bfloat16(0.f)
-                                 : __float2bfloat16(expf(acc[nt * 4 + 0] * scale - l0));
-        sP[sw128_idx(r0, c + 1)] = (gc1 > gr0) ? __float2bfloat16(0.f)
-                                 : __float2bfloat16(expf(acc[nt * 4 + 1] * scale - l0));
-        sP[sw128_idx(r1, c + 0)] = (gc0 > gr1) ? __float2bfloat16(0.f)
-                                 : __float2bfloat16(expf(acc[nt * 4 + 2] * scale - l1));
-        sP[sw128_idx(r1, c + 1)] = (gc1 > gr1) ? __float2bfloat16(0.f)
-                                 : __float2bfloat16(expf(acc[nt * 4 + 3] * scale - l1));
+        p0[0] = (c     > cmax0) ? __float2bfloat16(0.f)
+                                : __float2bfloat16(expf(__fmaf_rn(acc[nt * 4 + 0], scale, nl0)));
+        p0[1] = (c + 1 > cmax0) ? __float2bfloat16(0.f)
+                                : __float2bfloat16(expf(__fmaf_rn(acc[nt * 4 + 1], scale, nl0)));
+        p1[0] = (c     > cmax1) ? __float2bfloat16(0.f)
+                                : __float2bfloat16(expf(__fmaf_rn(acc[nt * 4 + 2], scale, nl1)));
+        p1[1] = (c + 1 > cmax1) ? __float2bfloat16(0.f)
+                                : __float2bfloat16(expf(__fmaf_rn(acc[nt * 4 + 3], scale, nl1)));
+        p0 += 8; p1 += 8; c += 8;
     }
 }
 
-// V14 dQ dS-staging buffer size: 8 mn-blocks of rowpad_v6(64) (Br=Bc=64 → tiled_off_v6
-// spans mn∈[0,64) = 8 blocks × 520 elems).  Max written index 4151 < 4160.
-constexpr int SA_T_DQ_V14 = 8 * ROWPAD64_V12;   // = 4160 bf16
+// (1) store_acc_smem_v6, de-ALU'd: fragment scatter with pointer induction (p += 8)
+// instead of recomputing r0*ROWSTRIDE + nt*8 each iteration.  Values identical.
+template<int NCOL, int ROWSTRIDE>
+__device__ __forceinline__ void store_acc_smem_v15(const float *d, float *smem, int tid, float scl) {
+    const int w = tid >> 5, lane = tid & 31;
+    const int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+    float *p0 = smem + r0 * ROWSTRIDE + cc;
+    float *p1 = smem + r1 * ROWSTRIDE + cc;
+#pragma unroll
+    for (int nt = 0; nt < NCOL / 8; nt++) {
+        p0[0] = d[nt * 4 + 0] * scl; p0[1] = d[nt * 4 + 1] * scl;
+        p1[0] = d[nt * 4 + 2] * scl; p1[1] = d[nt * 4 + 3] * scl;
+        p0 += 8; p1 += 8;
+    }
+}
 
+// (1) stage_acc_f32, de-ALU'd: pointer induction (contiguous stage, stride NCOL).
+template<int NCOL>
+__device__ __forceinline__ void stage_acc_f32_v15(const float *d, float *stage, int tid, float scl) {
+    const int w = tid >> 5, lane = tid & 31;
+    const int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+    float *p0 = stage + r0 * NCOL + cc;
+    float *p1 = stage + r1 * NCOL + cc;
+#pragma unroll
+    for (int nt = 0; nt < NCOL / 8; nt++) {
+        p0[0] = d[nt * 4 + 0] * scl; p0[1] = d[nt * 4 + 1] * scl;
+        p1[0] = d[nt * 4 + 2] * scl; p1[1] = d[nt * 4 + 3] * scl;
+        p0 += 8; p1 += 8;
+    }
+}
+
+// (1) stage_acc_bf16, de-ALU'd: pointer induction (epilogue dV/dK writeback stage).
+template<int NCOL>
+__device__ __forceinline__ void stage_acc_bf16_v15(const float *d, bf16 *stage, int tid, float scl) {
+    const int w = tid >> 5, lane = tid & 31;
+    const int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+    bf16 *p0 = stage + r0 * NCOL + cc;
+    bf16 *p1 = stage + r1 * NCOL + cc;
+#pragma unroll
+    for (int nt = 0; nt < NCOL / 8; nt++) {
+        p0[0] = __float2bfloat16(d[nt * 4 + 0] * scl); p0[1] = __float2bfloat16(d[nt * 4 + 1] * scl);
+        p1[0] = __float2bfloat16(d[nt * 4 + 2] * scl); p1[1] = __float2bfloat16(d[nt * 4 + 3] * scl);
+        p0 += 8; p1 += 8;
+    }
+}
+
+// (1) atomic_flush_stage, de-ALU'd.  Original recomputes row=li/NCOL, col=li%NCOL and
+// row*D per element.  With stride 128 and NCOL a power of 2 that divides 128, `col`
+// is thread-invariant and `row` advances by RSTEP=128/NCOL per step → walk the stage
+// pointer by +128 (stage index == li) and the global pointer by +RSTEP*D.  No IMAD.
+template<int ROWS, int NCOL>
+__device__ __forceinline__ void atomic_flush_stage_v15(const float *stage, float *g, long base, int D, int coloff, int tid) {
+    constexpr int N     = ROWS * NCOL;
+    constexpr int RSTEP = 128 / NCOL;             // rows advanced per stride-128 step
+    static_assert(128 % NCOL == 0 && N % 128 == 0, "de-ALU flush requires NCOL|128 and 128|N");
+    const int row = tid / NCOL;
+    const int col = tid % NCOL;
+    const float *sp = stage + tid;                // stage[row*NCOL+col] == stage[tid]
+    float       *gp = g + base + (long)row * D + coloff + col;
+    // unroll 1: keep it rolled — induction removes the per-element IMAD; letting the
+    // compiler unroll a 32-trip loop only inflates static count + register pressure.
+#pragma unroll 1
+    for (int k = 0; k < N / 128; k++) {
+        atomicAdd(gp, *sp);
+        sp += 128;
+        gp += (long)RSTEP * D;
+    }
+}
+
+// ── V15 kernel — clone of gqa_backward_v13_kv.  ONLY the elementwise/staging helpers
+// swap to their de-ALU'd (_v15) variants and the dS elementwise loop is strength-
+// reduced; the producer/consumer mbarrier protocol, wgmma GEMMs, ldmatrix/stmatrix
+// transpose (sp_to_sAt_v12), all fences, and the dV/dK/dQ structure are byte-for-byte
+// identical to V13.  smem layout is unchanged.
 template<int Br, int Bc, int D>
 __global__ void
-gqa_backward_v14_kv(
+gqa_backward_v15_kv(
     const __grid_constant__ CUtensorMap tma_K_sw,
     const __grid_constant__ CUtensorMap tma_V_sw,
     const __grid_constant__ CUtensorMap tma_Q_sw,
@@ -5023,7 +5011,7 @@ gqa_backward_v14_kv(
     bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV, float * __restrict__ d_dq_accum,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "V14 requires Br=Bc=64, D=128");
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V15 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;   // consumer thread count (wg 0+1)
 
     __shared__ __align__(128) bf16 sK_sw[Bc * D];
@@ -5032,23 +5020,16 @@ gqa_backward_v14_kv(
     __shared__ __align__(128) bf16 sdO_sw[2][Br * D];
     __shared__ __align__(128) bf16 sdO_pl[2][Br * D];
     __shared__ __align__(128) bf16 sO_pl [2][Br * D];
-    __shared__ __align__(16)  float sS [Br * SS_STRIDE_V6];   // dP-free; wg0 dQ fp32 stage + wg0 epilogue bf16 stage
-    __shared__ __align__(16)  float sdP[Br * SS_STRIDE_V6];   // wg1 dP + wg1 dQ fp32 stage + wg1 epilogue bf16 stage
-    // V14: 128-B-SWIZZLED key-contiguous (sw128_idx).  MUST be 1024-B (one B128 swizzle
-    // atom) aligned: the HW wgmma read (make_desc_sw128_MN, base_offset=0) computes the
-    // swizzle XOR from address bits [9:7] = ((base/128)+row)&7, while the sw128_idx WRITE
-    // used the RELATIVE row&7.  They agree ONLY when base mod 1024 == 0.  __align__(128)
-    // let sP land mid-allocation (phase≠0) → a fixed row-phase XOR offset that permuted
-    // the dV/dK direct reads (H200 v1: dV/dK FAIL, dQ PASS — dQ uses relative ldmatrix,
-    // phase-independent).  k*1024-elem (2048-B) advances preserve the 1024-B phase.
-    __shared__ __align__(1024) bf16 sP [Br * Bc];
+    __shared__ __align__(16)  float sS [Br * SS_STRIDE_V6];   // V13: S store DROPPED; kept as wg0 dQ stage
+    __shared__ __align__(16)  float sdP[Br * SS_STRIDE_V6];
+    __shared__ __align__(16)  bf16  sP [Br * SP_STRIDE_V12];  // V12: 16-B-aligned stride for ldmatrix
     __shared__                float sLSE[Br];
-    __shared__                float sD  [2][Br];              // double-buffered, producer-written
-    __shared__ __align__(128) bf16  sA_t[SA_T_DQ_V14];        // V14: dQ dS-staging ONLY (shrunk from SMEM_TILED_V6)
+    __shared__                float sD  [2][Br];              // V13: double-buffered, producer-written
+    __shared__ __align__(128) bf16  sA_t[SMEM_TILED_V6];
     __shared__ __align__(8)   uint64_t mbar_kv;
     __shared__ __align__(8)   uint64_t full   [2];
     __shared__ __align__(8)   uint64_t empty  [2];
-    __shared__ __align__(8)   uint64_t d_ready[2];
+    __shared__ __align__(8)   uint64_t d_ready[2];            // V13: producer→consumer D signal
 
     const int tid   = threadIdx.x;
     const int wg    = tid >> 7;
@@ -5088,10 +5069,10 @@ gqa_backward_v14_kv(
         return (long)(b * Hq + hq) * S + (long)qc * Br;
     };
 
-    // ── PRODUCER (wg 2): TMA loads + LAGGED D-rowsum (verbatim from V13) ───────
+    // ── PRODUCER (wg 2): TMA loads + LAGGED D-rowsum (PART A) ─────────────────
     if (wg == 2) {
         const bool leader = (tid == 256);
-        const int pwarp   = (tid - 256) >> 5;
+        const int pwarp   = (tid - 256) >> 5;   // 0..3 within the producer warpgroup
         if (leader) {
             mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
             tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
@@ -5100,6 +5081,7 @@ gqa_backward_v14_kv(
             tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
         }
         uint32_t epar[2] = {0, 0}, fpar[2] = {0, 0};
+        // Compute D for tile `td` (waits its TMA, reduces, arrives d_ready).
         auto do_drowsum = [&](int td) {
             const int sp = td & 1;
             mbar_wait_v4(&full[sp], fpar[sp]); fpar[sp] ^= 1;
@@ -5120,9 +5102,9 @@ gqa_backward_v14_kv(
                 tma_load_2d_v4(&tma_dO_pl, sdO_pl[s],           &full[s], 0,  r);
                 tma_load_2d_v4(&tma_O_pl,  sO_pl [s],           &full[s], 0,  r);
             }
-            if (it >= 1) do_drowsum(it - 1);
+            if (it >= 1) do_drowsum(it - 1);   // lagged one tile → 2 TMAs in flight
         }
-        do_drowsum(nIter - 1);
+        do_drowsum(nIter - 1);                 // tail: final tile's D
         return;
     }
 
@@ -5140,74 +5122,89 @@ gqa_backward_v14_kv(
         if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(it) + tid];
         consumer_sync();
 
-        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to SWIZZLED sP (wg0)
-        //  ∥  dP = dO·Vᵀ → sdP (wg1).
+        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to sP (wg0, PART B)
+        //  ∥  dP = dO·Vᵀ → sdP (wg1).   [D-rowsum now on the producer, PART A.]
         if (wg == 0) {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
-            fused_p_from_acc_v14<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
+            fused_p_from_acc_v15<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
         } else {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
-            store_acc_smem_v6<Bc, SS_STRIDE_V6>(acc, sdP, wtid, 1.0f);
+            store_acc_smem_v15<Bc, SS_STRIDE_V6>(acc, sdP, wtid, 1.0f);
         }
-        consumer_sync();   // sP (wg0) + sdP (wg1) visible CTA-wide before wgmma A read
+        consumer_sync();
 
-        // dV += Pᵀ·dO — A=Pᵀ read DIRECT from swizzled sP (NO sA_t staging).
-        run_gemm_dVdK_half_v14(dv, sP, sdO_sw[s] + wg * 4096);
-        consumer_sync();   // both WGs' dV async reads of sP done before dS overwrites sP
+        // dV += Pᵀ·dO  (Pᵀ built by ldmatrix→stmatrix; last read of sdO_sw[s]).
+        sp_to_sAt_v12<true>(sA_t, sP, tid);
+        consumer_sync();
+        run_gemm_dVdK_half(dv, sA_t, sdO_sw[s] + wg * 4096, sbo_pad_v6(Br));
+        consumer_sync();
 
-        // dS = P ⊙ (dP − D) → SWIZZLED sP.  D produced by wg2 → wait d_ready[s] first.
+        // dS = P ⊙ (dP − D) → sP.  D produced by wg2 → wait d_ready[s] first.
+        // de-ALU: Bc=64 & CONS=256 (=4·Bc) power-of-2 → `c` is thread-invariant and
+        // the row index walks by +4; strength-reduce r*STRIDE to loop-carried indices.
         mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
-        for (int i = tid; i < Br * Bc; i += CONS) {
-            int r = i / Bc, c = i % Bc;         // r=query, c=key
-            int pidx = sw128_idx(r, c);
-            sP[pidx] = __float2bfloat16(__bfloat162float(sP[pidx]) * (sdP[r * SS_STRIDE_V6 + c] - sD[s][r]));
+        {
+            const float *sDs = sD[s];
+            const int c = tid & (Bc - 1);
+            int r    = tid >> 6;
+            int pidx = r * SP_STRIDE_V12 + c;
+            int qidx = r * SS_STRIDE_V6  + c;
+            // unroll 1: the compiler carries pidx/qidx/r as loop induction registers,
+            // so there is NO per-element IMAD; forcing full unroll (16 trips) only
+            // inflates static count + register pressure for identical dynamic work
+            // (measured: unrolled = 168 regs, rolled = 152 regs, same executed ops).
+#pragma unroll 1
+            for (int k = 0; k < (Br * Bc) / CONS; k++) {
+                sP[pidx] = __float2bfloat16(__bfloat162float(sP[pidx]) * (sdP[qidx] - sDs[r]));
+                r    += CONS / Bc;               // = 4
+                pidx += (CONS / Bc) * SP_STRIDE_V12;
+                qidx += (CONS / Bc) * SS_STRIDE_V6;
+            }
         }
-        consumer_sync();   // dS visible CTA-wide before wgmma A read
+        consumer_sync();
 
-        // dK += dSᵀ·Q — A=dSᵀ read DIRECT from swizzled sP.
-        run_gemm_dVdK_half_v14(dk, sP, sQ_sw[s] + wg * 4096);
+        // dK += dSᵀ·Q  (dSᵀ built by ldmatrix→stmatrix; last read of sQ_sw[s]).
+        sp_to_sAt_v12<true>(sA_t, sP, tid);
+        consumer_sync();
+        run_gemm_dVdK_half(dk, sA_t, sQ_sw[s] + wg * 4096, sbo_pad_v6(Br));
         consumer_sync();
         if (tid == 0) mbar_arrive_v11(&empty[s]);
 
-        // dQ_tile = dS·K (transient) — CONSERVATIVE: dS staged to no-swizzle sA_t
-        // (K-major) from the SWIZZLED sP, then the proven run_gemm_dQ_half reads it.
-        sp_to_sAt_dQ_v14(sA_t, sP, tid);
+        // dQ_tile = dS·K (transient) — dS built by ldmatrix→stmatrix (K-major).
+        sp_to_sAt_v12<false>(sA_t, sP, tid);
         consumer_sync();
         { float acc[32]; zeroN<32>(acc);
           run_gemm_dQ_half(acc, sA_t, sK_sw + wg * 4096, sbo_pad_v6(Bc));
-          stage_acc_f32<64>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
+          stage_acc_f32_v15<64>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
         consumer_sync();
-        atomic_flush_stage<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(it) * D, D, wg * 64, wtid);
+        atomic_flush_stage_v15<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(it) * D, D, wg * 64, wtid);
         consumer_sync();
     }
 
-    // ── Epilogue — coalesced dV/dK writeback.  sA_t is now too small for the
-    // writeback stage, so reuse the free fp32 dQ-stage buffers as bf16 (sS→wg0,
-    // sdP→wg1; disjoint per-WG, post-loop, consumer_sync-ordered vs the last
-    // atomic_flush read).  stage[r*64+c], r,c∈[0,64) = 4096 bf16 ≤ 8320 available.
-    bf16 *stage = reinterpret_cast<bf16*>((wg == 0) ? sS : sdP);
+    // ── Epilogue — coalesced dV/dK writeback (identical to V11/V12). ──
+    bf16 *stage = sA_t + wg * 4096;
     fence_operandN<32>(dv);
-    stage_acc_bf16<64>(dv, stage, wtid, 1.0f);
+    stage_acc_bf16_v15<64>(dv, stage, wtid, 1.0f);
     consumer_sync();
     store_stage_vec<Bc, 64>(stage, d_dV, kvBase, D, wg * 64, wtid);
     consumer_sync();
     fence_operandN<32>(dk);
-    stage_acc_bf16<64>(dk, stage, wtid, scale);
+    stage_acc_bf16_v15<64>(dk, stage, wtid, scale);
     consumer_sync();
     store_stage_vec<Bc, 64>(stage, d_dK, kvBase, D, wg * 64, wtid);
 }
 
-// ── V14 launcher — identical descriptors/scratch to V13; BLOCK(384), V14 kernel.
+// ── V15 launcher — identical descriptors/scratch to V13; BLOCK(384), V15 kernel.
 template<int Br, int Bc, int D>
-void launch_gqa_backward_v14(
+void launch_gqa_backward_v15(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
     const bf16 *d_dO, const float *d_LSE,
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "V14 requires Br=Bc=64, D=128");
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V15 requires Br=Bc=64, D=128");
 
     auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
         CUtensorMap desc{};
@@ -5262,7 +5259,7 @@ void launch_gqa_backward_v14(
 
     constexpr dim3 BLOCK(384);
     dim3 GRID(B, Hkv, S / Bc);
-    gqa_backward_v14_kv<Br,Bc,D><<<GRID, BLOCK>>>(
+    gqa_backward_v15_kv<Br,Bc,D><<<GRID, BLOCK>>>(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
@@ -5414,9 +5411,9 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V13 Br=64 Bc=64 fused-softmax + producer D-rowsum (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_v14<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    launch_gqa_backward_v15<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V14 Br=64 Bc=64 transpose-elim (direct Pᵀ/dSᵀ read) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V15 Br=64 Bc=64 de-ALU (strength-reduced index + FFMA) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -5524,10 +5521,10 @@ int main(){
     }
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_v14<Br2,Bc2,D>(
+            [&](){ launch_gqa_backward_v15<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V14 Br=64, Bc=64  transpose-elim (direct Pᵀ/dSᵀ read)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V15 Br=64 Bc=64 de-ALU (strength-reduced index + FFMA)  (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));

@@ -12,3 +12,6 @@ __pycache__/
 *.ncu-rep
 *.bin
 *.pdf
+
+# ncu source-page dumps are huge (100s of MB) and regenerable
+reports/*source*.txt
