@@ -4870,144 +4870,50 @@ void launch_gqa_backward_v13(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// V14 — critical-path collapse                                  [SM_90a only]
+// V14 — barrier-reduction ONLY (pure V13, same algorithm)      [SM_90a only]
 //
-// V13 is latency-bound on a serial softmax→dS→readout dependency chain (INT-ALU 34%
-// + FP 20% stalls, SMEM 0.7%, TENSOR 0.0%).  Resource cuts (occupancy, shared) do
-// nothing; the ONLY lever that ever paid was SHORTENING THE CHAIN.  V14 stacks three
-// chain-shortening moves that were individually flat but compose.  Output is
-// BIT-IDENTICAL to V13 (2e-2); ≤170 regs, 0 spills, smem DROPS, occ 18.75% unchanged.
+// ISOLATION EXPERIMENT: V14 is an EXACT clone of V13 — same instructions, same
+// algorithm, same sp_to_sAt_v12 reshuffles, same plain padded sP (SP_STRIDE_V12),
+// same coalesced smem-staged dQ flush (stage_acc_f32 → atomic_flush_stage).  The
+// ONLY change is the barrier weight/count, to test whether barriers are the serial
+// cost.  Output is BIT-IDENTICAL to V13 (2e-2).  Constraints: ≤170 regs (≈V13's 154),
+// 0 spills, occ 18.75% unchanged.
 //
-//  MOVE 1 — TRANSPOSE ELIMINATION (deletes 2 reshuffle phases + 2 barriers).
-//    sP moves to the 128B-swizzled key-contiguous layout `sw128_idx(query,key)` in an
-//    `__align__(1024)` buffer (the 1024-B alignment is MANDATORY: make_desc_sw128_MN
-//    sets base_offset=0 which *assumes* one-swizzle-atom alignment; a mis-aligned sP
-//    injects a constant row-phase XOR the relative sw128_idx write didn't → a
-//    permutation-like bug — H200-confirmed).  fused_p_from_acc_v14 and the dS pass
-//    write sP via sw128_idx; dV=Pᵀ·dO and dK=dSᵀ·Q then read Pᵀ/dSᵀ DIRECTLY from sP
-//    via make_desc_sw128_MN(sP+k·1024) trans-a=1 (probe+H200 validated, byte-identical
-//    to V7's proven B=dO read), DELETING V13's two sp_to_sAt_v12<true> reshuffles AND
-//    their four surrounding barriers.  dQ keeps a conservative staging (its A=dS is
-//    Major::K, not probe-validated for a direct swizzled read): sp_to_sAt_dQ_v14
-//    ldmatrix-reads the swizzled sP → stmatrix into the same no-swizzle K-major sA_t
-//    V13 fed run_gemm_dQ_half, so dQ is byte-identical to V13.
+// ── PER-SYNC AUDIT of V13's 10 per-iteration consumer_sync (bar.sync 1,256) ──
+// Rule: a full 256-thread barrier survives ONLY if it orders a real CROSS-WARPGROUP
+// data dependency (a buffer one WG writes and the OTHER WG reads).  A dependency that
+// lives inside one warpgroup (disjoint per-WG buffers, or same-WG program order after a
+// per-WG wgmma_wait0) needs at most a per-WG bar.sync.
+//   SYNC-1 (after sLSE)          KEEP full — sLSE written tid<64 → read by all of wg0; loop-top anchor for the cross-iter sP/sdP WAR.
+//   SYNC-2 (after S/dP→sP,sdP)   KEEP full — wg0's sP → Pᵀ reshuffle reads sP in BOTH WGs (cross-WG RAW); wg1's sdP consumed later.
+//   SYNC-3 (after Pᵀ reshuffle)  KEEP full — sp_to_sAt writes ALL of sA_t (256 thr collaborative) → dV wgmma reads FULL sA_t in both WGs (cross-WG RAW).
+//   SYNC-4 (after dV GEMM)       KEEP full — dV's sA_t read (both WGs) → dSᵀ reshuffle OVERWRITES sA_t (cross-WG WAR).
+//   SYNC-5 (after dS→sP)         KEEP full — dS pass writes sP → dSᵀ reshuffle reads sP in both WGs (cross-WG RAW).
+//   SYNC-6 (after dSᵀ reshuffle) KEEP full — sA_t collaborative write → dK wgmma reads FULL sA_t (cross-WG RAW).
+//   SYNC-7 (after dK GEMM)       KEEP full — dK's sA_t read (both WGs) → dS-K reshuffle OVERWRITES sA_t (cross-WG WAR); also gates empty[s] arrive.
+//   SYNC-8 (after dS-K reshuffle)KEEP full — sA_t collaborative write → run_gemm_dQ reads FULL sA_t (cross-WG RAW).
+//   SYNC-9 (stage→flush)         DOWNGRADE per-WG — wg0 stages into sS & flushes sS; wg1 into sdP & flushes sdP; DISJOINT per-WG buffers, no
+//                                cross-WG dep. stage_acc_f32 (fragment map) → atomic_flush_stage (linear map) reorders WITHIN each WG's own
+//                                buffer, so a 128-thread warpgroup_sync(wg) is exactly the ordering needed. (bit-identical: same buffers/values.)
+//   SYNC-10 (after flush)        REMOVE  — its jobs are (a) cross-iter WAR on sS/sdP: sS is wg0-only (next write is many full barriers later);
+//                                sdP's wg1-local flush-read→next-store_acc-write WAR is re-anchored by the NEXT iter's SYNC-1 (full); and
+//                                (b) the pre-epilogue sA_t cross-WG WAR — moved to an explicit consumer_sync at the top of the epilogue.
+// Net: 8 full-CTA + 1 per-WG (SYNC-9) per iteration (V13 = 10 full-CTA); SYNC-10 removed (epilogue gains one one-time full-CTA pre-barrier).
 //
-//  MOVE 2 — BARRIER AUDIT (the core collapse).  V13's 10 per-iteration consumer_syncs
-//    are cut to 5.  Each removal is justified against a real cross-warpgroup data
-//    dependency (see the per-sync notes at each call site below).  Net: -5 barriers/it.
-//
-//  MOVE 3 — de-ALU.  The dS pass and fused_p sw128 writes use loop-carried
-//    pointer/index induction (row-outer, col-invariant per thread) instead of
-//    per-element IMADs; the swizzled layout also turns the r*72 stride into r<<6.
-//    Pure value-preserving refactor.
-//
-// FENCE: sP is now BOTH generic-written (fused_p / dS) AND async wgmma-read (dV/dK).
-// The `fence.proxy.async.shared::cta` at the top of run_gemm_dVdK_half_v14 is therefore
-// ESSENTIAL (generic→async proxy); the preceding consumer_sync(256) drains the generic
-// sP writes CTA-wide so the cross-WG read is visible.
+// Every fence/mbarrier/wgmma-async discipline is IDENTICAL to V13 (fence.proxy inside
+// run_gemm_*, wgmma fence/commit/wait_group, producer/consumer full/empty protocol,
+// producer-side D-rowsum + d_ready). Barrier removals are the ONLY risk (race = finite-
+// wrong at FULL speed only, invisible under compute-sanitizer) — see per-sync notes.
 // ═════════════════════════════════════════════════════════════════════════════
 
-// One 64-wide (128 B) bf16 swizzle atom, row=query (strided), col=key (contiguous).
-// Byte-identical to CU_TENSOR_MAP_SWIZZLE_128B (probe-validated).  Within any 8-col
-// block [8j,8j+8) the indices are contiguous, so an ldmatrix.x4 / wgmma read of a whole
-// 8-col core sees the same content as the plain layout — only WHERE it sits differs.
-__device__ __forceinline__ int sw128_idx(int r, int c) {
-    return (r << 6) + (((c >> 3) ^ (r & 7)) << 3) + (c & 7);
-}
-
-// wg0: P = exp(S·scale − LSE) + causal mask, DIRECT from the m64n64 S fragment → the
-// SWIZZLED sP (sw128_idx).  Same acc→value map as fused_p_from_acc_v13; only the store
-// target changes (r*72 IMAD → r<<6 + sw128 XOR, row bases hoisted = de-ALU MOVE 3).
-template<int Bc>
-__device__ __forceinline__ void fused_p_from_acc_v14(
-    const float acc[32], bf16* sP, const float* sLSE, int wtid,
-    int q_row0, int k_row0, float scale)
-{
-    const int w = wtid >> 5, lane = wtid & 31;
-    const int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
-    const float l0 = sLSE[r0], l1 = sLSE[r1];
-    const int gr0 = q_row0 + r0, gr1 = q_row0 + r1;
-    const int R0 = r0 << 6, R1 = r1 << 6;      // hoisted row bases (sw128: r*64)
-    const int ph0 = r0 & 7, ph1 = r1 & 7;      // hoisted per-row swizzle phase
-#pragma unroll
-    for (int nt = 0; nt < Bc / 8; nt++) {      // c = nt*8+cc → c>>3 == nt, c&7 == cc
-        const int c   = nt * 8 + cc;
-        const int gc0 = k_row0 + c, gc1 = gc0 + 1;
-        const int i0  = R0 + ((nt ^ ph0) << 3) + cc;   // sw128_idx(r0,c);  (r0,c+1)=i0+1
-        const int i1  = R1 + ((nt ^ ph1) << 3) + cc;   // sw128_idx(r1,c)
-        sP[i0 + 0] = (gc0 > gr0) ? __float2bfloat16(0.f)
-                                 : __float2bfloat16(expf(acc[nt * 4 + 0] * scale - l0));
-        sP[i0 + 1] = (gc1 > gr0) ? __float2bfloat16(0.f)
-                                 : __float2bfloat16(expf(acc[nt * 4 + 1] * scale - l0));
-        sP[i1 + 0] = (gc0 > gr1) ? __float2bfloat16(0.f)
-                                 : __float2bfloat16(expf(acc[nt * 4 + 2] * scale - l1));
-        sP[i1 + 1] = (gc1 > gr1) ? __float2bfloat16(0.f)
-                                 : __float2bfloat16(expf(acc[nt * 4 + 3] * scale - l1));
-    }
-}
-
-// dV += Pᵀ·dO / dK += dSᵀ·Q — ONE m64n64 half, A=Pᵀ/dSᵀ read DIRECT from the swizzled
-// sP (NO sA_t repack): A = make_desc_sw128_MN(sP + k·1024) trans-a=1, B = dO/Q swizzled
-// Major::MN (trans-b=1).  = the H200-validated FA3 probe candidate.  Caller passes
-// B_sw_half = B_sw + wg*4096 (WG0→cols[0,64), WG1→cols[64,128)).  K = query = 64 → 4 steps.
-__device__ __forceinline__ void run_gemm_dVdK_half_v14(float acc[32], const bf16* sP,
-                                                       const bf16* B_sw_half) {
-    fence_proxy_async_shared();       // ESSENTIAL: generic sP writes (fused_p/dS) → async wgmma read
-    fence_operandN<32>(acc);
-    wgmma_fence();
-#pragma unroll
-    for (int k = 0; k < 4; k++) {
-        uint64_t dA = make_desc_sw128_MN(sP        + k * 1024);   // Pᵀ/dSᵀ swizzled Major::MN
-        uint64_t dB = make_desc_sw128_MN(B_sw_half + k * 1024);   // dO/Q  swizzled Major::MN
-        wgmma_m64n64k16_tAtB(acc, dA, dB);
-    }
-    wgmma_commit();
-    wgmma_wait0();
-    fence_operandN<32>(acc);
-}
-
-// dQ staging: ldmatrix-read the SWIZZLED sP → stmatrix into no-swizzle K-major sA_t
-// (tiled_off_v6 / ¬TRANS).  Identical to sp_to_sAt_v12<false> EXCEPT the src address is
-// sw128_idx(8qb+ρ,8cb) instead of the padded r*72 layout.  The 8-col core is contiguous
-// in both layouts, so the {r0..r3} passthrough fragment (opaque, never reinterpreted)
-// lands the SAME bytes in sA_t → dQ is byte-identical to V13.  16-B src alignment holds
-// (sw128 row = r*64 (128 B) + (cb^ρ)*8 (16 B)); sP is __align__(1024).
-__device__ __forceinline__ void sp_to_sAt_dQ_v14(bf16* sA_t, const bf16* sP, int tid) {
-    const int warp = tid >> 5, lane = tid & 31;
-    const int mm = lane >> 3, rho = lane & 7;
-#pragma unroll
-    for (int gg = 0; gg < 2; gg++) {
-        const int g   = warp * 2 + gg;
-        const int qb  = (4 * g) >> 3;
-        const int cb  = ((4 * g) & 7) + mm;
-        const bf16* src = sP + sw128_idx(8 * qb + rho, 8 * cb);      // swizzled source
-        bf16* dst = sA_t + qb * ROWPAD64_V12 + cb * 64 + rho * 8;    // ¬TRANS (dQ, K-major)
-        ldst_matrix_x4((uint32_t)__cvta_generic_to_shared(src),
-                       (uint32_t)__cvta_generic_to_shared(dst));
-    }
-}
-
-// dQ tail collapse (MOVE 2): fuse V13's stage_acc_f32 → smem → atomic_flush_stage into a
-// DIRECT fragment→global atomicAdd — deleting the sS/sdP dQ stage buffer AND the two tail
-// barriers (SYNC-9/SYNC-10).  Same (row,col)→global map and same per-tile values as the
-// V13 composition (stage_acc_f32 applied `scl`, atomic_flush_stage plain-added), so the
-// accumulated dQ is bit-identical; cross-tile atomicAdd non-determinism already existed in
-// V13.  base = lBaseOf(it)*D, coloff = wg*64, tid warpgroup-local (wtid).
-template<int NCOL>
-__device__ __forceinline__ void atomic_flush_frag(const float* d, float* g, long base,
-                                                  int D, int coloff, int tid, float scl) {
-    int w = tid >> 5, lane = tid & 31;
-    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
-    float* gp = g + base + coloff;         // one live 64-bit pointer; 32-bit offsets below
-    const int o0 = r0 * D, o1 = r1 * D;
-#pragma unroll
-    for (int nt = 0; nt < NCOL / 8; nt++) {
-        int c = nt * 8 + cc;
-        atomicAdd(gp + o0 + c + 0, d[nt * 4 + 0] * scl);
-        atomicAdd(gp + o0 + c + 1, d[nt * 4 + 1] * scl);
-        atomicAdd(gp + o1 + c + 0, d[nt * 4 + 2] * scl);
-        atomicAdd(gp + o1 + c + 1, d[nt * 4 + 3] * scl);
-    }
+// Warpgroup-LOCAL barrier (128 threads).  Distinct named-barrier id per consumer WG
+// (wg0→id 3, wg1→id 4) so the two warpgroups DON'T merge into one rendezvous.  Used for
+// the dQ-tail stage→flush ordering, which is WG-private (each WG stages into its own
+// sS/sdP region and flushes only its own) — a full CONS(256) consumer_sync there is
+// over-synchronization.  `wg` is warpgroup-uniform → the branch does not diverge.
+__device__ __forceinline__ void warpgroup_sync(int wg) {
+    if (wg == 0) asm volatile("bar.sync 3, 128;\n" ::: "memory");
+    else         asm volatile("bar.sync 4, 128;\n" ::: "memory");
 }
 
 template<int Br, int Bc, int D>
@@ -5032,11 +4938,12 @@ gqa_backward_v14_kv(
     __shared__ __align__(128) bf16 sdO_sw[2][Br * D];
     __shared__ __align__(128) bf16 sdO_pl[2][Br * D];
     __shared__ __align__(128) bf16 sO_pl [2][Br * D];
-    __shared__ __align__(16)   float sdP[Br * SS_STRIDE_V6];    // dP store + dS pass (sS DELETED: direct-frag dQ)
-    __shared__ __align__(1024) bf16  sP [Br * Bc];              // V14: 128B-SWIZZLED sw128_idx layout; align(1024) MANDATORY
-    __shared__                 float sLSE[Br];
-    __shared__                 float sD  [2][Br];               // double-buffered, producer-written
-    __shared__ __align__(128) bf16   sA_t[SMEM_TILED_V6];       // dQ staging (K-major) + epilogue dV/dK stage
+    __shared__ __align__(16)  float sS [Br * SS_STRIDE_V6];   // S store DROPPED (fused); kept as wg0 dQ f32 stage
+    __shared__ __align__(16)  float sdP[Br * SS_STRIDE_V6];
+    __shared__ __align__(16)  bf16  sP [Br * SP_STRIDE_V12];  // V12: 16-B-aligned stride for ldmatrix (UNCHANGED from V13)
+    __shared__                float sLSE[Br];
+    __shared__                float sD  [2][Br];              // double-buffered, producer-written
+    __shared__ __align__(128) bf16  sA_t[SMEM_TILED_V6];
     __shared__ __align__(8)   uint64_t mbar_kv;
     __shared__ __align__(8)   uint64_t full   [2];
     __shared__ __align__(8)   uint64_t empty  [2];
@@ -5080,7 +4987,7 @@ gqa_backward_v14_kv(
         return (long)(b * Hq + hq) * S + (long)qc * Br;
     };
 
-    // ── PRODUCER (wg 2): TMA loads + LAGGED D-rowsum (unchanged from V13) ──────
+    // ── PRODUCER (wg 2): TMA loads + LAGGED D-rowsum (IDENTICAL to V13) ────────
     if (wg == 2) {
         const bool leader = (tid == 256);
         const int pwarp   = (tid - 256) >> 5;
@@ -5130,67 +5037,57 @@ gqa_backward_v14_kv(
         const int q_row0 = (qc0 + (it % perG)) * Br;
         mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
         if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(it) + tid];
-        consumer_sync();                                     // SYNC-1 [KEEP]: sLSE write (tid<64) → fused_p read
-                                                             //   (wg0 cross-warp); also cross-iter sP/sdP WAR anchor.
+        consumer_sync();                                     // SYNC-1  [full]  sLSE (tid<64) → fused_p (wg0); cross-iter anchor.
 
-        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to swizzled sP (wg0)
-        //  ∥  dP = dO·Vᵀ → sdP (wg1).
+        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to sP (wg0)
+        //  ∥  dP = dO·Vᵀ → sdP (wg1).   [D-rowsum on the producer.]
         if (wg == 0) {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
-            fused_p_from_acc_v14<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
+            fused_p_from_acc_v13<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
         } else {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
             store_acc_smem_v6<Bc, SS_STRIDE_V6>(acc, sdP, wtid, 1.0f);
         }
-        consumer_sync();                                     // SYNC-2 [KEEP]: sP(wg0)+sdP(wg1) writes visible
-                                                             //   CTA-wide before dV reads sP / dS reads sdP.
+        consumer_sync();                                     // SYNC-2  [full]  sP(wg0) → Pᵀ reshuffle reads sP in both WGs.
 
-        // dV += Pᵀ·dO — read Pᵀ DIRECT from swizzled sP (transpose-elim: no reshuffle).
-        run_gemm_dVdK_half_v14(dv, sP, sdO_sw[s] + wg * 4096);
-        //                        [SYNC-3 DELETED: reshuffle gone]
-        consumer_sync();                                     // SYNC-4 [KEEP]: dV wgmma read of sP done (both WGs)
-                                                             //   → dS pass overwrites sP (cross-WG WAR on sP).
+        // dV += Pᵀ·dO  (Pᵀ built by ldmatrix→stmatrix; last read of sdO_sw[s]).
+        sp_to_sAt_v12<true>(sA_t, sP, tid);
+        consumer_sync();                                     // SYNC-3  [full]  sA_t collaborative write → dV reads FULL sA_t (cross-WG).
+        run_gemm_dVdK_half(dv, sA_t, sdO_sw[s] + wg * 4096, sbo_pad_v6(Br));
+        consumer_sync();                                     // SYNC-4  [full]  dV sA_t read (both WGs) → dSᵀ reshuffle overwrites sA_t (WAR).
 
-        // dS = P ⊙ (dP − D) → swizzled sP.  D produced by wg2 → wait d_ready[s].
+        // dS = P ⊙ (dP − D) → sP.  D produced by wg2 → wait d_ready[s] first.
         mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
-        {   // de-ALU (MOVE 3): c = tid&63 is loop-invariant per thread (CONS=256 ≡ 0 mod Bc);
-            // r steps by 4 each iter; sdP index strength-reduced (+=4*stride); sP index = r<<6 + sw128 XOR.
-            const int c = tid & 63;
-            int r = tid >> 6;
-            int sdp = r * SS_STRIDE_V6 + c;
-#pragma unroll
-            for (int kk = 0; kk < (Br * Bc) / CONS; kk++) {
-                const int pidx = (r << 6) + (((c >> 3) ^ (r & 7)) << 3) + (c & 7);   // sw128_idx(r,c)
-                sP[pidx] = __float2bfloat16(__bfloat162float(sP[pidx]) * (sdP[sdp] - sD[s][r]));
-                r   += CONS / Bc;                    // += 4 rows
-                sdp += (CONS / Bc) * SS_STRIDE_V6;   // += 4 * stride
-            }
+        for (int i = tid; i < Br * Bc; i += CONS) {
+            int r = i / Bc, c = i % Bc;
+            int pidx = r * SP_STRIDE_V12 + c;
+            sP[pidx] = __float2bfloat16(__bfloat162float(sP[pidx]) * (sdP[r * SS_STRIDE_V6 + c] - sD[s][r]));
         }
-        consumer_sync();                                     // SYNC-5 [KEEP]: dS write of sP → dK reads sP (cross-WG).
+        consumer_sync();                                     // SYNC-5  [full]  dS write sP → dSᵀ reshuffle reads sP in both WGs.
 
-        // dK += dSᵀ·Q — read dSᵀ DIRECT from swizzled sP (transpose-elim: no reshuffle).
-        run_gemm_dVdK_half_v14(dk, sP, sQ_sw[s] + wg * 4096);
-        //                        [SYNC-6 DELETED: reshuffle gone]
-        //                        [SYNC-7 MERGED into SYNC-8 below]
-
-        // dQ_tile = dS·K — dS staged K-major into sA_t (ldmatrix from swizzled sP).
-        sp_to_sAt_dQ_v14(sA_t, sP, tid);                     // reads sP (concurrent read w/ dK's — safe), writes sA_t
-        consumer_sync();                                     // SYNC-8 [KEEP+MERGE]: (a) sA_t write → run_gemm_dQ read
-                                                             //   (cross-WG); (b) dK wgmma read of sQ_sw done (both WGs,
-                                                             //   post-wait0) → safe to arrive empty[s] & free sQ_sw/sdO_sw.
+        // dK += dSᵀ·Q  (dSᵀ built by ldmatrix→stmatrix; last read of sQ_sw[s]).
+        sp_to_sAt_v12<true>(sA_t, sP, tid);
+        consumer_sync();                                     // SYNC-6  [full]  sA_t collaborative write → dK reads FULL sA_t (cross-WG).
+        run_gemm_dVdK_half(dk, sA_t, sQ_sw[s] + wg * 4096, sbo_pad_v6(Br));
+        consumer_sync();                                     // SYNC-7  [full]  dK sA_t read (both WGs) → dS-K reshuffle overwrites sA_t (WAR); gate empty.
         if (tid == 0) mbar_arrive_v11(&empty[s]);
+
+        // dQ_tile = dS·K (transient) — dS built by ldmatrix→stmatrix (K-major).
+        sp_to_sAt_v12<false>(sA_t, sP, tid);
+        consumer_sync();                                     // SYNC-8  [full]  sA_t collaborative write → run_gemm_dQ reads FULL sA_t (cross-WG).
         { float acc[32]; zeroN<32>(acc);
           run_gemm_dQ_half(acc, sA_t, sK_sw + wg * 4096, sbo_pad_v6(Bc));
-          atomic_flush_frag<64>(acc, d_dq_accum, lBaseOf(it) * D, D, wg * 64, wtid, scale); }
-        //                        [SYNC-9/SYNC-10 DELETED: direct fragment→global atomicAdd, no smem stage.
-        //                         Next iter's SYNC-1 anchors the cross-iter sP/sdP WAR.]
+          stage_acc_f32<64>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
+        warpgroup_sync(wg);                                  // SYNC-9  [per-WG]  stage (fragment) → flush (linear) on this WG's own sS/sdP.
+        atomic_flush_stage<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(it) * D, D, wg * 64, wtid);
+        //                                                   // SYNC-10 [REMOVED]  cross-iter sS/sdP WAR re-anchored by next SYNC-1.
     }
 
-    // ── Epilogue — coalesced dV/dK writeback (sA_t stage, per-WG halves). ──
-    consumer_sync();                                         // pre-epilogue: last dQ's sA_t read (both WGs, wait0'd)
-                                                             //   done → epilogue overwrites sA_t (cross-WG).
+    // ── Epilogue — coalesced dV/dK writeback (identical to V13). ──
+    consumer_sync();                                         // pre-epilogue [full]  last dQ's sA_t read (both WGs) → epilogue overwrites sA_t
+                                                             //   (cross-WG; formerly provided by the removed SYNC-10).
     bf16 *stage = sA_t + wg * 4096;
     fence_operandN<32>(dv);
     stage_acc_bf16<64>(dv, stage, wtid, 1.0f);
@@ -5420,7 +5317,7 @@ int main(){
 
     launch_gqa_backward_v14<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V14 Br=64 Bc=64 critical-path collapse (transpose-elim + fewer barriers + de-ALU) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V14 Br=64 Bc=64 barrier-reduction only (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -5531,7 +5428,7 @@ int main(){
             [&](){ launch_gqa_backward_v14<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V14 Br=64, Bc=64  critical-path collapse (transpose-elim + fewer barriers + de-ALU)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V14 Br=64, Bc=64  barrier-reduction only  (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
