@@ -5157,40 +5157,10 @@ void launch_gqa_backward_v14(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// V15 — V14 PERSISTENT-BLOCK clone.  Launch exactly #SMs 1-D blocks; each block
-// grid-strides over the B*Hkv*(S/Bc) work-items.  This amortizes the per-block
-// prologue + TMA-pipeline fill — paid B*Hkv*(S/Bc) = 2048× in V14 across ~15.5
-// waves — down to ~#SMs× (cuDNN runs 132 persistent / 1 wave).  NAIVE persistence:
-// the double-buffer TMA pipeline AND every mbar phase-parity local are RESET per
-// work-item (no warm producer hand-off across work-items — deliberate follow-on).
-// Everything inside the work loop is byte-identical to V14; only the blockIdx
-// decode, the per-work-item mbar re-init, and the top/bottom work barriers change.
+// V15 — V14 clone; ONLY change: per-iteration (g,qc) address indices maintained
+// incrementally instead of it/perG (IDIV) + it%perG (IREM) — removes the runtime
+// integer divide/modulo from the address→TMA critical path (chain-shortening).
 // ─────────────────────────────────────────────────────────────────────────────
-
-template<int Bc>
-__device__ __forceinline__ void fused_p_from_acc_v15(
-    const float acc[32], bf16* sP, const float* sLSE, int wtid,
-    int q_row0, int k_row0, float scale)
-{
-    const int w = wtid >> 5, lane = wtid & 31;
-    const int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
-    const float l0 = sLSE[r0], l1 = sLSE[r1];
-    const int gr0 = q_row0 + r0, gr1 = q_row0 + r1;
-#pragma unroll
-    for (int nt = 0; nt < Bc / 8; nt++) {
-        const int c   = nt * 8 + cc;
-        const int gc0 = k_row0 + c, gc1 = gc0 + 1;
-        sP[r0 * SP_STRIDE_V12 + c + 0] = (gc0 > gr0) ? __float2bfloat16(0.f)
-                                       : __float2bfloat16(__expf(acc[nt * 4 + 0] * scale - l0));
-        sP[r0 * SP_STRIDE_V12 + c + 1] = (gc1 > gr0) ? __float2bfloat16(0.f)
-                                       : __float2bfloat16(__expf(acc[nt * 4 + 1] * scale - l0));
-        sP[r1 * SP_STRIDE_V12 + c + 0] = (gc0 > gr1) ? __float2bfloat16(0.f)
-                                       : __float2bfloat16(__expf(acc[nt * 4 + 2] * scale - l1));
-        sP[r1 * SP_STRIDE_V12 + c + 1] = (gc1 > gr1) ? __float2bfloat16(0.f)
-                                       : __float2bfloat16(__expf(acc[nt * 4 + 3] * scale - l1));
-    }
-}
-
 template<int Br, int Bc, int D>
 __global__ void
 gqa_backward_v15_kv(
@@ -5204,7 +5174,7 @@ gqa_backward_v15_kv(
     bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV, float * __restrict__ d_dq_accum,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "V15 requires Br=Bc=64, D=128");
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V13 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;   // consumer thread count (wg 0+1)
 
     __shared__ __align__(128) bf16 sK_sw[Bc * D];
@@ -5213,193 +5183,169 @@ gqa_backward_v15_kv(
     __shared__ __align__(128) bf16 sdO_sw[2][Br * D];
     __shared__ __align__(128) bf16 sdO_pl[2][Br * D];
     __shared__ __align__(128) bf16 sO_pl [2][Br * D];
-    __shared__ __align__(16)  float sS [Br * SS_STRIDE_V6];   // S store DROPPED; kept as wg0 dQ stage
+    __shared__ __align__(16)  float sS [Br * SS_STRIDE_V6];   // V13: S store DROPPED; kept as wg0 dQ stage
     __shared__ __align__(16)  float sdP[Br * SS_STRIDE_V6];
-    __shared__ __align__(16)  bf16  sP [Br * SP_STRIDE_V12];  // 16-B-aligned stride for ldmatrix
+    __shared__ __align__(16)  bf16  sP [Br * SP_STRIDE_V12];  // V12: 16-B-aligned stride for ldmatrix
     __shared__                float sLSE[Br];
-    __shared__                float sD  [2][Br];              // double-buffered, producer-written
+    __shared__                float sD  [2][Br];              // V13: double-buffered, producer-written
     __shared__ __align__(128) bf16  sA_t[SMEM_TILED_V6];
     __shared__ __align__(8)   uint64_t mbar_kv;
     __shared__ __align__(8)   uint64_t full   [2];
     __shared__ __align__(8)   uint64_t empty  [2];
-    __shared__ __align__(8)   uint64_t d_ready[2];            // producer→consumer D signal
+    __shared__ __align__(8)   uint64_t d_ready[2];            // V13: producer→consumer D signal
 
     const int tid   = threadIdx.x;
     const int wg    = tid >> 7;
     const int wtid  = tid & 127;
     const int lane  = tid & 31;
-
-    // ── work-item enumeration (persistence): #SMs blocks stride over ALL tiles ──
-    const int nkT   = S / Bc;             // k-tiles per (b,hkv)
-    const int TOTAL = B * Hkv * nkT;      // total work-items (= V14's grid volume)
+    const int b = blockIdx.x, hkv = blockIdx.y, k_tile = blockIdx.z;
+    const int k_row0 = k_tile * Bc;
     const int nQTiles = S / Br;
+
+    const long     kvBase     = ((long)(b * Hkv + hkv) * S + k_row0) * D;
+    const uint32_t kvFlatRow  = (uint32_t)((b * Hkv + hkv) * S + k_row0);
     const uint32_t bytesTile  = (uint32_t)(Br * D * sizeof(bf16));
     const uint32_t bytesAtom  = (uint32_t)(Bc * 64 * sizeof(bf16));
 
-    for (int wk = blockIdx.x; wk < TOTAL; wk += gridDim.x) {
-        // decode the flat work-item id back into (b, hkv, k_tile) — this exactly
-        // reproduces V14's dim3 GRID(B, Hkv, S/Bc) mapping (k_tile fastest).
-        const int k_tile = wk % nkT;
-        const int hkv    = (wk / nkT) % Hkv;
-        const int b      =  wk / (nkT * Hkv);
-        const int k_row0 = k_tile * Bc;
-
-        const long     kvBase    = ((long)(b * Hkv + hkv) * S + k_row0) * D;
-        const uint32_t kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
-
-        // ── PER-WORK-ITEM PROTOCOL RESET ─────────────────────────────────────
-        // Re-init every mbar → phase parity restarts at 0.  The BOTTOM barrier of
-        // the previous work-item guarantees all warps finished reading this smem +
-        // mbars, so re-init here cannot clobber an in-flight buffer.  The TOP
-        // __syncthreads then makes the fresh mbars visible before any TMA/wait and
-        // pairs with the BOTTOM barrier so no warp races into the next work-item's
-        // TMA while another still reads this one's buffers.
-        if (tid == 0) {
-            mbar_init_v4(&mbar_kv, 1);
-            mbar_init_v4(&full[0], 1);    mbar_init_v4(&full[1], 1);
-            mbar_init_v4(&empty[0], 1);   mbar_init_v4(&empty[1], 1);
-            mbar_init_v4(&d_ready[0], 1); mbar_init_v4(&d_ready[1], 1);
-        }
-        __syncthreads();
-
-        const int qc0    = k_row0 / Br;
-        const int perG   = nQTiles - qc0;
-        const int nIter  = G * perG;
-
-        auto qFlatRowOf = [&](int it) -> uint32_t {
-            const int g  = it / perG;
-            const int qc = qc0 + (it % perG);
-            const int hq = hkv * G + g;
-            return (uint32_t)((b * Hq + hq) * S + qc * Br);
-        };
-        auto lBaseOf = [&](int it) -> long {
-            const int g  = it / perG;
-            const int qc = qc0 + (it % perG);
-            const int hq = hkv * G + g;
-            return (long)(b * Hq + hq) * S + (long)qc * Br;
-        };
-
-        // ── PRODUCER (wg 2): TMA loads + LAGGED D-rowsum.  No `return` now — it
-        //    falls through to the BOTTOM barrier so all 384 threads rendezvous. ──
-        if (wg == 2) {
-            const bool leader = (tid == 256);
-            const int pwarp   = (tid - 256) >> 5;   // 0..3 within the producer warpgroup
-            if (leader) {
-                mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
-                tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
-                tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
-                tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kvFlatRow);
-                tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
-            }
-            uint32_t epar[2] = {0, 0}, fpar[2] = {0, 0};   // FRESH per work-item
-            // Compute D for tile `td` (waits its TMA, reduces, arrives d_ready).
-            auto do_drowsum = [&](int td) {
-                const int sp = td & 1;
-                mbar_wait_v4(&full[sp], fpar[sp]); fpar[sp] ^= 1;
-                producer_drowsum_v13<Br, D>(sD[sp], sdO_pl[sp], sO_pl[sp], pwarp, lane);
-                producer_sync();
-                if (leader) mbar_arrive_v11(&d_ready[sp]);
-            };
-            for (int it = 0; it < nIter; it++) {
-                const int s = it & 1;
-                if (it >= 2) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
-                if (leader) {
-                    const uint32_t r = qFlatRowOf(it);
-                    mbar_expect_tx_v4(&full[s], bytesTile * 4);
-                    tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  r);
-                    tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, r);
-                    tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
-                    tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
-                    tma_load_2d_v4(&tma_dO_pl, sdO_pl[s],           &full[s], 0,  r);
-                    tma_load_2d_v4(&tma_O_pl,  sO_pl [s],           &full[s], 0,  r);
-                }
-                if (it >= 1) do_drowsum(it - 1);   // lagged one tile → 2 TMAs in flight
-            }
-            do_drowsum(nIter - 1);                 // tail: final tile's D
-        } else {
-            // ── CONSUMERS (wg 0,1) ───────────────────────────────────────────
-            mbar_wait_v4(&mbar_kv, 0);
-
-            float dv[32]; zeroN<32>(dv);
-            float dk[32]; zeroN<32>(dk);
-
-            uint32_t cpar[2] = {0, 0}, dpar[2] = {0, 0};   // FRESH per work-item
-            for (int it = 0; it < nIter; it++) {
-                const int s = it & 1;
-                const int q_row0 = (qc0 + (it % perG)) * Br;
-                mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
-                if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(it) + tid];
-                consumer_sync();
-
-                // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to sP (wg0)
-                //  ∥  dP = dO·Vᵀ → sdP (wg1).   [D-rowsum on the producer.]
-                if (wg == 0) {
-                    float acc[32]; zeroN<32>(acc);
-                    run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
-                    fused_p_from_acc_v15<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
-                } else {
-                    float acc[32]; zeroN<32>(acc);
-                    run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
-                    store_acc_smem_v6<Bc, SS_STRIDE_V6>(acc, sdP, wtid, 1.0f);
-                }
-                consumer_sync();
-
-                // dV += Pᵀ·dO  (Pᵀ built by ldmatrix→stmatrix; last read of sdO_sw[s]).
-                sp_to_sAt_v12<true>(sA_t, sP, tid);
-                consumer_sync();
-                run_gemm_dVdK_half(dv, sA_t, sdO_sw[s] + wg * 4096, sbo_pad_v6(Br));
-                consumer_sync();
-
-                // dS = P ⊙ (dP − D) → sP.  D produced by wg2 → wait d_ready[s] first.
-                mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
-                for (int i = tid; i < Br * Bc; i += CONS) {
-                    int r = i / Bc, c = i % Bc;
-                    int pidx = r * SP_STRIDE_V12 + c;
-                    sP[pidx] = __float2bfloat16(__bfloat162float(sP[pidx]) * (sdP[r * SS_STRIDE_V6 + c] - sD[s][r]));
-                }
-                consumer_sync();
-
-                // dK += dSᵀ·Q  (dSᵀ built by ldmatrix→stmatrix; last read of sQ_sw[s]).
-                sp_to_sAt_v12<true>(sA_t, sP, tid);
-                consumer_sync();
-                run_gemm_dVdK_half(dk, sA_t, sQ_sw[s] + wg * 4096, sbo_pad_v6(Br));
-                consumer_sync();
-                if (tid == 0) mbar_arrive_v11(&empty[s]);
-
-                // dQ_tile = dS·K (transient) — dS built by ldmatrix→stmatrix (K-major).
-                sp_to_sAt_v12<false>(sA_t, sP, tid);
-                consumer_sync();
-                { float acc[32]; zeroN<32>(acc);
-                  run_gemm_dQ_half(acc, sA_t, sK_sw + wg * 4096, sbo_pad_v6(Bc));
-                  stage_acc_f32<64>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
-                consumer_sync();
-                atomic_flush_stage<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(it) * D, D, wg * 64, wtid);
-                consumer_sync();
-            }
-
-            // ── Epilogue — coalesced dV/dK writeback (identical to V14). ──
-            bf16 *stage = sA_t + wg * 4096;
-            fence_operandN<32>(dv);
-            stage_acc_bf16<64>(dv, stage, wtid, 1.0f);
-            consumer_sync();
-            store_stage_vec<Bc, 64>(stage, d_dV, kvBase, D, wg * 64, wtid);
-            consumer_sync();
-            fence_operandN<32>(dk);
-            stage_acc_bf16<64>(dk, stage, wtid, scale);
-            consumer_sync();
-            store_stage_vec<Bc, 64>(stage, d_dK, kvBase, D, wg * 64, wtid);
-        }
-
-        // ── BOTTOM work barrier: all 384 threads must finish reading this
-        //    work-item's smem + mbars before the next iteration's tid==0 re-inits
-        //    the mbars and the producer overwrites sK_sw/sV_sw/sQ_sw/…  Required
-        //    to make the naive per-work-item pipeline restart race-free.
-        __syncthreads();
+    if (tid == 0) {
+        mbar_init_v4(&mbar_kv, 1);
+        mbar_init_v4(&full[0], 1);    mbar_init_v4(&full[1], 1);
+        mbar_init_v4(&empty[0], 1);   mbar_init_v4(&empty[1], 1);
+        mbar_init_v4(&d_ready[0], 1); mbar_init_v4(&d_ready[1], 1);
     }
+    __syncthreads();
+
+    const int qc0    = k_row0 / Br;
+    const int perG   = nQTiles - qc0;
+    const int nIter  = G * perG;
+
+    // V15: (g,qc) maintained incrementally in each loop → no per-iter IDIV/IREM.
+    auto qFlatRowOf = [&](int g, int qc) -> uint32_t {
+        const int hq = hkv * G + g;
+        return (uint32_t)((b * Hq + hq) * S + qc * Br);
+    };
+    auto lBaseOf = [&](int g, int qc) -> long {
+        const int hq = hkv * G + g;
+        return (long)(b * Hq + hq) * S + (long)qc * Br;
+    };
+
+    // ── PRODUCER (wg 2): TMA loads + LAGGED D-rowsum (PART A) ─────────────────
+    if (wg == 2) {
+        const bool leader = (tid == 256);
+        const int pwarp   = (tid - 256) >> 5;   // 0..3 within the producer warpgroup
+        if (leader) {
+            mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
+            tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
+            tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+            tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kvFlatRow);
+            tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+        }
+        uint32_t epar[2] = {0, 0}, fpar[2] = {0, 0};
+        int gP = 0, qcP = qc0;   // V15 incremental (g,qc)
+        // Compute D for tile `td` (waits its TMA, reduces, arrives d_ready).
+        auto do_drowsum = [&](int td) {
+            const int sp = td & 1;
+            mbar_wait_v4(&full[sp], fpar[sp]); fpar[sp] ^= 1;
+            producer_drowsum_v13<Br, D>(sD[sp], sdO_pl[sp], sO_pl[sp], pwarp, lane);
+            producer_sync();
+            if (leader) mbar_arrive_v11(&d_ready[sp]);
+        };
+        for (int it = 0; it < nIter; it++) {
+            const int s = it & 1;
+            if (it >= 2) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
+            if (leader) {
+                const uint32_t r = qFlatRowOf(gP, qcP);
+                mbar_expect_tx_v4(&full[s], bytesTile * 4);
+                tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  r);
+                tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, r);
+                tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
+                tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
+                tma_load_2d_v4(&tma_dO_pl, sdO_pl[s],           &full[s], 0,  r);
+                tma_load_2d_v4(&tma_O_pl,  sO_pl [s],           &full[s], 0,  r);
+            }
+            if (it >= 1) do_drowsum(it - 1);   // lagged one tile → 2 TMAs in flight
+            if (++qcP == nQTiles) { qcP = qc0; ++gP; }
+        }
+        do_drowsum(nIter - 1);                 // tail: final tile's D
+        return;
+    }
+
+    // ── CONSUMERS (wg 0,1) ───────────────────────────────────────────────────
+    mbar_wait_v4(&mbar_kv, 0);
+
+    float dv[32]; zeroN<32>(dv);
+    float dk[32]; zeroN<32>(dk);
+
+    uint32_t cpar[2] = {0, 0}, dpar[2] = {0, 0};
+    int gC = 0, qcC = qc0;   // V15 incremental (g,qc)
+    for (int it = 0; it < nIter; it++) {
+        const int s = it & 1;
+        const int q_row0 = qcC * Br;
+        mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
+        if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(gC, qcC) + tid];
+        consumer_sync();
+
+        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to sP (wg0, PART B)
+        //  ∥  dP = dO·Vᵀ → sdP (wg1).   [D-rowsum now on the producer, PART A.]
+        if (wg == 0) {
+            float acc[32]; zeroN<32>(acc);
+            run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
+            fused_p_from_acc_v14<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
+        } else {
+            float acc[32]; zeroN<32>(acc);
+            run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
+            store_acc_smem_v6<Bc, SS_STRIDE_V6>(acc, sdP, wtid, 1.0f);
+        }
+        consumer_sync();
+
+        // dV += Pᵀ·dO  (Pᵀ built by ldmatrix→stmatrix; last read of sdO_sw[s]).
+        sp_to_sAt_v12<true>(sA_t, sP, tid);
+        consumer_sync();
+        run_gemm_dVdK_half(dv, sA_t, sdO_sw[s] + wg * 4096, sbo_pad_v6(Br));
+        consumer_sync();
+
+        // dS = P ⊙ (dP − D) → sP.  D produced by wg2 → wait d_ready[s] first.
+        mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
+        for (int i = tid; i < Br * Bc; i += CONS) {
+            int r = i / Bc, c = i % Bc;
+            int pidx = r * SP_STRIDE_V12 + c;
+            sP[pidx] = __float2bfloat16(__bfloat162float(sP[pidx]) * (sdP[r * SS_STRIDE_V6 + c] - sD[s][r]));
+        }
+        consumer_sync();
+
+        // dK += dSᵀ·Q  (dSᵀ built by ldmatrix→stmatrix; last read of sQ_sw[s]).
+        sp_to_sAt_v12<true>(sA_t, sP, tid);
+        consumer_sync();
+        run_gemm_dVdK_half(dk, sA_t, sQ_sw[s] + wg * 4096, sbo_pad_v6(Br));
+        consumer_sync();
+        if (tid == 0) mbar_arrive_v11(&empty[s]);
+
+        // dQ_tile = dS·K (transient) — dS built by ldmatrix→stmatrix (K-major).
+        sp_to_sAt_v12<false>(sA_t, sP, tid);
+        consumer_sync();
+        { float acc[32]; zeroN<32>(acc);
+          run_gemm_dQ_half(acc, sA_t, sK_sw + wg * 4096, sbo_pad_v6(Bc));
+          stage_acc_f32<64>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
+        consumer_sync();
+        atomic_flush_stage<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
+        consumer_sync();
+        if (++qcC == nQTiles) { qcC = qc0; ++gC; }
+    }
+
+    // ── Epilogue — coalesced dV/dK writeback (identical to V11/V12). ──
+    bf16 *stage = sA_t + wg * 4096;
+    fence_operandN<32>(dv);
+    stage_acc_bf16<64>(dv, stage, wtid, 1.0f);
+    consumer_sync();
+    store_stage_vec<Bc, 64>(stage, d_dV, kvBase, D, wg * 64, wtid);
+    consumer_sync();
+    fence_operandN<32>(dk);
+    stage_acc_bf16<64>(dk, stage, wtid, scale);
+    consumer_sync();
+    store_stage_vec<Bc, 64>(stage, d_dK, kvBase, D, wg * 64, wtid);
 }
 
-// ── V15 launcher — persistent: dim3 GRID(numSMs); kernel grid-strides. dQ scratch
-//    + memset + convert tail identical to V14.
+// ── V15 launcher — identical to V14; kernel hoists per-iter (g,qc) address math.
 template<int Br, int Bc, int D>
 void launch_gqa_backward_v15(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
@@ -5407,7 +5353,7 @@ void launch_gqa_backward_v15(
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "V15 requires Br=Bc=64, D=128");
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V14 requires Br=Bc=64, D=128");
 
     auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
         CUtensorMap desc{};
@@ -5460,15 +5406,8 @@ void launch_gqa_backward_v15(
     }
     CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
 
-    // Persistence: launch exactly one block per SM; the kernel grid-strides over
-    // all B*Hkv*(S/Bc) work-items so the per-block prologue/pipeline-fill is paid
-    // ~#SMs× instead of once per tile (cuDNN's 132-persistent / 1-wave shape).
-    int dev = 0; CUDA_CHECK(cudaGetDevice(&dev));
-    int numSMs = 0;
-    CUDA_CHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, dev));
-
     constexpr dim3 BLOCK(384);
-    dim3 GRID(numSMs);
+    dim3 GRID(B, Hkv, S / Bc);
     gqa_backward_v15_kv<Br,Bc,D><<<GRID, BLOCK>>>(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
@@ -5627,7 +5566,7 @@ int main(){
 
     launch_gqa_backward_v15<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V15 Br=64 Bc=64 persistent 132-block grid-stride (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V15 Br=64 Bc=64 incremental (g,qc) address (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -5745,7 +5684,7 @@ int main(){
             [&](){ launch_gqa_backward_v15<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V15 Br=64, Bc=64  persistent grid-stride  (Hopper SM_90)", s);
+        displayStats("GQA bwd V15 Br=64, Bc=64  incremental (g,qc) address  (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
