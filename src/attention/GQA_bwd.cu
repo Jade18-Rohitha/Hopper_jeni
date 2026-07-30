@@ -4870,52 +4870,34 @@ void launch_gqa_backward_v13(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// V14 — barrier-reduction ONLY (pure V13, same algorithm)      [SM_90a only]
+// V14 — software-pipelined LDS prefetch (hide shared-load latency)   [SM_90a only]
 //
-// ISOLATION EXPERIMENT: V14 is an EXACT clone of V13 — same instructions, same
-// algorithm, same sp_to_sAt_v12 reshuffles, same plain padded sP (SP_STRIDE_V12),
-// same coalesced smem-staged dQ flush (stage_acc_f32 → atomic_flush_stage).  The
-// ONLY change is the barrier weight/count, to test whether barriers are the serial
-// cost.  Output is BIT-IDENTICAL to V13 (2e-2).  Constraints: ≤170 regs (≈V13's 154),
-// 0 spills, occ 18.75% unchanged.
+// PURE instruction-reordering refactor of V13.  BIT-IDENTICAL values, identical
+// math, identical smem/barrier/fence protocol — ONLY the *timing* of the shared
+// loads in the dS = P⊙(dP−D) elementwise pass changes.
 //
-// ── PER-SYNC AUDIT of V13's 10 per-iteration consumer_sync (bar.sync 1,256) ──
-// Rule: a full 256-thread barrier survives ONLY if it orders a real CROSS-WARPGROUP
-// data dependency (a buffer one WG writes and the OTHER WG reads).  A dependency that
-// lives inside one warpgroup (disjoint per-WG buffers, or same-WG program order after a
-// per-WG wgmma_wait0) needs at most a per-WG bar.sync.
-//   SYNC-1 (after sLSE)          KEEP full — sLSE written tid<64 → read by all of wg0; loop-top anchor for the cross-iter sP/sdP WAR.
-//   SYNC-2 (after S/dP→sP,sdP)   KEEP full — wg0's sP → Pᵀ reshuffle reads sP in BOTH WGs (cross-WG RAW); wg1's sdP consumed later.
-//   SYNC-3 (after Pᵀ reshuffle)  KEEP full — sp_to_sAt writes ALL of sA_t (256 thr collaborative) → dV wgmma reads FULL sA_t in both WGs (cross-WG RAW).
-//   SYNC-4 (after dV GEMM)       KEEP full — dV's sA_t read (both WGs) → dSᵀ reshuffle OVERWRITES sA_t (cross-WG WAR).
-//   SYNC-5 (after dS→sP)         KEEP full — dS pass writes sP → dSᵀ reshuffle reads sP in both WGs (cross-WG RAW).
-//   SYNC-6 (after dSᵀ reshuffle) KEEP full — sA_t collaborative write → dK wgmma reads FULL sA_t (cross-WG RAW).
-//   SYNC-7 (after dK GEMM)       KEEP full — dK's sA_t read (both WGs) → dS-K reshuffle OVERWRITES sA_t (cross-WG WAR); also gates empty[s] arrive.
-//   SYNC-8 (after dS-K reshuffle)KEEP full — sA_t collaborative write → run_gemm_dQ reads FULL sA_t (cross-WG RAW).
-//   SYNC-9 (stage→flush)         DOWNGRADE per-WG — wg0 stages into sS & flushes sS; wg1 into sdP & flushes sdP; DISJOINT per-WG buffers, no
-//                                cross-WG dep. stage_acc_f32 (fragment map) → atomic_flush_stage (linear map) reorders WITHIN each WG's own
-//                                buffer, so a 128-thread warpgroup_sync(wg) is exactly the ordering needed. (bit-identical: same buffers/values.)
-//   SYNC-10 (after flush)        REMOVE  — its jobs are (a) cross-iter WAR on sS/sdP: sS is wg0-only (next write is many full barriers later);
-//                                sdP's wg1-local flush-read→next-store_acc-write WAR is re-anchored by the NEXT iter's SYNC-1 (full); and
-//                                (b) the pre-epilogue sA_t cross-WG WAR — moved to an explicit consumer_sync at the top of the epilogue.
-// Net: 8 full-CTA + 1 per-WG (SYNC-9) per iteration (V13 = 10 full-CTA); SYNC-10 removed (epilogue gains one one-time full-CTA pre-barrier).
+// WHY: V13 -lineinfo stall sampling → #1 warp stall = short_scoreboard 29.2%
+// (MIO/shared-load dependency); top-stalling instruction = the fp32 FFMA that
+// forms dS.  In V13's dS loop each iteration LDS-loads sP/sdP/sD from shared and
+// *immediately* FFMAs on them — the load→use distance is ~1 instruction, so the
+// ~20-30-cyc shared-load latency lands directly on the FFMA and, at 18.75% occ,
+// there aren't enough warps to hide it.  Classic software-pipelining fix: peel
+// the first iteration's loads, then in the loop body issue iteration N+1's LDS
+// into a register buffer BEFORE computing iteration N's FFMA on the *already-
+// loaded* registers.  Iter N+1's load latency now overlaps iter N's compute →
+// the FFMA no longer stalls on short_scoreboard.
 //
-// Every fence/mbarrier/wgmma-async discipline is IDENTICAL to V13 (fence.proxy inside
-// run_gemm_*, wgmma fence/commit/wait_group, producer/consumer full/empty protocol,
-// producer-side D-rowsum + d_ready). Barrier removals are the ONLY risk (race = finite-
-// wrong at FULL speed only, invisible under compute-sanitizer) — see per-sync notes.
+// BIT-IDENTICAL argument for the pipelined loop: each thread owns a disjoint set
+// of indices i (blockDim.x-strided) and performs a single read-modify-write of
+// sP[pidx] per element.  No other thread writes an element this thread reads, and
+// within a thread the prefetch of sP[pidx_next] happens BEFORE that element is
+// ever written (its write is a later iteration).  So every prefetched value equals
+// the value V13 reads fresh, and every element is updated exactly once, same order
+// of results.  Prefetch depth = 1 (a few extra registers).
+//
+// Everything else (fused softmax, producer D-rowsum, GEMMs, mbarrier/fence
+// protocol, coalesced writeback) is copied verbatim from V13.
 // ═════════════════════════════════════════════════════════════════════════════
-
-// Warpgroup-LOCAL barrier (128 threads).  Distinct named-barrier id per consumer WG
-// (wg0→id 3, wg1→id 4) so the two warpgroups DON'T merge into one rendezvous.  Used for
-// the dQ-tail stage→flush ordering, which is WG-private (each WG stages into its own
-// sS/sdP region and flushes only its own) — a full CONS(256) consumer_sync there is
-// over-synchronization.  `wg` is warpgroup-uniform → the branch does not diverge.
-__device__ __forceinline__ void warpgroup_sync(int wg) {
-    if (wg == 0) asm volatile("bar.sync 3, 128;\n" ::: "memory");
-    else         asm volatile("bar.sync 4, 128;\n" ::: "memory");
-}
-
 template<int Br, int Bc, int D>
 __global__ void
 gqa_backward_v14_kv(
@@ -4938,16 +4920,16 @@ gqa_backward_v14_kv(
     __shared__ __align__(128) bf16 sdO_sw[2][Br * D];
     __shared__ __align__(128) bf16 sdO_pl[2][Br * D];
     __shared__ __align__(128) bf16 sO_pl [2][Br * D];
-    __shared__ __align__(16)  float sS [Br * SS_STRIDE_V6];   // S store DROPPED (fused); kept as wg0 dQ f32 stage
+    __shared__ __align__(16)  float sS [Br * SS_STRIDE_V6];   // V13: S store DROPPED; kept as wg0 dQ stage
     __shared__ __align__(16)  float sdP[Br * SS_STRIDE_V6];
-    __shared__ __align__(16)  bf16  sP [Br * SP_STRIDE_V12];  // V12: 16-B-aligned stride for ldmatrix (UNCHANGED from V13)
+    __shared__ __align__(16)  bf16  sP [Br * SP_STRIDE_V12];  // V12: 16-B-aligned stride for ldmatrix
     __shared__                float sLSE[Br];
-    __shared__                float sD  [2][Br];              // double-buffered, producer-written
+    __shared__                float sD  [2][Br];              // V13: double-buffered, producer-written
     __shared__ __align__(128) bf16  sA_t[SMEM_TILED_V6];
     __shared__ __align__(8)   uint64_t mbar_kv;
     __shared__ __align__(8)   uint64_t full   [2];
     __shared__ __align__(8)   uint64_t empty  [2];
-    __shared__ __align__(8)   uint64_t d_ready[2];
+    __shared__ __align__(8)   uint64_t d_ready[2];            // V13: producer→consumer D signal
 
     const int tid   = threadIdx.x;
     const int wg    = tid >> 7;
@@ -4987,10 +4969,10 @@ gqa_backward_v14_kv(
         return (long)(b * Hq + hq) * S + (long)qc * Br;
     };
 
-    // ── PRODUCER (wg 2): TMA loads + LAGGED D-rowsum (IDENTICAL to V13) ────────
+    // ── PRODUCER (wg 2): TMA loads + LAGGED D-rowsum (PART A) ─────────────────
     if (wg == 2) {
         const bool leader = (tid == 256);
-        const int pwarp   = (tid - 256) >> 5;
+        const int pwarp   = (tid - 256) >> 5;   // 0..3 within the producer warpgroup
         if (leader) {
             mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
             tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
@@ -4999,6 +4981,7 @@ gqa_backward_v14_kv(
             tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
         }
         uint32_t epar[2] = {0, 0}, fpar[2] = {0, 0};
+        // Compute D for tile `td` (waits its TMA, reduces, arrives d_ready).
         auto do_drowsum = [&](int td) {
             const int sp = td & 1;
             mbar_wait_v4(&full[sp], fpar[sp]); fpar[sp] ^= 1;
@@ -5019,9 +5002,9 @@ gqa_backward_v14_kv(
                 tma_load_2d_v4(&tma_dO_pl, sdO_pl[s],           &full[s], 0,  r);
                 tma_load_2d_v4(&tma_O_pl,  sO_pl [s],           &full[s], 0,  r);
             }
-            if (it >= 1) do_drowsum(it - 1);
+            if (it >= 1) do_drowsum(it - 1);   // lagged one tile → 2 TMAs in flight
         }
-        do_drowsum(nIter - 1);
+        do_drowsum(nIter - 1);                 // tail: final tile's D
         return;
     }
 
@@ -5037,10 +5020,10 @@ gqa_backward_v14_kv(
         const int q_row0 = (qc0 + (it % perG)) * Br;
         mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
         if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(it) + tid];
-        consumer_sync();                                     // SYNC-1  [full]  sLSE (tid<64) → fused_p (wg0); cross-iter anchor.
+        consumer_sync();
 
-        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to sP (wg0)
-        //  ∥  dP = dO·Vᵀ → sdP (wg1).   [D-rowsum on the producer.]
+        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to sP (wg0, PART B)
+        //  ∥  dP = dO·Vᵀ → sdP (wg1).   [D-rowsum now on the producer, PART A.]
         if (wg == 0) {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
@@ -5050,44 +5033,79 @@ gqa_backward_v14_kv(
             run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
             store_acc_smem_v6<Bc, SS_STRIDE_V6>(acc, sdP, wtid, 1.0f);
         }
-        consumer_sync();                                     // SYNC-2  [full]  sP(wg0) → Pᵀ reshuffle reads sP in both WGs.
+        consumer_sync();
 
         // dV += Pᵀ·dO  (Pᵀ built by ldmatrix→stmatrix; last read of sdO_sw[s]).
         sp_to_sAt_v12<true>(sA_t, sP, tid);
-        consumer_sync();                                     // SYNC-3  [full]  sA_t collaborative write → dV reads FULL sA_t (cross-WG).
+        consumer_sync();
         run_gemm_dVdK_half(dv, sA_t, sdO_sw[s] + wg * 4096, sbo_pad_v6(Br));
-        consumer_sync();                                     // SYNC-4  [full]  dV sA_t read (both WGs) → dSᵀ reshuffle overwrites sA_t (WAR).
+        consumer_sync();
 
         // dS = P ⊙ (dP − D) → sP.  D produced by wg2 → wait d_ready[s] first.
+        //
+        // V14: SOFTWARE-PIPELINED LDS PREFETCH.  Each consumer thread owns the
+        // strided index set { tid, tid+CONS, ... } and does one RMW of sP[pidx]
+        // per element.  Peel iteration 0's shared loads, then in the loop issue
+        // the NEXT iteration's sP/sdP/sD loads into a register buffer BEFORE the
+        // current iteration's FFMA — the LDS latency of N+1 overlaps the FFMA of
+        // N, so the FFMA no longer stalls on short_scoreboard (V13's #1 stall).
+        // Bit-identical: prefetch of sP[pidx_next] precedes that element's (later)
+        // write, and each element is updated exactly once.
         mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
-        for (int i = tid; i < Br * Bc; i += CONS) {
-            int r = i / Bc, c = i % Bc;
-            int pidx = r * SP_STRIDE_V12 + c;
-            sP[pidx] = __float2bfloat16(__bfloat162float(sP[pidx]) * (sdP[r * SS_STRIDE_V6 + c] - sD[s][r]));
+        {
+            const float* __restrict__ sDs = sD[s];
+            int   i = tid;
+            // Peel: load iteration-0 operands into the register buffer.
+            int   pidx_cur = 0;
+            bf16  p_cur    = __float2bfloat16(0.f);
+            float dp_cur = 0.f, d_cur = 0.f;
+            if (i < Br * Bc) {
+                const int r = i / Bc, c = i % Bc;
+                pidx_cur = r * SP_STRIDE_V12 + c;
+                p_cur    = sP [pidx_cur];
+                dp_cur   = sdP[r * SS_STRIDE_V6 + c];
+                d_cur    = sDs[r];
+            }
+            for (; i < Br * Bc; i += CONS) {
+                const int inext = i + CONS;
+                // Prefetch iteration N+1's operands (independent LDS issued NOW).
+                int   pidx_nxt = 0;
+                bf16  p_nxt    = __float2bfloat16(0.f);
+                float dp_nxt = 0.f, d_nxt = 0.f;
+                if (inext < Br * Bc) {
+                    const int rn = inext / Bc, cn = inext % Bc;
+                    pidx_nxt = rn * SP_STRIDE_V12 + cn;
+                    p_nxt    = sP [pidx_nxt];
+                    dp_nxt   = sdP[rn * SS_STRIDE_V6 + cn];
+                    d_nxt    = sDs[rn];
+                }
+                // Compute iteration N on the already-loaded registers.
+                sP[pidx_cur] = __float2bfloat16(__bfloat162float(p_cur) * (dp_cur - d_cur));
+                // Rotate the buffer: N+1 becomes the new current.
+                pidx_cur = pidx_nxt; p_cur = p_nxt; dp_cur = dp_nxt; d_cur = d_nxt;
+            }
         }
-        consumer_sync();                                     // SYNC-5  [full]  dS write sP → dSᵀ reshuffle reads sP in both WGs.
+        consumer_sync();
 
         // dK += dSᵀ·Q  (dSᵀ built by ldmatrix→stmatrix; last read of sQ_sw[s]).
         sp_to_sAt_v12<true>(sA_t, sP, tid);
-        consumer_sync();                                     // SYNC-6  [full]  sA_t collaborative write → dK reads FULL sA_t (cross-WG).
+        consumer_sync();
         run_gemm_dVdK_half(dk, sA_t, sQ_sw[s] + wg * 4096, sbo_pad_v6(Br));
-        consumer_sync();                                     // SYNC-7  [full]  dK sA_t read (both WGs) → dS-K reshuffle overwrites sA_t (WAR); gate empty.
+        consumer_sync();
         if (tid == 0) mbar_arrive_v11(&empty[s]);
 
         // dQ_tile = dS·K (transient) — dS built by ldmatrix→stmatrix (K-major).
         sp_to_sAt_v12<false>(sA_t, sP, tid);
-        consumer_sync();                                     // SYNC-8  [full]  sA_t collaborative write → run_gemm_dQ reads FULL sA_t (cross-WG).
+        consumer_sync();
         { float acc[32]; zeroN<32>(acc);
           run_gemm_dQ_half(acc, sA_t, sK_sw + wg * 4096, sbo_pad_v6(Bc));
           stage_acc_f32<64>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
-        warpgroup_sync(wg);                                  // SYNC-9  [per-WG]  stage (fragment) → flush (linear) on this WG's own sS/sdP.
+        consumer_sync();
         atomic_flush_stage<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(it) * D, D, wg * 64, wtid);
-        //                                                   // SYNC-10 [REMOVED]  cross-iter sS/sdP WAR re-anchored by next SYNC-1.
+        consumer_sync();
     }
 
-    // ── Epilogue — coalesced dV/dK writeback (identical to V13). ──
-    consumer_sync();                                         // pre-epilogue [full]  last dQ's sA_t read (both WGs) → epilogue overwrites sA_t
-                                                             //   (cross-WG; formerly provided by the removed SYNC-10).
+    // ── Epilogue — coalesced dV/dK writeback (identical to V11/V12/V13). ──
     bf16 *stage = sA_t + wg * 4096;
     fence_operandN<32>(dv);
     stage_acc_bf16<64>(dv, stage, wtid, 1.0f);
@@ -5317,7 +5335,7 @@ int main(){
 
     launch_gqa_backward_v14<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V14 Br=64 Bc=64 barrier-reduction only (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V14 Br=64 Bc=64 LDS-prefetch (hide shared latency) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -5428,7 +5446,7 @@ int main(){
             [&](){ launch_gqa_backward_v14<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V14 Br=64, Bc=64  barrier-reduction only  (Hopper SM_90)", s);
+        displayStats("GQA bwd V14 Br=64 Bc=64 LDS-prefetch (hide shared latency)  (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
