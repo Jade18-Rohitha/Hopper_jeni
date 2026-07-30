@@ -4869,35 +4869,38 @@ void launch_gqa_backward_v13(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// V14 — software-pipelined LDS prefetch (hide shared-load latency)   [SM_90a only]
-//
-// PURE instruction-reordering refactor of V13.  BIT-IDENTICAL values, identical
-// math, identical smem/barrier/fence protocol — ONLY the *timing* of the shared
-// loads in the dS = P⊙(dP−D) elementwise pass changes.
-//
-// WHY: V13 -lineinfo stall sampling → #1 warp stall = short_scoreboard 29.2%
-// (MIO/shared-load dependency); top-stalling instruction = the fp32 FFMA that
-// forms dS.  In V13's dS loop each iteration LDS-loads sP/sdP/sD from shared and
-// *immediately* FFMAs on them — the load→use distance is ~1 instruction, so the
-// ~20-30-cyc shared-load latency lands directly on the FFMA and, at 18.75% occ,
-// there aren't enough warps to hide it.  Classic software-pipelining fix: peel
-// the first iteration's loads, then in the loop body issue iteration N+1's LDS
-// into a register buffer BEFORE computing iteration N's FFMA on the *already-
-// loaded* registers.  Iter N+1's load latency now overlaps iter N's compute →
-// the FFMA no longer stalls on short_scoreboard.
-//
-// BIT-IDENTICAL argument for the pipelined loop: each thread owns a disjoint set
-// of indices i (blockDim.x-strided) and performs a single read-modify-write of
-// sP[pidx] per element.  No other thread writes an element this thread reads, and
-// within a thread the prefetch of sP[pidx_next] happens BEFORE that element is
-// ever written (its write is a later iteration).  So every prefetched value equals
-// the value V13 reads fresh, and every element is updated exactly once, same order
-// of results.  Prefetch depth = 1 (a few extra registers).
-//
-// Everything else (fused softmax, producer D-rowsum, GEMMs, mbarrier/fence
-// protocol, coalesced writeback) is copied verbatim from V13.
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+
+// V14 — V13 clone; ONLY change: fused-P softmax uses __expf (fast SFU exp,
+
+// strips the range-reduce/reconstruct ALU around EX2 on wg0's critical path).
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+template<int Bc>
+__device__ __forceinline__ void fused_p_from_acc_v14(
+    const float acc[32], bf16* sP, const float* sLSE, int wtid,
+    int q_row0, int k_row0, float scale)
+{
+    const int w = wtid >> 5, lane = wtid & 31;
+    const int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+    const float l0 = sLSE[r0], l1 = sLSE[r1];
+    const int gr0 = q_row0 + r0, gr1 = q_row0 + r1;
+#pragma unroll
+    for (int nt = 0; nt < Bc / 8; nt++) {
+        const int c   = nt * 8 + cc;
+        const int gc0 = k_row0 + c, gc1 = gc0 + 1;
+        sP[r0 * SP_STRIDE_V12 + c + 0] = (gc0 > gr0) ? __float2bfloat16(0.f)
+                                       : __float2bfloat16(__expf(acc[nt * 4 + 0] * scale - l0));
+        sP[r0 * SP_STRIDE_V12 + c + 1] = (gc1 > gr0) ? __float2bfloat16(0.f)
+                                       : __float2bfloat16(__expf(acc[nt * 4 + 1] * scale - l0));
+        sP[r1 * SP_STRIDE_V12 + c + 0] = (gc0 > gr1) ? __float2bfloat16(0.f)
+                                       : __float2bfloat16(__expf(acc[nt * 4 + 2] * scale - l1));
+        sP[r1 * SP_STRIDE_V12 + c + 1] = (gc1 > gr1) ? __float2bfloat16(0.f)
+                                       : __float2bfloat16(__expf(acc[nt * 4 + 3] * scale - l1));
+    }
+}
+
 template<int Br, int Bc, int D>
 __global__ void
 gqa_backward_v14_kv(
@@ -4911,7 +4914,7 @@ gqa_backward_v14_kv(
     bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV, float * __restrict__ d_dq_accum,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "V14 requires Br=Bc=64, D=128");
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V13 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;   // consumer thread count (wg 0+1)
 
     __shared__ __align__(128) bf16 sK_sw[Bc * D];
@@ -5027,7 +5030,7 @@ gqa_backward_v14_kv(
         if (wg == 0) {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
-            fused_p_from_acc_v13<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
+            fused_p_from_acc_v14<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
         } else {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
@@ -5042,48 +5045,11 @@ gqa_backward_v14_kv(
         consumer_sync();
 
         // dS = P ⊙ (dP − D) → sP.  D produced by wg2 → wait d_ready[s] first.
-        //
-        // V14: SOFTWARE-PIPELINED LDS PREFETCH.  Each consumer thread owns the
-        // strided index set { tid, tid+CONS, ... } and does one RMW of sP[pidx]
-        // per element.  Peel iteration 0's shared loads, then in the loop issue
-        // the NEXT iteration's sP/sdP/sD loads into a register buffer BEFORE the
-        // current iteration's FFMA — the LDS latency of N+1 overlaps the FFMA of
-        // N, so the FFMA no longer stalls on short_scoreboard (V13's #1 stall).
-        // Bit-identical: prefetch of sP[pidx_next] precedes that element's (later)
-        // write, and each element is updated exactly once.
         mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
-        {
-            const float* __restrict__ sDs = sD[s];
-            int   i = tid;
-            // Peel: load iteration-0 operands into the register buffer.
-            int   pidx_cur = 0;
-            bf16  p_cur    = __float2bfloat16(0.f);
-            float dp_cur = 0.f, d_cur = 0.f;
-            if (i < Br * Bc) {
-                const int r = i / Bc, c = i % Bc;
-                pidx_cur = r * SP_STRIDE_V12 + c;
-                p_cur    = sP [pidx_cur];
-                dp_cur   = sdP[r * SS_STRIDE_V6 + c];
-                d_cur    = sDs[r];
-            }
-            for (; i < Br * Bc; i += CONS) {
-                const int inext = i + CONS;
-                // Prefetch iteration N+1's operands (independent LDS issued NOW).
-                int   pidx_nxt = 0;
-                bf16  p_nxt    = __float2bfloat16(0.f);
-                float dp_nxt = 0.f, d_nxt = 0.f;
-                if (inext < Br * Bc) {
-                    const int rn = inext / Bc, cn = inext % Bc;
-                    pidx_nxt = rn * SP_STRIDE_V12 + cn;
-                    p_nxt    = sP [pidx_nxt];
-                    dp_nxt   = sdP[rn * SS_STRIDE_V6 + cn];
-                    d_nxt    = sDs[rn];
-                }
-                // Compute iteration N on the already-loaded registers.
-                sP[pidx_cur] = __float2bfloat16(__bfloat162float(p_cur) * (dp_cur - d_cur));
-                // Rotate the buffer: N+1 becomes the new current.
-                pidx_cur = pidx_nxt; p_cur = p_nxt; dp_cur = dp_nxt; d_cur = d_nxt;
-            }
+        for (int i = tid; i < Br * Bc; i += CONS) {
+            int r = i / Bc, c = i % Bc;
+            int pidx = r * SP_STRIDE_V12 + c;
+            sP[pidx] = __float2bfloat16(__bfloat162float(sP[pidx]) * (sdP[r * SS_STRIDE_V6 + c] - sD[s][r]));
         }
         consumer_sync();
 
@@ -5105,7 +5071,7 @@ gqa_backward_v14_kv(
         consumer_sync();
     }
 
-    // ── Epilogue — coalesced dV/dK writeback (identical to V11/V12/V13). ──
+    // ── Epilogue — coalesced dV/dK writeback (identical to V11/V12). ──
     bf16 *stage = sA_t + wg * 4096;
     fence_operandN<32>(dv);
     stage_acc_bf16<64>(dv, stage, wtid, 1.0f);
@@ -5118,7 +5084,7 @@ gqa_backward_v14_kv(
     store_stage_vec<Bc, 64>(stage, d_dK, kvBase, D, wg * 64, wtid);
 }
 
-// ── V14 launcher — identical descriptors/scratch to V13; BLOCK(384), V14 kernel.
+// ── V14 launcher — identical to V13; only fused-P uses __expf (fast SFU exp).
 template<int Br, int Bc, int D>
 void launch_gqa_backward_v14(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
@@ -5335,7 +5301,7 @@ int main(){
 
     launch_gqa_backward_v14<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V14 Br=64 Bc=64 LDS-prefetch (hide shared latency) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V14 Br=64 Bc=64 __expf fast-SFU softmax (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -5446,7 +5412,7 @@ int main(){
             [&](){ launch_gqa_backward_v14<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V14 Br=64 Bc=64 LDS-prefetch (hide shared latency)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V14 Br=64, Bc=64  __expf fast-SFU softmax  (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
