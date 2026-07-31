@@ -7229,52 +7229,51 @@ void launch_gqa_backward_v21(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// V22 — D-ROWSUM SPLIT (cuDNN-style multi-kernel).  D[row]=Σ_d dO[row,d]·O[row,d]
-// is precomputed in a SEPARATE light kernel `compute_drowsum_v22` and written to a
-// global fp32 buffer d_Drow[B*Hq*S].  The main kernel `gqa_backward_v22_kv` (V21
-// clone) then DROPS the inline producer D-rowsum reduction (our measured #1
-// short_scoreboard stall — the producer_drowsum shuffle-tree FADD cluster) and the
-// swizzled O TMA load entirely; the producer instead loads d_Drow[q_rows] into
-// sD[slot] (coalesced global read) in place of the deleted compute, keeping the
-// existing d_ready[]/full[]/empty[] mbarrier protocol byte-for-byte.
+// V22 — D-ROWSUM SPLIT (cuDNN-style multi-kernel), BIT-IDENTICAL.  D[row]=Σ_d
+// dO[row,d]·O[row,d] is precomputed in a SEPARATE kernel `compute_drowsum_v22`
+// into a global fp32 buffer d_Drow[B*Hq*S].  The main kernel `gqa_backward_v22_kv`
+// (V21 clone) then DROPS the inline producer D-rowsum (our #1 short_scoreboard
+// stall) + the swizzled O TMA (O fed ONLY the inline D-rowsum; dV uses dO), and
+// the producer instead loads d_Drow[q_rows] into sD[slot] (coalesced global read).
 //
-// DELETIONS vs V21: sO_sw (2×Br×D bf16 = 32,768 B smem freed) + tma_O_sw + O TMA
-// traffic + producer_drowsum_v20_sw call.  full[] expect_tx drops 3→2 tiles.
+// dQ BUG FIX (from the previous H200 run — dQ 600× off at row 12096, dK slightly
+// elevated, dV fine = the signature of D wrong for some rows): the standalone D
+// kernel is written with a GRID-STRIDE LOOP over ALL nRows = B*Hq*S rows, so
+// coverage is guaranteed regardless of grid rounding — no row of the CACHED-STATIC
+// d_Drow is ever left stale/garbage.  (Suspect #1 = compute_drowsum coverage.)
 //
-// WITHIN-TOLERANCE (NOT bit-identical): compute_drowsum_v22 uses a fast coalesced
-// vectorized (bf16×2, 2 accumulators) warp-per-row reduction whose accumulation
-// ORDER differs from V21's producer_drowsum (strided lane-j + shfl tree).  D shifts
-// in the last fp32 ULP ⇒ dS/dQ/dK are WITHIN 2e-2, not bit-identical.  Approved
-// break of the 22-version bit-identical streak for the cleaner/faster D kernel.
+// BIT-IDENTICAL: compute_drowsum_v22 replicates producer_drowsum_v20_sw's EXACT
+// fp32 accumulation order — per row, iterate the SAME columns j = lane, lane+32,
+// lane+64, lane+96 (stride 32) accumulating dO(row,j)·O(row,j) in that order, then
+// the SAME shfl-down tree off = 16→1, lane 0 writes.  Reading dO/O from PLAIN
+// global (row-major) yields the identical per-lane products & order as V21's read
+// from the swizzled smem buffers (swizzle is only an address transform) ⇒ D is
+// fp32-bit-identical ⇒ dS/dQ/dK bit-identical to V1–V21.
 // ═════════════════════════════════════════════════════════════════════════════
 
-// One warp per row.  D=128 = 32 lanes × 4 contiguous elems/lane (8-byte coalesced
-// loads of two __nv_bfloat162 each).  2 accumulators (acc0/acc1) for ILP, then a
-// 5-step warp-shuffle reduction.  Memory-bound: reads ~2·B·Hq·S·D·2 B ≈ 200 MB.
+// One warp per row, grid-stride over rows.  D fixed at 128 (32 lanes × 4 strided
+// columns).  Light memory-bound reduction (~200 MB read: dO+O).
 __global__ void compute_drowsum_v22(
     const bf16 * __restrict__ d_dO, const bf16 * __restrict__ d_O,
     float * __restrict__ d_Drow, long nRows)
 {
-    // D is fixed at 128 for this kernel family (32 lanes × 4 elems).
-    const int  gtid   = blockIdx.x * blockDim.x + threadIdx.x;
-    const int  warpId = gtid >> 5;
-    const int  lane   = gtid & 31;
-    if ((long)warpId >= nRows) return;
-
-    const long e = (long)warpId * 128 + lane * 4;   // lane owns 4 contiguous elems
-    const __nv_bfloat162 do01 = *reinterpret_cast<const __nv_bfloat162*>(&d_dO[e]);
-    const __nv_bfloat162 do23 = *reinterpret_cast<const __nv_bfloat162*>(&d_dO[e + 2]);
-    const __nv_bfloat162 o01  = *reinterpret_cast<const __nv_bfloat162*>(&d_O[e]);
-    const __nv_bfloat162 o23  = *reinterpret_cast<const __nv_bfloat162*>(&d_O[e + 2]);
-    const float2 df0 = __bfloat1622float2(do01), df1 = __bfloat1622float2(do23);
-    const float2 of0 = __bfloat1622float2(o01),  of1 = __bfloat1622float2(o23);
-    float acc0 = df0.x * of0.x + df0.y * of0.y;   // 2 independent partials → ILP
-    float acc1 = df1.x * of1.x + df1.y * of1.y;
-    float acc  = acc0 + acc1;
-#pragma unroll
-    for (int off = 16; off > 0; off >>= 1)
-        acc += __shfl_down_sync(0xFFFFFFFFu, acc, off);
-    if (lane == 0) d_Drow[warpId] = acc;
+    const int  warpsPerBlock = blockDim.x >> 5;
+    const int  lane          = threadIdx.x & 31;
+    const long warp0         = (long)blockIdx.x * warpsPerBlock + (threadIdx.x >> 5);
+    const long stride        = (long)gridDim.x * warpsPerBlock;
+    // Grid-stride over rows → EVERY row in [0, nRows) is covered (bug fix).
+    for (long row = warp0; row < nRows; row += stride) {
+        const long base = row * 128;
+        float partial = 0.f;
+        // EXACT order of producer_drowsum_v20_sw: j = lane, lane+32, lane+64, lane+96.
+        #pragma unroll
+        for (int j = lane; j < 128; j += 32)
+            partial += __bfloat162float(d_dO[base + j]) * __bfloat162float(d_O[base + j]);
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1)
+            partial += __shfl_down_sync(0xFFFFFFFFu, partial, off);
+        if (lane == 0) d_Drow[row] = partial;   // bit-identical fp32 D
+    }
 }
 
 template<int Br, int Bc, int D>
@@ -7291,7 +7290,7 @@ gqa_backward_v22_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V22 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;   // consumer thread count (wg 0+1)
-    constexpr int PD   = 3;     // pipeline depth for sQ_sw / sdO_sw
+    constexpr int PD   = 3;     // pipeline depth for sQ_sw / sdO_sw / sD
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
@@ -7303,7 +7302,7 @@ gqa_backward_v22_kv(
     __shared__ __align__(16)   float sdP[Br * SS_STRIDE_V6];
     __shared__ __align__(1024) bf16  sP [Br * 64];             // 64-wide 128-B swizzle atom
     __shared__                 float sLSE[Br];
-    __shared__                 float sD  [2][Br];              // double-buffered, producer-loaded from d_Drow
+    __shared__                 float sD  [PD][Br];             // V22: PD-deep (was 2) — robust vs the 3-deep pipeline
     __shared__ __align__(128)  bf16  sA_t[SMEM_TILED_V6];      // dQ stage + epilogue writeback stage
     __shared__ __align__(8)    uint64_t mbar_kv;
     __shared__ __align__(8)    uint64_t full   [PD];
@@ -7362,18 +7361,17 @@ gqa_backward_v22_kv(
         uint32_t epar[PD] = {0}, fpar[PD] = {0};
         int gP = 0, qcP = qc0;   // TMA (g,qc), tile `it`
         int gD = 0, qcD = qc0;   // D-load (g,qc), monotonic over td = 0,1,2,…
-        // Load D for tile `td` from d_Drow → sD[td&1].  Keeps the full[fp] wait so
-        // the sD 2-deep buffer reuse timing is byte-identical to V21 (harmless
-        // over-sync: producer is not the bottleneck).  d_Drow does not depend on
-        // the Q/dO TMA, but gating on it preserves the proven safety invariant.
+        // Load D for tile `td` from d_Drow → sD[td%PD].  sD is now PD-deep (same
+        // period as full/empty/d_ready) → its buffer reuse is safe by the SAME
+        // gate as sQ_sw/sdO_sw.  Keep the full[s] wait so the load is ordered in
+        // the pipeline (harmless over-sync; producer is not the bottleneck).
         auto do_dload = [&](int td) {
-            const int fp = td % PD;
-            const int op = td & 1;
-            mbar_wait_v4(&full[fp], fpar[fp]); fpar[fp] ^= 1;
+            const int s = td % PD;
+            mbar_wait_v4(&full[s], fpar[s]); fpar[s] ^= 1;
             const long dbase = lBaseOf(gD, qcD);           // flat base for tile td
-            if (pl < Br) sD[op][pl] = d_Drow[dbase + pl];  // coalesced 64×fp32 = 256 B
+            if (pl < Br) sD[s][pl] = d_Drow[dbase + pl];   // coalesced 64×fp32 = 256 B
             producer_sync();
-            if (leader) mbar_arrive_v11(&d_ready[fp]);
+            if (leader) mbar_arrive_v11(&d_ready[s]);
             if (++qcD == nQTiles) { qcD = qc0; ++gD; }
         };
         for (int it = 0; it < nIter; it++) {
@@ -7394,7 +7392,7 @@ gqa_backward_v22_kv(
         return;
     }
 
-    // ── CONSUMERS (wg 0,1) — IDENTICAL to V21 ────────────────────────────────
+    // ── CONSUMERS (wg 0,1) — IDENTICAL to V21 except sD is now PD-deep ────────
     mbar_wait_v4(&mbar_kv, 0);
 
     float dv[32]; zeroN<32>(dv);
@@ -7435,7 +7433,7 @@ gqa_backward_v22_kv(
                 const int r    = (2 * pp) / Bc;
                 const int pidx = r * 64 + ((c8 ^ (r & 7)) << 3) + clo;
                 const int sdi  = r * SS_STRIDE_V6 + cbase;
-                const float d  = sD[it & 1][r];   // sD is 2-deep by TILE parity
+                const float d  = sD[s][r];        // V22: PD-deep sD, slot s = it%PD
                 const __nv_bfloat162 p2 = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx]);
                 const float2 pf  = __bfloat1622float2(p2);
                 const float2 res = make_float2(pf.x * (sdP[sdi] - d), pf.y * (sdP[sdi + 1] - d));
@@ -7474,11 +7472,12 @@ gqa_backward_v22_kv(
     store_stage_vec<Bc, 64>(stage, d_dK, kvBase, D, wg * 64, wtid);
 }
 
-// ── V22 launcher — runs compute_drowsum_v22 FIRST (fills d_Drow), then the main
-// kernel (reads d_Drow, no O TMA), then convert_dq_accum_to_bf16_v5.  All three
-// inside the launcher so the benchmark times the TOTAL (D-kernel + main + convert),
-// an apples-to-apples comparison with cuDNN whose 2.7 ms already includes its D
-// kernel.  d_Drow is a cached static alloc (like d_dq_accum).
+// ── V22 launcher — runs compute_drowsum_v22 FIRST (fills d_Drow, ALL rows via a
+// grid-stride loop), then the main kernel (reads d_Drow, no O TMA), then
+// convert_dq_accum_to_bf16_v5.  All three on the default stream (serialized) so
+// the benchmark times the TOTAL (D-kernel + main + convert) — apples-to-apples
+// with cuDNN whose 2.7 ms already includes its own D kernel.  d_Drow is a cached
+// static alloc (like d_dq_accum).
 template<int Br, int Bc, int D>
 void launch_gqa_backward_v22(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
@@ -7532,8 +7531,9 @@ void launch_gqa_backward_v22(
     }
     CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
 
-    // (1) Precompute D = Σ_d dO·O → d_Drow (one warp / row, 8 rows / block).
-    const int  dBlock = 256;                       // 8 warps / block → 8 rows
+    // (1) Precompute D = Σ_d dO·O → d_Drow (one warp / row, grid-stride covers ALL
+    // drowN rows — bug fix: no stale rows in the cached buffer).
+    const int  dBlock = 256;                       // 8 warps / block
     const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
     compute_drowsum_v22<<<(unsigned)dGrid, dBlock>>>(d_dO, d_O, d_Drow, drowN);
 
@@ -7549,6 +7549,7 @@ void launch_gqa_backward_v22(
     const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
+
 
 
 
