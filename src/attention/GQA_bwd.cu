@@ -5546,37 +5546,6 @@ __device__ __forceinline__ void run_gemm_dVdK_half_te(float acc[32], const bf16*
     fence_operandN<32>(acc);
 }
 
-// ── V22: run_gemm_dVdK_half_te split into ISSUE (fence+wgmma+commit, NO wait) and
-// WAIT (wait_group 0 + operand fence).  This lets the INDEPENDENT dS elementwise ALU
-// run CONCURRENTLY with the dV tensor-core wgmma (which is otherwise idle-then-waited):
-//     issue(dv) ; dS=P⊙(dP−D)→sDS ; wait(dv)
-// Correctness/wall-dodging (see V22 kernel comment):
-//   • dv[32] is ALREADY the persistent accumulator → leaving its group pending across
-//     dS adds ZERO registers (no-TMEM register wall dodged).
-//   • dS issues NO wgmma → dv stays the OLDEST + ONLY pending group, drained cleanly by
-//     its own wait_group 0 before dK's wgmma (in-order-completion wall dodged).
-//   • dS is done by all 256 consumer threads STRIDED (non-divergent) → the pending dv
-//     wgmma never crosses a wg0/wg1-divergent branch (WG.DP/C7518 dodged).
-//   • fence_proxy_async_shared() in ISSUE orders fused_p's generic sP write → dv's async
-//     read; the post-wait fence_operandN blocks hoisting dv reads before the group retires.
-__device__ __forceinline__ void run_gemm_dVdK_half_te_issue(float acc[32], const bf16* sP_sw,
-                                                            const bf16* B_sw_half) {
-    fence_proxy_async_shared();       // orders the generic fused_p write of sP → async wgmma read
-    fence_operandN<32>(acc);          // pre-bracket the async accumulator region (prior tile's dv value)
-    wgmma_fence();
-#pragma unroll
-    for (int k = 0; k < 4; k++) {
-        uint64_t dA = make_desc_sw128_MN(sP_sw     + k * 1024);    // swizzled Major::MN A (Pᵀ)
-        uint64_t dB = make_desc_sw128_MN(B_sw_half + k * 1024);    // swizzled Major::MN B (dO)
-        wgmma_m64n64k16_tAtB(acc, dA, dB);                         // trans-a=1, trans-b=1
-    }
-    wgmma_commit();
-    // NO wgmma_wait0 — dV group left pending; drained by _wait after the concurrent dS.
-}
-__device__ __forceinline__ void run_gemm_dVdK_half_te_wait(float acc[32]) {
-    wgmma_wait0();
-    fence_operandN<32>(acc);          // block hoisting dv reads before the group retires
-}
 
 template<int Br, int Bc, int D>
 __global__ void
@@ -7259,68 +7228,57 @@ void launch_gqa_backward_v21(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// V22 — dV∥dS TENSOR–ALU OVERLAP.  V21 clone.  Per tile V21 serialized:
-//     fused_p→sP → SYNC → dV(reads sP, WAITS) → SYNC → dS=P⊙(dP−D) (overwrites sP)
-//     → SYNC → dK/dQ (read sP=dS).
-// dV (tensor/wgmma) and dS (elementwise ALU) are INDEPENDENT — both need only P/dP/D —
-// but were serialized by a WAR hazard (dS clobbers sP that dV reads) + a barrier, so the
-// dV wgmma latency sat ON the critical path (idle-then-waited) BEFORE the serial dS.
-//
-// V22 breaks the WAR + overlaps them so the OTHERWISE-IDLE tensor core hides the dS ALU:
-//   1. New buffer sDS (same swizzled layout / SP align as sP): dS writes here, keeps
-//      READING sP for P.  (WAR broken — dV and dS now both only READ sP.)
-//   2. dV issued ASYNC (issue = fence+wgmma+commit, NO wait); dS runs; THEN dV waited.
-//   3. The V21 barrier BETWEEN dV and dS is removed (they overlap); a consumer_sync AFTER
-//      (dV drained + dS(sDS) visible) guards dK's read of sDS.
-//   4. dK/dQ read sDS instead of sP.
-//
-// Dodges the 3 walls that killed cross-tile/ping-pong/dK∥dQ overlap on Hopper:
-//   • REGISTER-NEUTRAL: dv[32] is ALREADY the persistent column-split accumulator (both wg
-//     cooperate on dV as in V21) → keeping its wgmma pending across dS adds ZERO registers
-//     (no-TMEM RMEM-accumulator wall dodged).  wg work-split UNCHANGED.
-//   • NO WG.DP/C7518: dS is done by all 256 consumer threads STRIDED (non-divergent); the
-//     pending dV wgmma never crosses a wg0/wg1-divergent branch.
-//   • NO in-order-completion block: dS issues NO wgmma → dV stays the OLDEST + ONLY pending
-//     group, drained by its own wait_group 0 before dK's wgmma.
-//   • Proxy fences: fence_proxy_async_shared in dV-issue orders fused_p's generic sP write
-//     → dV's async read; dS reads sP generically (both READ sP, no conflict) and writes sDS
-//     (dV never touches sDS); SYNC-2 + dK's own fence order dS's sDS write → dK's async read.
-// SMEM: sDS = Br*64 bf16 __align__(1024) = 8192 B.  V21 = 223,312 B → V22 = 231,504 B <
-// 232,448 B cap (PD=3 KEPT — the 3-deep TMA pipeline is preserved; no aliasing needed).
-// ═════════════════════════════════════════════════════════════════════════════
+// ── V22 dQ-flush: incrementalized 64-bit global address ─────────────────────
+// Bit-identical to atomic_flush_stage (same addresses, same per-thread atomicAdd
+// order) but maintains the global address with ONE 64-bit add per iter instead of
+// recomputing base + (long)row*D + coloff + col each element (which ptxas rebuilt
+// via per-element LEA.HI/IMAD.X — the short_scoreboard cluster in the V21 profile).
+// Valid because NCOL is a power of 2 and 128 % NCOL == 0: col = li%NCOL is
+// loop-invariant, row = li/NCOL advances by 128/NCOL, so the global element
+// address advances by a compile-time-constant (128/NCOL)*D. stage index == li
+// (row*NCOL + col == li), unchanged.
+template<int ROWS, int NCOL>
+__device__ __forceinline__ void atomic_flush_stage_v22(const float *stage, float *g, long base, int D, int coloff, int tid) {
+    constexpr int N = ROWS * NCOL;
+    long gaddr = base + (long)(tid / NCOL) * D + coloff + (tid % NCOL);
+    const long dstep = (long)(128 / NCOL) * D;   // (128/NCOL) is a compile-time constant
+    for (int li = tid; li < N; li += 128) {
+        atomicAdd(&g[gaddr], stage[li]);
+        gaddr += dstep;
+    }
+}
+
 template<int Br, int Bc, int D>
 __global__ void
-gqa_backward_v22_kv(
+gqa_backward_v22_kv(   // V22: incrementalized dQ-flush 64-bit address (scalar critical-path)
     const __grid_constant__ CUtensorMap tma_K_sw,
     const __grid_constant__ CUtensorMap tma_V_sw,
     const __grid_constant__ CUtensorMap tma_Q_sw,
     const __grid_constant__ CUtensorMap tma_dO_sw,
-    const __grid_constant__ CUtensorMap tma_O_sw,
+    const __grid_constant__ CUtensorMap tma_O_sw,     // V20: swizzled O (was tma_dO_pl + tma_O_pl)
     const float * __restrict__ d_LSE,
     bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV, float * __restrict__ d_dq_accum,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "V22 requires Br=Bc=64, D=128");
-    constexpr int CONS = 256;
-    constexpr int PD   = 3;     // pipeline depth KEPT at 3 (sDS fits within the smem cap)
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V20 requires Br=Bc=64, D=128");
+    constexpr int CONS = 256;   // consumer thread count (wg 0+1)
+    constexpr int PD   = 3;     // V20 pipeline depth for sQ_sw / sdO_sw (Phase 1: 2, Phase 2: 3)
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
-    __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
-    __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
-    __shared__ __align__(128)  bf16 sO_sw [2][Br * D];
-    __shared__ __align__(16)   float sS [Br * SS_STRIDE_V6];
+    __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];      // V20: 3-deep
+    __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];      // V20: 3-deep
+    __shared__ __align__(128)  bf16 sO_sw [2][Br * D];       // V20: swizzled (was sO_pl); depth 2 (producer-only, lag-1 D-rowsum)
+    __shared__ __align__(16)   float sS [Br * SS_STRIDE_V6];   // V13: S store DROPPED; kept as wg0 dQ stage
     __shared__ __align__(16)   float sdP[Br * SS_STRIDE_V6];
-    __shared__ __align__(1024) bf16  sP [Br * 64];             // holds P (read by dV + dS)
-    __shared__ __align__(1024) bf16  sDS[Br * 64];             // V22: holds dS (dV∥dS de-WARs sP)
+    __shared__ __align__(1024) bf16  sP [Br * 64];             // V16: 64-wide 128-B swizzle atom, 1024-B aligned
     __shared__                 float sLSE[Br];
-    __shared__                 float sD  [2][Br];
-    __shared__ __align__(128)  bf16  sA_t[SMEM_TILED_V6];
+    __shared__                 float sD  [2][Br];              // V13: double-buffered, producer-written
+    __shared__ __align__(128)  bf16  sA_t[SMEM_TILED_V6];      // dQ stage + epilogue writeback stage
     __shared__ __align__(8)    uint64_t mbar_kv;
     __shared__ __align__(8)    uint64_t full   [PD];
     __shared__ __align__(8)    uint64_t empty  [PD];
-    __shared__ __align__(8)    uint64_t d_ready[PD];
+    __shared__ __align__(8)    uint64_t d_ready[PD];           // V13: producer→consumer D signal
 
     const int tid   = threadIdx.x;
     const int wg    = tid >> 7;
@@ -7350,6 +7308,7 @@ gqa_backward_v22_kv(
     const int perG   = nQTiles - qc0;
     const int nIter  = G * perG;
 
+    // V15: (g,qc) maintained incrementally in each loop → no per-iter IDIV/IREM.
     auto qFlatRowOf = [&](int g, int qc) -> uint32_t {
         const int hq = hkv * G + g;
         return (uint32_t)((b * Hq + hq) * S + qc * Br);
@@ -7359,10 +7318,10 @@ gqa_backward_v22_kv(
         return (long)(b * Hq + hq) * S + (long)qc * Br;
     };
 
-    // ── PRODUCER (wg 2): TMA loads (3-deep) + LAGGED swizzled D-rowsum (unchanged from V21) ──
+    // ── PRODUCER (wg 2): TMA loads (3-deep) + LAGGED swizzled D-rowsum (PART A) ──
     if (wg == 2) {
         const bool leader = (tid == 256);
-        const int pwarp   = (tid - 256) >> 5;
+        const int pwarp   = (tid - 256) >> 5;   // 0..3 within the producer warpgroup
         if (leader) {
             mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
             tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
@@ -7371,7 +7330,10 @@ gqa_backward_v22_kv(
             tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
         }
         uint32_t epar[PD] = {0}, fpar[PD] = {0};
-        int gP = 0, qcP = qc0;
+        int gP = 0, qcP = qc0;   // V15 incremental (g,qc)
+        // Compute D for tile `td` (waits its TMA, reduces from swizzled buffers).
+        // sdO_sw is PD-deep (slot td%PD); sO_sw is 2-deep (slot td&1, producer-only,
+        // safe under lag-1 because D-rowsum(td) completes before O(td+2) overwrites).
         auto do_drowsum = [&](int td) {
             const int fp = td % PD;
             const int op = td & 1;
@@ -7381,8 +7343,8 @@ gqa_backward_v22_kv(
             if (leader) mbar_arrive_v11(&d_ready[fp]);
         };
         for (int it = 0; it < nIter; it++) {
-            const int s  = it % PD;
-            const int os = it & 1;
+            const int s  = it % PD;      // Q/dO slot (3-deep)
+            const int os = it & 1;       // O slot (2-deep)
             if (it >= PD) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
             if (leader) {
                 const uint32_t r = qFlatRowOf(gP, qcP);
@@ -7394,10 +7356,10 @@ gqa_backward_v22_kv(
                 tma_load_2d_v4(&tma_O_sw,  sO_sw [os],           &full[s], 0,  r);
                 tma_load_2d_v4(&tma_O_sw,  sO_sw [os] + 64 * 64, &full[s], 64, r);
             }
-            if (it >= 1) do_drowsum(it - 1);
+            if (it >= 1) do_drowsum(it - 1);   // lagged one tile → keeps TMAs in flight
             if (++qcP == nQTiles) { qcP = qc0; ++gP; }
         }
-        do_drowsum(nIter - 1);
+        do_drowsum(nIter - 1);                 // tail: final tile's D
         return;
     }
 
@@ -7408,7 +7370,7 @@ gqa_backward_v22_kv(
     float dk[32]; zeroN<32>(dk);
 
     uint32_t cpar[PD] = {0}, dpar[PD] = {0};
-    int gC = 0, qcC = qc0;
+    int gC = 0, qcC = qc0;   // V15 incremental (g,qc)
     for (int it = 0; it < nIter; it++) {
         const int s = it % PD;
         const int q_row0 = qcC * Br;
@@ -7416,64 +7378,59 @@ gqa_backward_v22_kv(
         if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(gC, qcC) + tid];
         consumer_sync();
 
-        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to swizzled sP (wg0)
-        //  ∥  dP = dO·Vᵀ → sdP (wg1).
+        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to swizzled sP (wg0, PART B)
+        //  ∥  dP = dO·Vᵀ → sdP (wg1).   [D-rowsum now on the producer, PART A.]
         if (wg == 0) {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
             if (qcC == qc0) fused_p_from_acc_v19<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
-            else            fused_p_nomask_v21<Bc>(acc, sP, sLSE, wtid, scale);
+            else            fused_p_nomask_v21<Bc>(acc, sP, sLSE, wtid, scale);   // V21: no mask off-diagonal
         } else {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
             store_acc_smem_v6<Bc, SS_STRIDE_V6>(acc, sdP, wtid, 1.0f);
         }
-        consumer_sync();   // sP (fused_p) + sdP visible cross-warp before dV issue + dS reads
+        consumer_sync();   // wg0's swizzled sP writes visible cross-warp before the transposed reads
 
-        // ── dV∥dS OVERLAP ──────────────────────────────────────────────────────
-        // dV += Pᵀ·dO — ISSUE async (reads sP=P); dV group left PENDING (no wait yet).
-        run_gemm_dVdK_half_te_issue(dv, sP, sdO_sw[s] + wg * 4096);
+        // dV += Pᵀ·dO  — TRANSPOSE-ELIMINATED: A = Pᵀ read DIRECTLY from swizzled sP.
+        run_gemm_dVdK_half_te(dv, sP, sdO_sw[s] + wg * 4096);
+        consumer_sync();
 
-        // dS = P ⊙ (dP − D) → sDS  (reads sP=P, sdP, D; WRITES sDS, NOT sP).  Runs
-        // CONCURRENTLY with the pending dV wgmma → the idle tensor core hides this ALU.
-        // The d_ready wait (may spin) is placed AFTER the dV issue → it too overlaps dV.
+        // dS = P ⊙ (dP − D) → swizzled sP.  D produced by wg2 → wait d_ready[s] first.
         mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
-        {   // V18/V19 vectorized dS — 2 adjacent columns/step; source sP, dest sDS.
+        {   // V18/V19: vectorize dS — 2 adjacent columns/step (bf16×2 + float2).
             const int cbase = (2 * tid) % Bc, c8 = cbase >> 3, clo = cbase & 7;
             for (int pp = tid; pp < Br * Bc / 2; pp += CONS) {
                 const int r    = (2 * pp) / Bc;
                 const int pidx = r * 64 + ((c8 ^ (r & 7)) << 3) + clo;
                 const int sdi  = r * SS_STRIDE_V6 + cbase;
-                const float d  = sD[it & 1][r];
-                const __nv_bfloat162 p2 = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx]);   // read P from sP
+                const float d  = sD[it & 1][r];   // sD is 2-deep by TILE parity (producer op=td&1)
+                const __nv_bfloat162 p2 = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx]);
                 const float2 pf  = __bfloat1622float2(p2);
                 const float2 res = make_float2(pf.x * (sdP[sdi] - d), pf.y * (sdP[sdi + 1] - d));
-                *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx]) = __float22bfloat162_rn(res);      // write dS to sDS
+                *reinterpret_cast<__nv_bfloat162*>(&sP[pidx]) = __float22bfloat162_rn(res);
             }
         }
+        consumer_sync();   // dS writes visible cross-warp before the transposed dK read
 
-        // dV WAIT — drain the pending dV group (it stayed the oldest + only group).
-        run_gemm_dVdK_half_te_wait(dv);
-        consumer_sync();   // dV drained + dS(sDS) writes visible cross-warp before dK read
-
-        // dK += dSᵀ·Q  — reads sDS=dS (transpose-eliminated, direct swizzled read).
-        run_gemm_dVdK_half_te(dk, sDS, sQ_sw[s] + wg * 4096);
+        // dK += dSᵀ·Q  — TRANSPOSE-ELIMINATED: A = dSᵀ read DIRECTLY from swizzled sP.
+        run_gemm_dVdK_half_te(dk, sP, sQ_sw[s] + wg * 4096);
         consumer_sync();
         if (tid == 0) mbar_arrive_v11(&empty[s]);
 
-        // dQ_tile = dS·K — dS staged K-major into sA_t from swizzled sDS.
-        sp_to_sAt_v16_dq(sA_t, sDS, tid);
+        // dQ_tile = dS·K (transient) — dS staged K-major into sA_t from swizzled sP.
+        sp_to_sAt_v16_dq(sA_t, sP, tid);
         consumer_sync();
         { float acc[32]; zeroN<32>(acc);
           run_gemm_dQ_half(acc, sA_t, sK_sw + wg * 4096, sbo_pad_v6(Bc));
           stage_acc_f32<64>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
         consumer_sync();
-        atomic_flush_stage<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
+        atomic_flush_stage_v22<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
         consumer_sync();
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
 
-    // ── Epilogue — coalesced dV/dK writeback (identical to V21). ──
+    // ── Epilogue — coalesced dV/dK writeback (identical to V11/V12). ──
     bf16 *stage = sA_t + wg * 4096;
     fence_operandN<32>(dv);
     stage_acc_bf16<64>(dv, stage, wtid, 1.0f);
@@ -7486,7 +7443,8 @@ gqa_backward_v22_kv(
     store_stage_vec<Bc, 64>(stage, d_dK, kvBase, D, wg * 64, wtid);
 }
 
-// ── V22 launcher — identical to V21 (same TMA descriptors + dQ scratch). ──
+// ── V22 launcher — like V19 but O is loaded SWIZZLED (tma_O_sw); the plain
+// dO/O descriptors are gone.
 template<int Br, int Bc, int D>
 void launch_gqa_backward_v22(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
@@ -7494,7 +7452,7 @@ void launch_gqa_backward_v22(
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "V22 requires Br=Bc=64, D=128");
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V20 requires Br=Bc=64, D=128");
 
     auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
         CUtensorMap desc{};
@@ -7519,7 +7477,7 @@ void launch_gqa_backward_v22(
     CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
     CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
     CUtensorMap tma_dO_sw = make_tma_sw128(d_dO, Rq,  Br);
-    CUtensorMap tma_O_sw  = make_tma_sw128(d_O,  Rq,  Br);
+    CUtensorMap tma_O_sw  = make_tma_sw128(d_O,  Rq,  Br);   // V20: O now swizzled
 
     const long dqN = (long)B * Hq * S * D;
     static float* d_dq_accum = nullptr;
@@ -7541,6 +7499,9 @@ void launch_gqa_backward_v22(
     const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
+
+
+// ═════════════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────────────
 // main
@@ -7719,7 +7680,7 @@ int main(){
 
     launch_gqa_backward_v22<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V22 Br=64 Bc=64 dV∥dS tensor-ALU overlap (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V22 Br=64 Bc=64 scalar critical-path shortening (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -7886,7 +7847,7 @@ int main(){
             [&](){ launch_gqa_backward_v22<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V22 Br=64, Bc=64  dV||dS tensor-ALU overlap  (Hopper SM_90)", s);
+        displayStats("GQA bwd V22 Br=64, Bc=64  scalar critical-path shortening  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
