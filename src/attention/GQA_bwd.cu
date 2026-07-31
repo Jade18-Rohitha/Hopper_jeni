@@ -7290,7 +7290,7 @@ gqa_backward_v22_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V22 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;   // consumer thread count (wg 0+1)
-    constexpr int PD   = 3;     // pipeline depth for sQ_sw / sdO_sw / sD
+    constexpr int PD   = 4;     // V23 test: pipeline depth 4 (freed 32KB from D-split)
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
