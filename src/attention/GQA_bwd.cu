@@ -6949,6 +6949,285 @@ void launch_gqa_backward_v20(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// V21 — V20 clone; CAUSAL-MASK SPECIALIZATION: only the diagonal tile (qc==qc0) runs the
+// masked fused-P; all off-diagonal tiles skip the mask+index math.  Bit-identical.
+// ─────────────────────────────────────────────────────────────────────────────
+// V21: causal-mask-FREE fused-P for non-diagonal tiles (qc>qc0 ⇒ every k<q ⇒ the mask
+// never fires ⇒ bit-identical to fused_p_from_acc_v19).  Drops gc/gr index math + ISETP/SEL
+// from the critical-path exp — used on ~97% of tiles (only the diagonal keeps the mask).
+template<int Bc>
+__device__ __forceinline__ void fused_p_nomask_v21(
+    const float acc[32], bf16* sP, const float* sLSE, int wtid, float scale)
+{
+    const int w = wtid >> 5, lane = wtid & 31;
+    const int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+    const float l0 = sLSE[r0], l1 = sLSE[r1];
+    const int base0 = r0 * 64 + cc, m0 = r0 & 7;
+    const int base1 = r1 * 64 + cc, m1 = r1 & 7;
+#pragma unroll
+    for (int nt = 0; nt < Bc / 8; nt++) {
+        const int b0 = base0 + ((nt ^ m0) << 3);
+        const int b1 = base1 + ((nt ^ m1) << 3);
+        const float2 p0 = make_float2(__expf(acc[nt * 4 + 0] * scale - l0), __expf(acc[nt * 4 + 1] * scale - l0));
+        const float2 p1 = make_float2(__expf(acc[nt * 4 + 2] * scale - l1), __expf(acc[nt * 4 + 3] * scale - l1));
+        *reinterpret_cast<__nv_bfloat162*>(&sP[b0]) = __float22bfloat162_rn(p0);
+        *reinterpret_cast<__nv_bfloat162*>(&sP[b1]) = __float22bfloat162_rn(p1);
+    }
+}
+
+template<int Br, int Bc, int D>
+__global__ void
+gqa_backward_v21_kv(
+    const __grid_constant__ CUtensorMap tma_K_sw,
+    const __grid_constant__ CUtensorMap tma_V_sw,
+    const __grid_constant__ CUtensorMap tma_Q_sw,
+    const __grid_constant__ CUtensorMap tma_dO_sw,
+    const __grid_constant__ CUtensorMap tma_O_sw,     // V20: swizzled O (was tma_dO_pl + tma_O_pl)
+    const float * __restrict__ d_LSE,
+    bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV, float * __restrict__ d_dq_accum,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V20 requires Br=Bc=64, D=128");
+    constexpr int CONS = 256;   // consumer thread count (wg 0+1)
+    constexpr int PD   = 3;     // V20 pipeline depth for sQ_sw / sdO_sw (Phase 1: 2, Phase 2: 3)
+
+    __shared__ __align__(128)  bf16 sK_sw[Bc * D];
+    __shared__ __align__(128)  bf16 sV_sw[Bc * D];
+    __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];      // V20: 3-deep
+    __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];      // V20: 3-deep
+    __shared__ __align__(128)  bf16 sO_sw [2][Br * D];       // V20: swizzled (was sO_pl); depth 2 (producer-only, lag-1 D-rowsum)
+    __shared__ __align__(16)   float sS [Br * SS_STRIDE_V6];   // V13: S store DROPPED; kept as wg0 dQ stage
+    __shared__ __align__(16)   float sdP[Br * SS_STRIDE_V6];
+    __shared__ __align__(1024) bf16  sP [Br * 64];             // V16: 64-wide 128-B swizzle atom, 1024-B aligned
+    __shared__                 float sLSE[Br];
+    __shared__                 float sD  [2][Br];              // V13: double-buffered, producer-written
+    __shared__ __align__(128)  bf16  sA_t[SMEM_TILED_V6];      // dQ stage + epilogue writeback stage
+    __shared__ __align__(8)    uint64_t mbar_kv;
+    __shared__ __align__(8)    uint64_t full   [PD];
+    __shared__ __align__(8)    uint64_t empty  [PD];
+    __shared__ __align__(8)    uint64_t d_ready[PD];           // V13: producer→consumer D signal
+
+    const int tid   = threadIdx.x;
+    const int wg    = tid >> 7;
+    const int wtid  = tid & 127;
+    const int lane  = tid & 31;
+    const int b = blockIdx.x, hkv = blockIdx.y, k_tile = blockIdx.z;
+    const int k_row0 = k_tile * Bc;
+    const int nQTiles = S / Br;
+
+    const long     kvBase     = ((long)(b * Hkv + hkv) * S + k_row0) * D;
+    const uint32_t kvFlatRow  = (uint32_t)((b * Hkv + hkv) * S + k_row0);
+    const uint32_t bytesTile  = (uint32_t)(Br * D * sizeof(bf16));
+    const uint32_t bytesAtom  = (uint32_t)(Bc * 64 * sizeof(bf16));
+
+    if (tid == 0) {
+        mbar_init_v4(&mbar_kv, 1);
+        #pragma unroll
+        for (int i = 0; i < PD; i++) {
+            mbar_init_v4(&full[i], 1);
+            mbar_init_v4(&empty[i], 1);
+            mbar_init_v4(&d_ready[i], 1);
+        }
+    }
+    __syncthreads();
+
+    const int qc0    = k_row0 / Br;
+    const int perG   = nQTiles - qc0;
+    const int nIter  = G * perG;
+
+    // V15: (g,qc) maintained incrementally in each loop → no per-iter IDIV/IREM.
+    auto qFlatRowOf = [&](int g, int qc) -> uint32_t {
+        const int hq = hkv * G + g;
+        return (uint32_t)((b * Hq + hq) * S + qc * Br);
+    };
+    auto lBaseOf = [&](int g, int qc) -> long {
+        const int hq = hkv * G + g;
+        return (long)(b * Hq + hq) * S + (long)qc * Br;
+    };
+
+    // ── PRODUCER (wg 2): TMA loads (3-deep) + LAGGED swizzled D-rowsum (PART A) ──
+    if (wg == 2) {
+        const bool leader = (tid == 256);
+        const int pwarp   = (tid - 256) >> 5;   // 0..3 within the producer warpgroup
+        if (leader) {
+            mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
+            tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
+            tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+            tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kvFlatRow);
+            tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+        }
+        uint32_t epar[PD] = {0}, fpar[PD] = {0};
+        int gP = 0, qcP = qc0;   // V15 incremental (g,qc)
+        // Compute D for tile `td` (waits its TMA, reduces from swizzled buffers).
+        // sdO_sw is PD-deep (slot td%PD); sO_sw is 2-deep (slot td&1, producer-only,
+        // safe under lag-1 because D-rowsum(td) completes before O(td+2) overwrites).
+        auto do_drowsum = [&](int td) {
+            const int fp = td % PD;
+            const int op = td & 1;
+            mbar_wait_v4(&full[fp], fpar[fp]); fpar[fp] ^= 1;
+            producer_drowsum_v20_sw<Br, D>(sD[op], sdO_sw[fp], sO_sw[op], pwarp, lane);
+            producer_sync();
+            if (leader) mbar_arrive_v11(&d_ready[fp]);
+        };
+        for (int it = 0; it < nIter; it++) {
+            const int s  = it % PD;      // Q/dO slot (3-deep)
+            const int os = it & 1;       // O slot (2-deep)
+            if (it >= PD) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
+            if (leader) {
+                const uint32_t r = qFlatRowOf(gP, qcP);
+                mbar_expect_tx_v4(&full[s], bytesTile * 3);
+                tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  r);
+                tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, r);
+                tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
+                tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
+                tma_load_2d_v4(&tma_O_sw,  sO_sw [os],           &full[s], 0,  r);
+                tma_load_2d_v4(&tma_O_sw,  sO_sw [os] + 64 * 64, &full[s], 64, r);
+            }
+            if (it >= 1) do_drowsum(it - 1);   // lagged one tile → keeps TMAs in flight
+            if (++qcP == nQTiles) { qcP = qc0; ++gP; }
+        }
+        do_drowsum(nIter - 1);                 // tail: final tile's D
+        return;
+    }
+
+    // ── CONSUMERS (wg 0,1) ───────────────────────────────────────────────────
+    mbar_wait_v4(&mbar_kv, 0);
+
+    float dv[32]; zeroN<32>(dv);
+    float dk[32]; zeroN<32>(dk);
+
+    uint32_t cpar[PD] = {0}, dpar[PD] = {0};
+    int gC = 0, qcC = qc0;   // V15 incremental (g,qc)
+    for (int it = 0; it < nIter; it++) {
+        const int s = it % PD;
+        const int q_row0 = qcC * Br;
+        mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
+        if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(gC, qcC) + tid];
+        consumer_sync();
+
+        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to swizzled sP (wg0, PART B)
+        //  ∥  dP = dO·Vᵀ → sdP (wg1).   [D-rowsum now on the producer, PART A.]
+        if (wg == 0) {
+            float acc[32]; zeroN<32>(acc);
+            run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
+            if (qcC == qc0) fused_p_from_acc_v19<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
+            else            fused_p_nomask_v21<Bc>(acc, sP, sLSE, wtid, scale);   // V21: no mask off-diagonal
+        } else {
+            float acc[32]; zeroN<32>(acc);
+            run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
+            store_acc_smem_v6<Bc, SS_STRIDE_V6>(acc, sdP, wtid, 1.0f);
+        }
+        consumer_sync();   // wg0's swizzled sP writes visible cross-warp before the transposed reads
+
+        // dV += Pᵀ·dO  — TRANSPOSE-ELIMINATED: A = Pᵀ read DIRECTLY from swizzled sP.
+        run_gemm_dVdK_half_te(dv, sP, sdO_sw[s] + wg * 4096);
+        consumer_sync();
+
+        // dS = P ⊙ (dP − D) → swizzled sP.  D produced by wg2 → wait d_ready[s] first.
+        mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
+        {   // V18/V19: vectorize dS — 2 adjacent columns/step (bf16×2 + float2).
+            const int cbase = (2 * tid) % Bc, c8 = cbase >> 3, clo = cbase & 7;
+            for (int pp = tid; pp < Br * Bc / 2; pp += CONS) {
+                const int r    = (2 * pp) / Bc;
+                const int pidx = r * 64 + ((c8 ^ (r & 7)) << 3) + clo;
+                const int sdi  = r * SS_STRIDE_V6 + cbase;
+                const float d  = sD[it & 1][r];   // sD is 2-deep by TILE parity (producer op=td&1)
+                const __nv_bfloat162 p2 = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx]);
+                const float2 pf  = __bfloat1622float2(p2);
+                const float2 res = make_float2(pf.x * (sdP[sdi] - d), pf.y * (sdP[sdi + 1] - d));
+                *reinterpret_cast<__nv_bfloat162*>(&sP[pidx]) = __float22bfloat162_rn(res);
+            }
+        }
+        consumer_sync();   // dS writes visible cross-warp before the transposed dK read
+
+        // dK += dSᵀ·Q  — TRANSPOSE-ELIMINATED: A = dSᵀ read DIRECTLY from swizzled sP.
+        run_gemm_dVdK_half_te(dk, sP, sQ_sw[s] + wg * 4096);
+        consumer_sync();
+        if (tid == 0) mbar_arrive_v11(&empty[s]);
+
+        // dQ_tile = dS·K (transient) — dS staged K-major into sA_t from swizzled sP.
+        sp_to_sAt_v16_dq(sA_t, sP, tid);
+        consumer_sync();
+        { float acc[32]; zeroN<32>(acc);
+          run_gemm_dQ_half(acc, sA_t, sK_sw + wg * 4096, sbo_pad_v6(Bc));
+          stage_acc_f32<64>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
+        consumer_sync();
+        atomic_flush_stage<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
+        consumer_sync();
+        if (++qcC == nQTiles) { qcC = qc0; ++gC; }
+    }
+
+    // ── Epilogue — coalesced dV/dK writeback (identical to V11/V12). ──
+    bf16 *stage = sA_t + wg * 4096;
+    fence_operandN<32>(dv);
+    stage_acc_bf16<64>(dv, stage, wtid, 1.0f);
+    consumer_sync();
+    store_stage_vec<Bc, 64>(stage, d_dV, kvBase, D, wg * 64, wtid);
+    consumer_sync();
+    fence_operandN<32>(dk);
+    stage_acc_bf16<64>(dk, stage, wtid, scale);
+    consumer_sync();
+    store_stage_vec<Bc, 64>(stage, d_dK, kvBase, D, wg * 64, wtid);
+}
+
+// ── V21 launcher — like V19 but O is loaded SWIZZLED (tma_O_sw); the plain
+// dO/O descriptors are gone.
+template<int Br, int Bc, int D>
+void launch_gqa_backward_v21(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V20 requires Br=Bc=64, D=128");
+
+    auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
+        uint32_t box[2]     = {64u, tile_rows};
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(
+            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) failed: %s\n", e); exit(1); }
+        return desc;
+    };
+
+    const uint64_t Rq  = (uint64_t)B * Hq  * S;
+    const uint64_t Rkv = (uint64_t)B * Hkv * S;
+
+    CUtensorMap tma_K_sw  = make_tma_sw128(d_K,  Rkv, Bc);
+    CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
+    CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
+    CUtensorMap tma_dO_sw = make_tma_sw128(d_dO, Rq,  Br);
+    CUtensorMap tma_O_sw  = make_tma_sw128(d_O,  Rq,  Br);   // V20: O now swizzled
+
+    const long dqN = (long)B * Hq * S * D;
+    static float* d_dq_accum = nullptr;
+    static long   dq_cap     = 0;
+    if (dqN > dq_cap) {
+        if (d_dq_accum) CUDA_CHECK(cudaFree(d_dq_accum));
+        CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
+        dq_cap = dqN;
+    }
+    CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
+
+    constexpr dim3 BLOCK(384);
+    dim3 GRID(B, Hkv, S / Bc);
+    gqa_backward_v21_kv<Br,Bc,D><<<GRID, BLOCK>>>(
+        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_O_sw,
+        d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
+
+    const int convBlock = 256;
+    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 int main(){
@@ -7119,6 +7398,10 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V20 Br=64 Bc=64 swizzled-Drowsum + 3-deep pipeline (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
+    launch_gqa_backward_v21<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── V21 Br=64 Bc=64 causal-mask specialization (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
     // iterations with the L2 flushed between reps (mirrors triton.testing.do_bench).
@@ -7272,9 +7555,15 @@ int main(){
             100, 10, bwd_flops);
         displayStats("GQA bwd V20 Br=64, Bc=64  swizzled-Drowsum + 3-deep pipeline  (Hopper SM_90)", s);
     }
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v21<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V21 Br=64, Bc=64  causal-mask specialization  (Hopper SM_90)", s);
+    }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
     CUDA_CHECK(cudaFree(d_dQ)); CUDA_CHECK(cudaFree(d_dK)); CUDA_CHECK(cudaFree(d_dV));
     return 0;
 }
- 
