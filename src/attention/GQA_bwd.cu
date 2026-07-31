@@ -6655,35 +6655,23 @@ void launch_gqa_backward_v19(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
-// V20 — V19 clone; float2-vectorize the dQ staging path (stage_acc_f32 store +
-// atomic_flush read) to cut shared traffic on the #1 short_scoreboard stall.  Bit-identical.
+// V20 — V19 clone; EVEN-stride sdP (66) → float2-vectorize the dP-write (store_acc) AND
+// the dS read of sdP (halves those shared loads, short_scoreboard #1).  Bit-identical.
 // ─────────────────────────────────────────────────────────────────────────────
-// V20: float2-vectorized dQ staging.  stride NCOL(64) is even ⇒ (r,c),(r,c+1) adjacent &
-// 8-B aligned.  Halves the shared store (stage) AND the shared load (flush) on the dQ path
-// (short_scoreboard #1); global stays 2 scalar atomicAdds (no float2 atomicAdd).  Bit-identical.
-template<int NCOL>
-__device__ __forceinline__ void stage_acc_f32_v20(const float *d, float *stage, int tid, float scl) {
+// V20: even-stride sdP (SDP_STRIDE_V20=66) unlocks float2 on the dP write AND the dS read
+// of sdP.  store_acc_smem_v20 float2-stores the dP fragment; the kernel's dS loop float2-loads
+// sdP (halving those shared LOADS → short_scoreboard #1).  ROWSTRIDE even ⇒ 8-B aligned.
+constexpr int SDP_STRIDE_V20 = 66;      // Bc+2, EVEN (vs SS_STRIDE_V6=65) → float2-alignable
+template<int NCOL, int ROWSTRIDE>
+__device__ __forceinline__ void store_acc_smem_v20(const float *d, float *smem, int tid, float scl) {
     int w = tid >> 5, lane = tid & 31;
     int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
 #pragma unroll
     for (int nt = 0; nt < NCOL / 8; nt++) {
         int c = nt * 8 + cc;
-        *reinterpret_cast<float2*>(&stage[r0 * NCOL + c]) = make_float2(d[nt * 4 + 0] * scl, d[nt * 4 + 1] * scl);
-        *reinterpret_cast<float2*>(&stage[r1 * NCOL + c]) = make_float2(d[nt * 4 + 2] * scl, d[nt * 4 + 3] * scl);
-    }
-}
-template<int ROWS, int NCOL>
-__device__ __forceinline__ void atomic_flush_stage_v20(const float *stage, float *g, long base, int D, int coloff, int tid) {
-    constexpr int NP = ROWS * NCOL / 2;      // column-pairs
-    constexpr int CP = NCOL / 2;
-    for (int pi = tid; pi < NP; pi += 128) {
-        int row = pi / CP, cp = (pi % CP) * 2;
-        float2 v = *reinterpret_cast<const float2*>(&stage[row * NCOL + cp]);
-        long gb = base + (long)row * D + coloff + cp;
-        atomicAdd(&g[gb + 0], v.x);
-        atomicAdd(&g[gb + 1], v.y);
+        *reinterpret_cast<float2*>(&smem[r0 * ROWSTRIDE + c]) = make_float2(d[nt * 4 + 0] * scl, d[nt * 4 + 1] * scl);
+        *reinterpret_cast<float2*>(&smem[r1 * ROWSTRIDE + c]) = make_float2(d[nt * 4 + 2] * scl, d[nt * 4 + 3] * scl);
     }
 }
 
@@ -6710,7 +6698,7 @@ gqa_backward_v20_kv(
     __shared__ __align__(128)  bf16 sdO_pl[2][Br * D];
     __shared__ __align__(128)  bf16 sO_pl [2][Br * D];
     __shared__ __align__(16)   float sS [Br * SS_STRIDE_V6];   // V13: S store DROPPED; kept as wg0 dQ stage
-    __shared__ __align__(16)   float sdP[Br * SS_STRIDE_V6];
+    __shared__ __align__(16)   float sdP[Br * SDP_STRIDE_V20];
     __shared__ __align__(1024) bf16  sP [Br * 64];             // V16: 64-wide 128-B swizzle atom, 1024-B aligned
     __shared__                 float sLSE[Br];
     __shared__                 float sD  [2][Br];              // V13: double-buffered, producer-written
@@ -6820,7 +6808,7 @@ gqa_backward_v20_kv(
         } else {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
-            store_acc_smem_v6<Bc, SS_STRIDE_V6>(acc, sdP, wtid, 1.0f);
+            store_acc_smem_v20<Bc, SDP_STRIDE_V20>(acc, sdP, wtid, 1.0f);
         }
         consumer_sync();   // wg0's swizzled sP writes visible cross-warp before the transposed reads
 
@@ -6838,11 +6826,12 @@ gqa_backward_v20_kv(
             for (int pp = tid; pp < Br * Bc / 2; pp += CONS) {
                 const int r    = (2 * pp) / Bc;
                 const int pidx = r * 64 + ((c8 ^ (r & 7)) << 3) + clo;
-                const int sdi  = r * SS_STRIDE_V6 + cbase;
+                const int sdi  = r * SDP_STRIDE_V20 + cbase;
                 const float d  = sD[s][r];
                 const __nv_bfloat162 p2 = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx]);
                 const float2 pf  = __bfloat1622float2(p2);
-                const float2 res = make_float2(pf.x * (sdP[sdi] - d), pf.y * (sdP[sdi + 1] - d));
+                const float2 dp2 = *reinterpret_cast<const float2*>(&sdP[sdi]);
+                const float2 res = make_float2(pf.x * (dp2.x - d), pf.y * (dp2.y - d));
                 *reinterpret_cast<__nv_bfloat162*>(&sP[pidx]) = __float22bfloat162_rn(res);
             }
         }
@@ -6858,9 +6847,9 @@ gqa_backward_v20_kv(
         consumer_sync();
         { float acc[32]; zeroN<32>(acc);
           run_gemm_dQ_half(acc, sA_t, sK_sw + wg * 4096, sbo_pad_v6(Bc));
-          stage_acc_f32_v20<64>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
+          stage_acc_f32<64>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
         consumer_sync();
-        atomic_flush_stage_v20<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
+        atomic_flush_stage<Br, 64>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
         consumer_sync();
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
@@ -6950,6 +6939,7 @@ void launch_gqa_backward_v20(
     const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // main
@@ -7120,7 +7110,7 @@ int main(){
 
     launch_gqa_backward_v20<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V20 Br=64 Bc=64 vectorized dQ-staging float2 (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V20 Br=64 Bc=64 even-sdP float2 dP-write + dS-read (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -7273,9 +7263,8 @@ int main(){
             [&](){ launch_gqa_backward_v20<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V20 Br=64, Bc=64  vectorized dQ-staging float2  (Hopper SM_90)", s);
+        displayStats("GQA bwd V20 Br=64, Bc=64  even-sdP float2 dP+dS  (Hopper SM_90)", s);
     }
-
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
     CUDA_CHECK(cudaFree(d_dQ)); CUDA_CHECK(cudaFree(d_dK)); CUDA_CHECK(cudaFree(d_dV));
