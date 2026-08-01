@@ -1,7 +1,10 @@
 # V26 Analysis — wg0-scoped sLSE barrier (named barrier id 3)
 
-**Result: PENDING H200 run** (dev box sm_120 — compile-verify only). 157 regs, 0 spill,
-196,688 B smem (all = V25). **Bit-identical by construction.**
+**Result: 4.6853 ms (median) / 703.6 TFLOP/s — ~1.69× off cuDNN (broke 1.7×). Bit-identical.
+−5.71% over V25 (4.9687 ms).** 157 regs, 0 spill, 196,688 B smem (all = V25). Blew past the
+honest "couple %, could be flat" estimate — hiding wg1's ~400-cycle LSE-load latency behind
+its dP-GEMM was a much bigger lever than expected (4th under-call in a row: D-split, store-
+conflict, bf16-stage, this). Correctness: dQ/dK/dV all `Values match!`, max_abs identical.
 
 ## Why this — the V25 profile settled the target
 After V24/V25 mined out the shared-conflict lever, the V25 profile showed the wall is now
