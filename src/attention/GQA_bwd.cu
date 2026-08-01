@@ -8796,6 +8796,7 @@ gqa_backward_v27_kv(
     // separate kernel.  dV uses dO (sdO_sw), not O.
     __shared__ __align__(16)   float sS [Br * SS_STRIDE_V24];   // wg0 dQ stage
     __shared__ __align__(16)   float sdP[Br * SS_STRIDE_V24];
+    __shared__ __align__(16)   float sS1[Br * SS_STRIDE_V24];  // V27: dedicated wg1 dQ stage (was reusing sdP) → removes flush WAR
     __shared__ __align__(1024) bf16  sP [Br * 64];             // 64-wide 128-B swizzle atom
     __shared__                 float sLSE[Br];
     __shared__                 float sD  [PD][Br];             // V22: PD-deep (was 2) — robust vs the 3-deep pipeline
@@ -8949,10 +8950,13 @@ gqa_backward_v27_kv(
         // (sP=dS already made cross-warp visible by the dK consumer_sync above).
         { float acc[32]; zeroN<32>(acc);
           run_gemm_dQ_half_te(acc, sP, sK_sw + wg * 4096);
-          store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
-        consumer_sync_perwg(wg);   // V27: intra-wg (wg0->sS, wg1->sdP) — no cross-wg wait
-        atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
-        consumer_sync_perwg(wg);   // V27: intra-wg WAR — no cross-wg wait
+          store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sS1, wtid, scale); }
+        consumer_sync();   // store->flush RAW (intra-wg, both wgs); full bar is fine — balanced
+        atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sS1, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
+        // V27: flush->next-overwrite WAR barrier REMOVED. wg1's dQ now uses the DEDICATED buffer
+        // sS1 (not sdP), so the flush no longer WARs with the next-iter dP-store into sdP; the far
+        // next-iter dQ-store into sS/sS1 is guarded by the next tile's full "after fused_p" bar 1,256.
+        // Removes one 256-barrier/tile AND lets each wg's flush overlap the next mbar_wait (TMA feed).
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
 
@@ -9240,7 +9244,7 @@ int main(){
 
     launch_gqa_backward_v27<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V27 Br=64 Bc=64 per-wg flush barriers (bar 3/4,128) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V27 Br=64 Bc=64 dedicated wg1 dQ buf + removed flush WAR bar (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -9442,7 +9446,7 @@ int main(){
             [&](){ launch_gqa_backward_v27<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V27 Br=64, Bc=64  per-wg flush barriers (bar 3/4,128)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V27 Br=64, Bc=64  dedicated wg1 dQ buf + removed flush WAR bar  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));

@@ -1,4 +1,4 @@
-# GQA Backward — Version Ladder (V1 → V13)
+# GQA Backward — Version Ladder (V1 → V26)
 
 Reference for `Hopper/src/attention/GQA_bwd.cu`. Each version is described as a **delta**
 from the previous one — only what changed, plus the reason. All versions compute the same
