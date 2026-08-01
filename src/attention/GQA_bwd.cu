@@ -7106,31 +7106,6 @@ __device__ __forceinline__ void fused_p_nomask_v21(
 
 
 }
-// V28: 256-thread softmax P.  S is staged to smem (sS) by wg0; ALL 256 consumers then exp
-// S→sP (16 elems/thread vs the 128-thread 32/thread → half the exp latency).  Same swizzled
-// sP layout + causal mask as fused_p_from_acc_v19 → bit-identical.  tid = consumer-local [0,256).
-template<int Br, int Bc, int SSTRIDE>
-__device__ __forceinline__ void fused_p_from_smem_256(
-    const float* sSstage, bf16* sP, const float* sLSE, int tid,
-    int q_row0, int k_row0, float scale, bool mask)
-{
-    const int cbase = (2 * tid) % Bc, c8 = cbase >> 3, clo = cbase & 7;
-    for (int pp = tid; pp < Br * Bc / 2; pp += 256) {
-        const int r    = (2 * pp) / Bc;
-        const int pidx = r * 64 + ((c8 ^ (r & 7)) << 3) + clo;   // swizzled sP (== fused_p_v19)
-        const int sidx = r * SSTRIDE + cbase;                    // staged S, row stride SSTRIDE
-        const float lse = sLSE[r];
-        const float s0  = sSstage[sidx]     * scale - lse;
-        const float s1  = sSstage[sidx + 1] * scale - lse;
-        float e0, e1;
-        if (mask) {
-            const int gr = q_row0 + r, gc = k_row0 + cbase;
-            e0 = (gc     > gr) ? 0.f : __expf(s0);
-            e1 = (gc + 1 > gr) ? 0.f : __expf(s1);
-        } else { e0 = __expf(s0); e1 = __expf(s1); }
-        *reinterpret_cast<__nv_bfloat162*>(&sP[pidx]) = __float22bfloat162_rn(make_float2(e0, e1));
-    }
-}
 
 template<int Br, int Bc, int D>
 __global__ void
@@ -9212,40 +9187,43 @@ gqa_backward_v28_kv(
         const int q_row0 = qcC * Br;
         mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
         if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(gC, qcC) + tid];
-        // V28: divide the softmax P across BOTH warpgroups.  wg0 stages raw S to sS, wg1 stages
-        // dP; then ALL 256 consumers exp S→sP (16 elems/thread vs the 128-thread 32/thread → half
-        // the exp latency).  sLSE is now read by both wgs, so the full S-stage barrier below makes
-        // it visible (subsumes V26's wg0-scoped sLSE barrier — dropped here).
+        if (wg == 0) consumer_sync_wg0();   // V26: sLSE RAW is wg0-only; wg1 overlaps dP-GEMM w/ LSE-load latency
+
+        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to swizzled sP (wg0)
+        //  ∥  dP = dO·Vᵀ → sdP (wg1).
         if (wg == 0) {
             float acc[32]; zeroN<32>(acc);
-            run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);                     // S = Q·Kᵀ
-            store_acc_smem_v6<Bc, SS_STRIDE_V24>(acc, sS, wtid, 1.0f);  // stage raw S → sS (reused; free here)
+            run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
+            if (qcC == qc0) fused_p_from_acc_v19<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale);
+            else            fused_p_nomask_v21<Bc>(acc, sP, sLSE, wtid, scale);
         } else {
             float acc[32]; zeroN<32>(acc);
-            run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);                    // dP = dO·Vᵀ
+            run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
             store_acc_smem_v6<Bc, SS_STRIDE_V24>(acc, sdP, wtid, 1.0f);
         }
-        consumer_sync();   // S→sS + sdP + sLSE all visible to the 256 consumers
-        if (qcC == qc0) fused_p_from_smem_256<Br, Bc, SS_STRIDE_V24>(sS, sP, sLSE, tid, q_row0, k_row0, scale, true);
-        else            fused_p_from_smem_256<Br, Bc, SS_STRIDE_V24>(sS, sP, sLSE, tid, q_row0, k_row0, scale, false);
-        consumer_sync();   // sP (all 256 writes) visible before the transposed dV read
+        consumer_sync();   // wg0's swizzled sP writes visible cross-warp before the transposed reads
 
         // dV += Pᵀ·dO  — TRANSPOSE-ELIMINATED: A = Pᵀ read DIRECTLY from swizzled sP.
         run_gemm_dVdK_half_te_issue(dv, sP, sdO_sw[s] + wg * 4096);   // V27: issue only; overlaps dS below
 
         // dS = P ⊙ (dP − D) → swizzled sP.  D loaded by wg2 → wait d_ready[s] first.
         mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
-        {   // V18/V19: vectorize dS — 2 adjacent columns/step (bf16×2 + float2).
-            const int cbase = (2 * tid) % Bc, c8 = cbase >> 3, clo = cbase & 7;
-            for (int pp = tid; pp < Br * Bc / 2; pp += CONS) {
-                const int r    = (2 * pp) / Bc;
-                const int pidx = r * 64 + ((c8 ^ (r & 7)) << 3) + clo;
+        {   // V28: vectorize dS WIDER — 4 adjacent columns/step (2×bf16×2 + float4) → halves the
+            // iteration count, index math, loop branches, and LDS/STS in this hot 256-thread loop.
+            const int cbase = (4 * tid) % Bc, c8 = cbase >> 3, clo = cbase & 7;   // 4 cols → clo∈{0,4}
+            for (int pp = tid; pp < Br * Bc / 4; pp += CONS) {
+                const int r    = (4 * pp) / Bc;                                    // r += 16/iter → r&7 const
+                const int pidx = r * 64 + ((c8 ^ (r & 7)) << 3) + clo;             // 4 contig cols → pidx..+3
                 const int sdi  = r * SS_STRIDE_V24 + cbase;
-                const float d  = sD[s][r];        // V22: PD-deep sD, slot s = it%PD
-                const __nv_bfloat162 p2 = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx]);
-                const float2 pf  = __bfloat1622float2(p2);
-                const float2 res = make_float2(pf.x * (sdP[sdi] - d), pf.y * (sdP[sdi + 1] - d));
-                *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx]) = __float22bfloat162_rn(res);
+                const float d  = sD[s][r];
+                const __nv_bfloat162 pA = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx]);
+                const __nv_bfloat162 pB = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx + 2]);
+                const float4 dp = *reinterpret_cast<const float4*>(&sdP[sdi]);
+                const float2 pfA = __bfloat1622float2(pA), pfB = __bfloat1622float2(pB);
+                const float2 rA = make_float2(pfA.x * (dp.x - d), pfA.y * (dp.y - d));
+                const float2 rB = make_float2(pfB.x * (dp.z - d), pfB.y * (dp.w - d));
+                *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx])     = __float22bfloat162_rn(rA);
+                *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx + 2]) = __float22bfloat162_rn(rB);
             }
         }
         run_gemm_dVdK_half_te_wait(dv);   // V27: dV wgmma completed under the dS elementwise
@@ -9557,7 +9535,7 @@ int main(){
 
     launch_gqa_backward_v28<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V28 Br=64 Bc=64 256-thread softmax (P split across both wgs) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V28 Br=64 Bc=64 dS bf16x4 (4 cols/step) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -9766,7 +9744,7 @@ int main(){
             [&](){ launch_gqa_backward_v28<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V28 Br=64, Bc=64  256-thread softmax (P split across both wgs)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V28 Br=64, Bc=64  dS bf16x4 (4 cols/step)  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
