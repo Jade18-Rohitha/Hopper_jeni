@@ -186,6 +186,146 @@ Tile shape: V1 = Br16/Bc32, V2 = 64×64 (D flexible, %16). **V3–V13 are hard-f
 
 ---
 
+## Performance-tuning ladder (V13 → V26)
+
+V1–V13 built the *structure* (portable → wgmma → TMA → fused → warp-specialized). From V13 on,
+the structure is frozen (384-thread 3-warpgroup producer/consumer, single fused KV-centric
+kernel + fp32-atomic dQ) and every version is a **measured latency cut**, all **bit-identical**
+(same math, padding/scheduling/vectorization only), ≤170 regs, 0 spill. Config: B=8, Hq=12,
+Hkv=4, G=3, S=4096, D=128, bf16, causal. cuDNN SDPA backward ≈ 2.78–2.81 ms (the target).
+
+| V | change | median ms | Δ | note |
+|---|---|---|---|---|
+| V13 | (perf-era baseline) | 8.82 | — | 3.14× off cuDNN |
+| V14 | `__expf` fast softmax (SFU exp) | ~ | | strips range-reduce ALU on wg0's crit. path |
+| V15 | no-division incremental index math | ~ | | address-math cut |
+| V16 | dV/dK transpose-staging elimination | ~ | | read Pᵀ/dSᵀ direct, Major::MN |
+| V17 | hoist swizzle-index math | ~ | | strength-reduce `sw128_idx` |
+| V18 | vectorize `dS` (bf16×2 + float2) | ~ | | 2 cols/step |
+| V19 | vectorize P-write (bf16×2) | 7.77 | | −12% vs V13 band |
+| V20 | swizzled D-rowsum + PD=3 pipeline | ~ | −3.65% | one more tile run-ahead |
+| V21 | causal-mask specialization | 7.39 | | `fused_p_nomask` off-diagonal |
+| V22 | **D-rowsum split** (separate kernel) | 5.89 | **−20.3%** | biggest win; compute→mem-bound |
+| V23 | dQ transpose-staging elimination | 5.70 | −3.78% | 2.03× off cuDNN |
+| V24 | **shared-store bank cut** (stride 72) | 4.99 | **−12.5%** | broke 5 ms AND 2× (1.78×) |
+| V25 | bf16 dV/dK stage stride-72 | 4.9353 | −0.98% | last shared conflict → 1-way |
+| V26 | **wg0-scoped sLSE barrier** | 4.6853 | **−5.71%** | 1.69× off cuDNN; IPC 1.77→1.87 |
+
+Three regime shifts drove which lever worked: **compute/latency-bound** (V13–V21, cut
+instructions/staging) → **L1/shared-throughput-bound** (V22–V25, cut shared traffic & bank
+conflicts) → **feed/sync-bound** (V26+, keep the scheduler fed by scoping barriers). The same
+class of lever can be inert in one regime and decisive in another — a store-conflict fix did
+nothing while latency-bound but won −12.5% once the kernel became L1/shared-bound (V24).
+
+## V14 — `__expf` fast softmax
+V13 clone; the single change is the softmax exponential in `fused_p`: **`expf` → `__expf`** (the
+fast SFU intrinsic), `fused_p_from_acc_v14`. IEEE `expf` wraps the `MUFU.EX2` hardware in
+range-reduction + polynomial + reconstruction ALU; `__expf` issues the `EX2` directly, stripping
+that scalar ALU from **wg0's critical-path softmax** (the `exp(S·scale − LSE)` over the full
+64×64 P tile). Fast-math is *not* globally enabled — the rest of the kernel stays IEEE; only
+this one exp is swapped. Bit-identical at the bf16 output: `__expf`'s ~2⁻²² relative error sits
+~14 bits below bf16's ~2⁻⁸ ulp, so the rounded bf16 P is unchanged → dQ/dK/dV match.
+
+## V15 — no-division incremental index math
+The per-tile group/query-tile indices (`gC`, `qcC` and the derived global row/col bases) were
+recomputed with `/` and `%` each iteration. V15 replaces them with **incremental updates**
+(`if (++qcC == nQTiles) { qcC = qc0; ++gC; }`) — integer divide/modulo are multi-instruction on
+the SM. Pure address-math instruction cut on the critical path; bit-identical.
+
+## V16 — dV/dK transpose-staging elimination
+`dV = Pᵀ·dO` and `dK = dSᵀ·Q` need the **transposed** P/dS as the wgmma A-operand. Through V15
+that was built with an `ldmatrix→stmatrix` reshuffle into `sA_t`. V16 reads **Pᵀ/dSᵀ directly
+from the swizzled `sP`** as a `Major::MN` operand: the SW128 swizzle makes the col(=k) axis the
+contiguous 128-B role, so contracting over row=q is exactly a Major::MN read. Removes the
+staging round-trip (LDSM/STSM + a barrier) for dV/dK. **dQ stayed staged** (thought to need a
+different orientation — a conservative call reversed at V23). Bit-identical (same fragment map).
+
+## V17 — hoist swizzle-index math
+The swizzle index `sw128_idx(r,c) = r*64 + ((c>>3 ^ r&7)<<3) + (c&7)` was recomputed per
+element in the elementwise loops. V17 hoists/strength-reduces the row-dependent part out of the
+column loop (the `r*64` and `r&7` terms are loop-invariant across columns). Address-math cut.
+
+## V18 — vectorize `dS` (bf16×2 + float2)
+`dS = P ⊙ (dP − D)` was a scalar loop. V18 processes **2 adjacent columns per step**: read P as
+`__nv_bfloat162` (bf16×2), read the fp32 `dP` pair as `float2`, compute, write P back as bf16×2.
+Halves the loop-trip count and the load/store instruction count of the elementwise phase.
+
+## V19 — vectorize the P-write
+The softmax epilogue `fused_p` wrote P to `sP` one bf16 at a time. V19 writes **bf16×2** (2
+columns per `STS`), matching V18's read width. Lands the V13→V19 band at **7.77 ms**.
+
+## V20 — swizzled D-rowsum + 3-deep pipeline
+Two changes: (a) the producer-side D-rowsum reads `O` through a **swizzled** buffer (removing a
+strided-load conflict on the producer); (b) **pipeline depth 2 → 3** (`PD=3`) — one more tile of
+producer run-ahead to hide the TMA-feed latency. Proved the producer feed was a real throttle:
+**−3.65%**. (PD=4 was tested later and was flat — the feed isn't purely depth-limited.)
+
+## V21 — causal-mask specialization
+`fused_p` applied the causal element-mask (`global_col > global_row → 0`) on every tile, but
+only the **diagonal** tile (`qcC == qc0`) actually straddles the causal boundary. V21 splits
+into `fused_p_from_acc` (masked, diagonal tile) and **`fused_p_nomask`** (no mask compute, all
+fully-unmasked tiles) — dropping the per-element compare on the common case. Lands at **7.39 ms**.
+
+## V22 — D-rowsum split into a separate kernel (BIGGEST early win, −20.3%)
+The single largest cut. `D[r] = rowsum(dO·O)` was computed inside the fused kernel (on the
+producer warpgroup). cuDNN computes it in a **separate** kernel (`compute_dot_do_o_specialized`);
+V22 does the same — `compute_drowsum_v22`, a light grid-stride kernel over all `B·Hq·S` rows,
+warp-per-row, replicating the exact fp32 accumulation order → **D is bit-identical**. The main
+kernel then **deletes** the inline `producer_drowsum`, the `sO_sw` buffer, and the entire **O
+TMA** (O only ever fed the D-rowsum; dV uses dO). Payoff compounded three ways: dropped the #1
+short-scoreboard stall (the D shuffle-tree), **freed 32 KB smem**, and **deleted a whole tile's
+O-TMA traffic per iteration** → the producer feeds far faster. **7.39 → 5.89 ms (−20.3%)**;
+the bottleneck crossed from compute/latency-bound to **memory-bound** (long_scoreboard now #1).
+Both the agent and I predicted this flat — wrong by 20%. Launcher now runs D-kernel → main →
+convert and times the **total** (honest vs cuDNN's multi-kernel total). *(Our D-kernel = 63 µs
+beats cuDNN's 100 µs; we also fuse the GQA head-reduction cuDNN pays a separate kernel for.)*
+
+## V23 — dQ transpose-staging elimination
+The last staged A-operand. `dQ = dS·K` still round-tripped `dS` through `sA_t` via
+`sp_to_sAt` (ldmatrix→stmatrix). V23 reads **dS directly from the swizzled `sP` as a `Major::K`
+operand** (`run_gemm_dQ_half_te`): dQ contracts over col=k, and the swizzle makes col=k the
+contiguous axis, so a Major::K read hits the right contraction axis (structurally identical to
+the proven S-GEMM `A=Q_sw` read — *not* the V8 failure, which read a transposed operand as
+Major::K). The single swizzled `sP` now serves **both** orientations (dV/dK Major::MN, dQ
+Major::K) from one buffer. SASS: `LDSM 2→0, STSM 2→0, BAR 16→15`; regs **162→157**. **5.89 →
+5.70 ms (−3.78%), 2.03× off cuDNN.** `sA_t` is now used *only* as the dV/dK epilogue stage.
+
+## V24 — shared-store bank-conflict cut (stride 72) — broke 5 ms AND 2×
+Now L1/shared-throughput-bound (66% L1TEX), the two per-tile fp32 D-fragment stores were the
+wall: `dP→sdP` (stride 65 = 4-way scalar `STS.32`) and the dQ-stage `→sS` (stride 64 = **8-way**).
+Both re-padded to **stride 72 = 2-way** (the hard bank floor — even column-pairs reach only 16
+banks, so 2-way is the minimum; 1-way impossible for fp32). The dP store also packs
+`STS.32→STS.64` (half the store instructions). The dQ-flush read stride is **decoupled** from
+the write (`atomic_flush_stage_s<Br,64,72>`) so global coalescing is preserved. **Store conflicts
+234.6 M → 4.5 M (−98%); 5.70 → 4.99 ms (−12.5%), 1.78× off cuDNN.** A store-conflict fix only
+converts to wall-clock in this L1/shared-throughput-bound regime (it did nothing while the
+kernel was latency-bound) — the regime, not the fix, decides. Bit-identical (padding only).
+
+## V25 — bf16 dV/dK stage bank-conflict cut (stride 72 → 1-way)
+The last reducible shared conflict. The bf16 dV/dK **epilogue** stage (`stage_acc_bf16`, stride
+64) was still **8-way**. Re-padded to **stride 72** via decoupled-stride helpers
+(`stage_acc_bf16_s` / `store_stage_vec_s`, data width 64, row stride 72). Because bf16 packs 2
+cols/word (`STS.32`), the packed word-index `r·36 + c/2` maps to `(i·4 + j) mod 32` over the warp
+→ **all 32 banks distinct → 1-way (conflict-free)**, better than fp32's 2-way floor. `sA_t` is
+now dedicated to this stage (dQ reads `sP` directly since V23), so no aliasing. **Store conflicts
+4.5 M → 0.82 M; 4.99 → 4.9353 ms (−0.98%).** Source-page attribution here proved the remaining
+33.5 M "shared-load conflicts" are **wgmma operand fetches** (`HGMMA gdesc.tnspA`) — inherent,
+not reducible — so the shared-conflict lever is fully mined out.
+
+## V26 — wg0-scoped sLSE barrier (feed/sync regime, −5.71%)
+With shared traffic exhausted, the wall is **feed/sync** (tensor only 20% active; #1 stall =
+mbarrier TMA-feed spin). The consumer chain has 7 `bar.sync 1,256` per tile, each guarding a
+real hazard — but the **first** one (right after the `sLSE` load) guards a **wg0-only** hazard:
+`tid<64` write `sLSE[tid] = d_LSE[…]` (a **global load, ~400-cycle latency**), and wg0's
+`fused_p` reads it. wg1 (`dP = dO·Vᵀ`) never touches `sLSE`. V26 scopes it to a **128-thread
+`bar.sync 3,128`** (id 3 free) that only wg0 runs (`if (wg==0) consumer_sync_wg0()`), so **wg1
+skips it and overlaps its independent dP-GEMM with the LSE-load latency**, re-converging at the
+next `bar 1,256`. Pure scheduling win — instruction count flat, but **IPC 1.77 → 1.87**
+(no-eligible 55.7% → 53.2%). **4.9353 → 4.6853 ms (−5.71%), 1.69× off cuDNN.** Introduced the
+"wg-scope a barrier whose hazard is intra-warpgroup so the other wg overlaps latency" lever.
+
+---
+
 ## Recurring concepts & gotchas (cross-version)
 
 - **Two-granularity causal masking:** tile-level skip (`break` in dQ / loop-start in dKdV) removes fully-masked tiles; element-level mask (`global_col > global_row → 0`) handles the diagonal tile. Present in every version.
@@ -198,4 +338,10 @@ Tile shape: V1 = Br16/Bc32, V2 = 64×64 (D flexible, %16). **V3–V13 are hard-f
 - **dQ is always atomic in the fused kernels (V5+):** it reduces over the key axis, so no single KV-block owns it → fp32 scratch + convert. dK/dV are block-owned → plain accumulate, no atomics.
 
 ## The arc in one breath
-portable wmma (V1/V2) → wgmma correctness (V3) → TMA+swizzle+double-buffer (V4) → fused KV-centric, atomic dQ (V5) → bank-conflict padding (V6) → transpose-buffer elimination via `trans-b=1` (V7) → warp-shuffle D-rowsum (V8) → 2-WG column bisection (V9) → coalesced writeback (V10) → 3-WG producer/consumer (V11) → `ldmatrix→stmatrix` reshuffle (V12) → register-fused softmax + producer-side D-rowsum (V13).
+portable wmma (V1/V2) → wgmma correctness (V3) → TMA+swizzle+double-buffer (V4) → fused KV-centric, atomic dQ (V5) → bank-conflict padding (V6) → transpose-buffer elimination via `trans-b=1` (V7) → warp-shuffle D-rowsum (V8) → 2-WG column bisection (V9) → coalesced writeback (V10) → 3-WG producer/consumer (V11) → `ldmatrix→stmatrix` reshuffle (V12) → register-fused softmax + producer-side D-rowsum (V13) → *[structure frozen; perf tuning begins]* → no-div + hoist address math (V15/V17) → dV/dK transpose-staging elimination (V16) → vectorize dS/P-write (V18/V19) → PD=3 pipeline (V20) → causal-mask specialization (V21) → **D-rowsum split kernel, −20% (V22)** → dQ transpose-staging elimination (V23) → **shared-store bank cut, −12.5%, sub-2× (V24)** → bf16-stage 1-way (V25) → **wg0-scoped sLSE barrier, −5.7% (V26)**.
+
+**8.82 ms (3.14×) → 4.6853 ms (1.69× off cuDNN), every version bit-identical.** Three regimes:
+compute-bound (cut instructions) → L1/shared-bound (cut bank conflicts) → feed/sync-bound (keep
+the scheduler fed). The recurring lesson: a lever dead in one regime revives in another — trust
+the current measurement, not the old verdict (D-split and the store-conflict cut were each
+predicted flat and each landed a headline win).
