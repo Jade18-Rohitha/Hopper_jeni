@@ -1,31 +1,47 @@
-# V27 Analysis — pipeline depth PD 3 → 4
+# V27 Analysis — break the sP-reuse chain (separate sDS + dV overlap)
 
-**Result: PENDING H200 run.** 156 regs, 0 spill, 229,736 B smem (+33 KB vs V26, under the
-232,448 cap — 2.7 KB to spare), same 1-block/SM occupancy (18.75%). **Bit-identical by
-construction.**
+**Result: PENDING H200 run.** 157 regs, 0 spill, 204,880 B smem (+8 KB for `sDS`, under cap).
+**Bit-identical by construction.**
+
+## Why — V26 is consumer-bound, not feed-bound
+The V26 profile settled it: the #1 "stall" (26.7% `@!P0 BRA`) is the **producer idling on
+`empty[]`** — it fills all pipeline buffers and waits for the slower consumer. The data is on
+time; deepening the pipeline can't help (PD=4 regressed). The real wall is the **consumer's
+serial 6-GEMM chain**: every GEMM's result lives in the single `sP` buffer, so each step
+barriers + waits on the previous (barrier 30% + wgmma-wait 21% of stall), and 18.75% occupancy
+(reg/smem-locked, 1 block/SM) can't hide it.
 
 ## What changed
-V26 clone; the single change is `constexpr int PD = 4` (was 3) — one more pipeline stage of
-producer run-ahead for the `sQ_sw`/`sdO_sw`/`sD` buffers. Costs +33 KB smem (two `[PD][Br·D]`
-bf16 tile buffers + the PD-deep `sD`/mbarriers); still fits at the same 1-block/SM occupancy.
+The chain serialized because `dS` **overwrote `sP` in place** — forcing dV (which reads `sP`)
+to fully complete before dS. V27 gives `dS` its **own output buffer `sDS`**:
+- `dS = P ⊙ (dP − D)` reads `sP` (P) and writes **`sDS`** (was in-place `sP`).
+- `dK`/`dQ` read `sDS` (the swizzle layout is identical to `sP`, so the Major::MN/Major::K
+  descriptor reads are unchanged).
+- `dV` is split into **issue** (`run_gemm_dVdK_half_te_issue`, no wait) and **wait**
+  (`run_gemm_dVdK_half_te_wait`): issue the dV wgmma, run the dS elementwise, *then* wait dV.
+  Since dS no longer touches `sP`, the dV read stays valid across the overlap.
+- The **dV→dS WAR barrier is removed** (dV and dS now both only *read* `sP`).
 
-## Why
-The #1 stall after V26 is the **TMA-feed mbarrier spin** (long_scoreboard 1.98, 80.6% a single
-`@!P0 BRA` — consumers parked waiting for the producer). The consumers got **20% faster** across
-V22–V26 (5.89 → 4.68 ms), so they drain each tile sooner and hit `mbar_wait` earlier — they now
-**starve harder on the feed**. Deeper run-ahead (one more buffered tile) is the lever for a
-consumer that outruns its producer. We are *not* HBM-bound (DRAM ~18%), so the feed limit is
-latency/issue, not bandwidth — the case where more buffering helps.
+SASS confirms the schedule held: `bar → dV ARRIVE+4×HGMMA → dS (F2FP/STS) → dV DEPBAR wait →
+bar` — the dV wgmma overlaps the dS elementwise, and there is **no barrier between them**.
+256-thread consumer barriers **9 → 8**.
+
+## Why it should win
+Two critical-path cuts at once: the dV wgmma latency is hidden under the dS elementwise (the dS
+loop is long; the 4-HGMMA dV is short → its wait resolves for free), and one 256-thread barrier
+per tile is gone. Both target the consumer serial chain that the profile identified as the real
+bottleneck — not the feed (which is already ahead).
 
 ## Correctness (bit-identical by construction)
-PD changes only how many tiles are in flight, not the per-tile computation or the tile
-processing order (the consumer loop stays sequential; the accumulators see the same tile
-sequence). Identical basis to V20's bit-identical PD 2→3 bump.
+Same computation; `dS` values are written to `sDS` instead of `sP` (identical swizzle layout),
+and dK/dQ read them from `sDS`. dV reads the unchanged `sP`. Deferring the dV wait doesn't
+change the accumulator result — the wgmma still completes before the next dependent step. No
+new hazard: between dV-issue and dV-wait, `sP` is only read (dS reads it, dK/dQ read `sDS`); the
+next overwrite of `sP` is the next tile's `fused_p`, a full iteration and several barriers away.
 
 ## To confirm on H200
 1. `check(── V27 …)` — 0 mismatches.
-2. Benchmark **V27 vs V26** (4.6791 ms). If deeper run-ahead hides the feed spin, expect a drop;
-   if the producer is issue/throughput-limited rather than buffer-limited, flat.
-3. `ncu`: long_scoreboard below 1.98 confirms the feed spin shrank.
+2. Benchmark **V27 vs V26** (4.6791 ms).
+3. `ncu`: barrier stall below 1.29 (one fewer barrier); wgmma-wait share down (dV wait hidden).
 
 Cumulative: V24 4.99 → V25 4.9353 → V26 4.6853 → **V27 (pending)**.

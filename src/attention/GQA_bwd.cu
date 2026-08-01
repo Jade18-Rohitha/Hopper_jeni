@@ -5600,7 +5600,28 @@ __device__ __forceinline__ void run_gemm_dVdK_half_te(float acc[32], const bf16*
         uint64_t dB = make_desc_sw128_MN(B_sw_half + k * 1024);    // swizzled Major::MN B (dO/Q)
         wgmma_m64n64k16_tAtB(acc, dA, dB);                         // trans-a=1, trans-b=1
     }
+
     wgmma_commit();
+    wgmma_wait0();
+    fence_operandN<32>(acc);
+}
+
+// V27: issue/wait split of run_gemm_dVdK_half_te so the dV wgmma can overlap the dS
+// elementwise (dS writes a separate sDS, so sP stays valid for the deferred dV read).
+__device__ __forceinline__ void run_gemm_dVdK_half_te_issue(float acc[32], const bf16* sP_sw,
+                                                            const bf16* B_sw_half) {
+    fence_proxy_async_shared();
+    fence_operandN<32>(acc);
+    wgmma_fence();
+#pragma unroll
+    for (int k = 0; k < 4; k++) {
+        uint64_t dA = make_desc_sw128_MN(sP_sw     + k * 1024);
+        uint64_t dB = make_desc_sw128_MN(B_sw_half + k * 1024);
+        wgmma_m64n64k16_tAtB(acc, dA, dB);
+    }
+    wgmma_commit();
+}
+__device__ __forceinline__ void run_gemm_dVdK_half_te_wait(float acc[32]) {
     wgmma_wait0();
     fence_operandN<32>(acc);
 }
@@ -8778,7 +8799,7 @@ gqa_backward_v27_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V24 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;   // consumer thread count (wg 0+1)
-    constexpr int PD   = 4;     // V27: pipeline depth 3->4 (deeper run-ahead to hide the TMA-feed spin)
+    constexpr int PD   = 3;     // pipeline depth for sQ_sw / sdO_sw / sD
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
@@ -8789,6 +8810,7 @@ gqa_backward_v27_kv(
     __shared__ __align__(16)   float sS [Br * SS_STRIDE_V24];   // wg0 dQ stage
     __shared__ __align__(16)   float sdP[Br * SS_STRIDE_V24];
     __shared__ __align__(1024) bf16  sP [Br * 64];             // 64-wide 128-B swizzle atom
+    __shared__ __align__(1024) bf16  sDS[Br * 64];             // V27: dS output (was overwriting sP)
     __shared__                 float sLSE[Br];
     __shared__                 float sD  [PD][Br];             // V22: PD-deep (was 2) — robust vs the 3-deep pipeline
     __shared__ __align__(128)  bf16  sA_t[2 * 64 * 72];        // V25: dV/dK epilogue stage @ stride 72 (=9216 bf16)
@@ -8910,8 +8932,7 @@ gqa_backward_v27_kv(
         consumer_sync();   // wg0's swizzled sP writes visible cross-warp before the transposed reads
 
         // dV += Pᵀ·dO  — TRANSPOSE-ELIMINATED: A = Pᵀ read DIRECTLY from swizzled sP.
-        run_gemm_dVdK_half_te(dv, sP, sdO_sw[s] + wg * 4096);
-        consumer_sync();
+        run_gemm_dVdK_half_te_issue(dv, sP, sdO_sw[s] + wg * 4096);   // V27: issue only; overlaps dS below
 
         // dS = P ⊙ (dP − D) → swizzled sP.  D loaded by wg2 → wait d_ready[s] first.
         mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
@@ -8925,13 +8946,14 @@ gqa_backward_v27_kv(
                 const __nv_bfloat162 p2 = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx]);
                 const float2 pf  = __bfloat1622float2(p2);
                 const float2 res = make_float2(pf.x * (sdP[sdi] - d), pf.y * (sdP[sdi + 1] - d));
-                *reinterpret_cast<__nv_bfloat162*>(&sP[pidx]) = __float22bfloat162_rn(res);
+                *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx]) = __float22bfloat162_rn(res);
             }
         }
-        consumer_sync();   // dS writes visible cross-warp before the transposed dK read
+        run_gemm_dVdK_half_te_wait(dv);   // V27: dV wgmma completed under the dS elementwise
+        consumer_sync();   // dS->sDS visible cross-warp (+ dV done) before the transposed dK read
 
         // dK += dSᵀ·Q  — TRANSPOSE-ELIMINATED: A = dSᵀ read DIRECTLY from swizzled sP.
-        run_gemm_dVdK_half_te(dk, sP, sQ_sw[s] + wg * 4096);
+        run_gemm_dVdK_half_te(dk, sDS, sQ_sw[s] + wg * 4096);
         consumer_sync();
         if (tid == 0) mbar_arrive_v11(&empty[s]);
 
@@ -8940,7 +8962,7 @@ gqa_backward_v27_kv(
         // the ldmatrix->stmatrix staging round-trip + its consumer_sync are DELETED
         // (sP=dS already made cross-warp visible by the dK consumer_sync above).
         { float acc[32]; zeroN<32>(acc);
-          run_gemm_dQ_half_te(acc, sP, sK_sw + wg * 4096);
+          run_gemm_dQ_half_te(acc, sDS, sK_sw + wg * 4096);
           store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
         consumer_sync();
         atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
@@ -9232,7 +9254,7 @@ int main(){
 
     launch_gqa_backward_v27<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V27 Br=64 Bc=64 pipeline depth PD=4 (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V27 Br=64 Bc=64 sP-reuse-chain break (sDS + dV overlap) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -9434,7 +9456,7 @@ int main(){
             [&](){ launch_gqa_backward_v27<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V27 Br=64, Bc=64  pipeline depth PD=4  (Hopper SM_90)", s);
+        displayStats("GQA bwd V27 Br=64, Bc=64  sP-reuse-chain break (sDS + dV overlap)  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
