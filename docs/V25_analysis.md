@@ -1,9 +1,10 @@
 # V25 Analysis — bf16 dV/dK stage bank-conflict cut (stride 72)
 
-**Result: PENDING H200 run** (dev box is sm_120 — compile-verify only). Expected small
-(~0.3–0.5%): this is the O(S) epilogue, not V24's O(S²) hot path — but it takes the *last*
-reducible shared conflict to the floor. 157 regs, 0 spill, 196,688 B smem. **Bit-identical**
-(padding only).
+**Result: 4.9353 ms (median) / 666.97 TFLOP/s — ~1.77× off cuDNN. Bit-identical. −0.98% over
+V24 (4.9843 ms).** 157 regs, 0 spill, 196,688 B smem. Beat the honest ~0.3–0.5% estimate: the
+8-way→1-way (conflict-free) store fix converted to ~1% wall-clock even though it's the O(S)
+dV/dK epilogue, not V24's O(S²) hot path. Correctness: dQ/dK/dV all `Values match!`, max_abs
+identical to V24 (1.953e-3 / 3.906e-3 / 3.125e-2) — bit-identical (padding only).
 
 ## Why this, and why it's the last shared lever
 V24's source-page attribution (`ncu --page source`) settled the shared-traffic picture:
