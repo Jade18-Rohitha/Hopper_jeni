@@ -11266,6 +11266,127 @@ void launch_gqa_backward_v35(
     convert_dq_accum_to_bf16_v5<<<convGrid,convBlock>>>(d_dq_accum,d_dQ,dqN);
 }
 
+template<int Br, int Bc, int D>
+__global__ void __launch_bounds__(384, 1)
+gqa_backward_v36_kv(
+    const __grid_constant__ CUtensorMap tma_K_sw, const __grid_constant__ CUtensorMap tma_V_sw,
+    const __grid_constant__ CUtensorMap tma_Q_sw, const __grid_constant__ CUtensorMap tma_dO_sw,
+    const float * __restrict__ d_Drow, const float * __restrict__ d_LSE,
+    bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV, float * __restrict__ d_dq_accum,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "");
+    constexpr int NB = 4;
+    __shared__ __align__(128) bf16 sK_sw[Bc*D];
+    __shared__ __align__(128) bf16 sV_sw[Bc*D];
+    __shared__ __align__(128) bf16 sQ_sw [NB][Br*D];
+    __shared__ __align__(128) bf16 sdO_sw[NB][Br*D];
+    __shared__ __align__(16)  float sS [2][Br*64];
+    __shared__ __align__(1024) bf16 sP [2][Br*64];
+    __shared__ __align__(1024) bf16 sDS[2][Br*64];
+    __shared__ float sLSE[NB][Br];
+    __shared__ float sD  [NB][Br];
+    __shared__ __align__(8) uint64_t mbar_kv, full[NB], empty[NB], d_ready[NB];
+    const int tid=threadIdx.x, wg=tid>>7, wtid=tid&127;
+    const int b=blockIdx.x, hkv=blockIdx.y, k_tile=blockIdx.z, k_row0=k_tile*Bc, nQTiles=S/Br;
+    const long kvBase=((long)(b*Hkv+hkv)*S+k_row0)*D; const uint32_t kvFlatRow=(uint32_t)((b*Hkv+hkv)*S+k_row0);
+    const uint32_t bytesTile=(uint32_t)(Br*D*sizeof(bf16)), bytesAtom=(uint32_t)(Bc*64*sizeof(bf16));
+    if(tid==0){ mbar_init_v4(&mbar_kv,1);
+        #pragma unroll
+        for(int i=0;i<NB;i++){mbar_init_v4(&full[i],1);mbar_init_v4(&empty[i],1);mbar_init_v4(&d_ready[i],1);} }
+    __syncthreads();
+    const int qc0=k_row0/Br, perG=nQTiles-qc0, nIter=G*perG;
+    auto qFlatRowOf=[&](int g,int qc)->uint32_t{const int hq=hkv*G+g;return (uint32_t)((b*Hq+hq)*S+qc*Br);};
+    auto lBaseOf   =[&](int g,int qc)->long    {const int hq=hkv*G+g;return (long)(b*Hq+hq)*S+(long)qc*Br;};
+    if (wg == 2) {
+        const bool leader=(tid==256); const int pl=tid-256;
+        if(leader){ mbar_expect_tx_v4(&mbar_kv,bytesAtom*4);
+            tma_load_2d_v4(&tma_K_sw,sK_sw,&mbar_kv,0,kvFlatRow); tma_load_2d_v4(&tma_K_sw,sK_sw+64*64,&mbar_kv,64,kvFlatRow);
+            tma_load_2d_v4(&tma_V_sw,sV_sw,&mbar_kv,0,kvFlatRow); tma_load_2d_v4(&tma_V_sw,sV_sw+64*64,&mbar_kv,64,kvFlatRow); }
+        uint32_t epar[NB]={0};
+        for(int it=0; it<nIter; it++){
+            const int bu=it%NB; const int g=it/perG, qc=qc0+(it%perG);
+            if(it>=NB){ mbar_wait_v4(&empty[bu],epar[bu]); epar[bu]^=1; }
+            const long dbase=lBaseOf(g,qc);
+            if(leader){ const uint32_t r=qFlatRowOf(g,qc); mbar_expect_tx_v4(&full[bu],bytesTile*2);
+                tma_load_2d_v4(&tma_Q_sw, sQ_sw[bu],       &full[bu],0,r); tma_load_2d_v4(&tma_Q_sw, sQ_sw[bu]+64*64,&full[bu],64,r);
+                tma_load_2d_v4(&tma_dO_sw,sdO_sw[bu],      &full[bu],0,r); tma_load_2d_v4(&tma_dO_sw,sdO_sw[bu]+64*64,&full[bu],64,r); }
+            if(pl<Br){ sD[bu][pl]=d_Drow[dbase+pl]; sLSE[bu][pl]=d_LSE[dbase+pl]; }
+            producer_sync();
+            if(leader) mbar_arrive_v11(&d_ready[bu]);
+        }
+        return;
+    }
+    const float scale2 = scale*LOG2E_V29;
+    const int bid = 3 + wg;
+    mbar_wait_v4(&mbar_kv, 0);
+    float dv[64]; zeroN<64>(dv); float dk[64]; zeroN<64>(dk);
+    uint32_t cpar[NB]={0}, dpar[NB]={0};
+    for (int it = wg; it < nIter; it += 2) {
+        const int bu=it%NB; const int g=it/perG, qc=qc0+(it%perG), q_row0=qc*Br;
+        mbar_wait_v4(&full[bu],  cpar[bu]); cpar[bu]^=1;
+        mbar_wait_v4(&d_ready[bu],dpar[bu]); dpar[bu]^=1;
+        float accS[32]; zeroN<32>(accS); run_gemm_n64_sw2(accS, sQ_sw[bu], sK_sw);
+        float pReg[32];
+        fused_p_keepP_v35<Bc>(accS, sP[wg], sLSE[bu], pReg, wtid, q_row0, k_row0, scale2, qc==qc0);
+        float accP[32]; zeroN<32>(accP); run_gemm_n64_sw2(accP, sdO_sw[bu], sV_sw);
+        store_dS_reg_v35<Bc>(pReg, accP, sD[bu], sDS[wg], wtid);
+        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+        run_gemm_dVdK_half_te(dv,    sP[wg], sdO_sw[bu]+0);
+        run_gemm_dVdK_half_te(dv+32, sP[wg], sdO_sw[bu]+4096);
+        run_gemm_dVdK_half_te(dk,    sDS[wg],sQ_sw[bu]+0);
+        run_gemm_dVdK_half_te(dk+32, sDS[wg],sQ_sw[bu]+4096);
+        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+        if(wtid==0) mbar_arrive_v11(&empty[bu]);
+        { float acc[32]; zeroN<32>(acc); run_gemm_dQ_half_te(acc, sDS[wg], sK_sw+0);
+          store_acc_smem_v6<64,64>(acc, sS[wg], wtid, scale); }
+        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+        atomic_flush_stage_s<Br,64,64>(sS[wg], d_dq_accum, lBaseOf(g,qc)*D, D, 0, wtid);
+        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+        { float acc[32]; zeroN<32>(acc); run_gemm_dQ_half_te(acc, sDS[wg], sK_sw+4096);
+          store_acc_smem_v6<64,64>(acc, sS[wg], wtid, scale); }
+        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+        atomic_flush_stage_s<Br,64,64>(sS[wg], d_dq_accum, lBaseOf(g,qc)*D, D, 64, wtid);
+        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+    }
+    float* red = reinterpret_cast<float*>(&sQ_sw[0][0]);
+    float* rwg = red + wg*(Br*D);
+    store_acc_smem_v6<128,128>(dv, rwg, wtid, 1.0f);
+    __syncthreads();
+    for (int i=tid; i<Br*D; i+=256){ int key=i/D,d=i%D;
+        float sv = red[key*D+d] + red[Br*D + key*D + d];
+        d_dV[kvBase + (long)key*D + d] = __float2bfloat16(sv); }
+    __syncthreads();
+    store_acc_smem_v6<128,128>(dk, rwg, wtid, scale);
+    __syncthreads();
+    for (int i=tid; i<Br*D; i+=256){ int key=i/D,d=i%D;
+        float sk = red[key*D+d] + red[Br*D + key*D + d];
+        d_dK[kvBase + (long)key*D + d] = __float2bfloat16(sk); }
+}
+
+template<int Br, int Bc, int D>
+void launch_gqa_backward_v36(
+    const bf16 *d_Q,const bf16 *d_K,const bf16 *d_V,const bf16 *d_O,const bf16 *d_dO,const float *d_LSE,
+    bf16 *d_dQ,bf16 *d_dK,bf16 *d_dV,int B,int Hq,int Hkv,int G,int S,float scale
+){
+    auto mk=[&](const bf16* p,uint64_t rows,uint32_t tr){ CUtensorMap d{}; uint64_t gs[2]={(uint64_t)D,rows},gt[1]={(uint64_t)D*sizeof(bf16)}; uint32_t bx[2]={64u,tr},es[2]={1,1};
+        CUresult r=cuTensorMapEncodeTiled(&d,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)p,gs,gt,bx,es,CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma v36 %s\n",e);exit(1);} return d; };
+    const uint64_t Rq=(uint64_t)B*Hq*S, Rkv=(uint64_t)B*Hkv*S;
+    CUtensorMap tK=mk(d_K,Rkv,Bc),tV=mk(d_V,Rkv,Bc),tQ=mk(d_Q,Rq,Br),tO=mk(d_dO,Rq,Br);
+    const long drowN=(long)B*Hq*S; static float* d_Drow=nullptr; static long dc=0;
+    if(drowN>dc){if(d_Drow)CUDA_CHECK(cudaFree(d_Drow));CUDA_CHECK(cudaMalloc(&d_Drow,drowN*sizeof(float)));dc=drowN;}
+    const long dqN=(long)B*Hq*S*D; static float* d_dq=nullptr; static long qcap=0;
+    if(dqN>qcap){if(d_dq)CUDA_CHECK(cudaFree(d_dq));CUDA_CHECK(cudaMalloc(&d_dq,dqN*sizeof(float)));qcap=dqN;}
+    CUDA_CHECK(cudaMemset(d_dq,0,dqN*sizeof(float)));
+    const int dB=256; const long dG=(drowN+(dB/32)-1)/(dB/32);
+    compute_drowsum_v22<<<(unsigned)dG,dB>>>(d_dO,d_O,d_Drow,drowN);
+    dim3 GRID(B,Hkv,S/Bc);
+    gqa_backward_v36_kv<Br,Bc,D><<<GRID, dim3(384)>>>(tK,tV,tQ,tO,d_Drow,d_LSE,d_dK,d_dV,d_dq,B,Hq,Hkv,G,S,scale);
+    const int cB=256; const int cG=(int)((dqN+cB-1)/cB);
+    convert_dq_accum_to_bf16_v5<<<cG,cB>>>(d_dq,d_dQ,dqN);
+}
+
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -11502,6 +11623,10 @@ int main(){
     launch_gqa_backward_v35<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V35 Br=64 Bc=64 q-split step1 (dS in-register, 1 cons) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
+    launch_gqa_backward_v36<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── V36 Br=64 Bc=64 q-split PING-PONG (2 wg) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -11762,6 +11887,13 @@ int main(){
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats("GQA bwd V35 Br=64, Bc=64  q-split step1 (dS in-register, 1 cons)  (Hopper SM_90)", s);
+    }
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v36<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V36 Br=64, Bc=64  q-split PING-PONG (2 wg)  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
