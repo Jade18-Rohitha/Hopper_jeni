@@ -832,7 +832,6 @@ __device__ __forceinline__ void wgmma_m64n64k16(float d[32], uint64_t descA, uin
 __device__ __forceinline__ void wgmma_fence()  { asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory"); }
 __device__ __forceinline__ void wgmma_commit() { asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory"); }
 __device__ __forceinline__ void wgmma_wait0()  { asm volatile("wgmma.wait_group.sync.aligned 0;\n" ::: "memory"); }
-__device__ __forceinline__ void wgmma_wait1()  { asm volatile("wgmma.wait_group.sync.aligned 1;\n" ::: "memory"); }  // V32: leave 1 group (dQ) in flight
 
 // Accumulator-operand fence (CUTLASS `warpgroup_fence_operand`, mma_sm90_gmma.hpp).
 // wgmma.mma_async writes its accumulator registers ASYNCHRONOUSLY; they only become
@@ -5684,20 +5683,6 @@ __device__ __forceinline__ void run_gemm_dQ_half_te(float acc[32], const bf16* s
     wgmma_wait0();
     fence_operandN<32>(acc);
 }
-// V32: issue/commit-only dQ (no wait) so it can run in flight while dK is waited/barriered.
-__device__ __forceinline__ void run_gemm_dQ_half_te_issue(float acc[32], const bf16* sP_sw,
-                                                          const bf16* K_sw_atom) {
-    fence_proxy_async_shared();
-    fence_operandN<32>(acc);
-    wgmma_fence();
-#pragma unroll
-    for (int k = 0; k < 4; k++) {
-        uint64_t dA = make_desc_sw128_K (sP_sw     + k * 16);
-        uint64_t dB = make_desc_sw128_MN(K_sw_atom + k * 1024);
-        wgmma_m64n64k16_tB(acc, dA, dB);
-    }
-    wgmma_commit();
-}
 
 
 
@@ -10242,7 +10227,9 @@ void launch_gqa_backward_v31(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// V32 = V31 + dK∥dQ wgmma overlap (dQ runs under the [C] barrier + empty). Bit-identical.
+// V32 = V31 + PD 3->4 (deeper producer pipeline). Attacks the #1 long_scoreboard (TMA-feed
+// spin); DRAM only 20% so producer is latency-limited -> more TMAs in flight hides it.
+// Fits: 186448 + ~33KB = ~219KB < 231KB cap. Bit-identical.
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_v32_kv(
@@ -10257,7 +10244,7 @@ gqa_backward_v32_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V24 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;   // consumer thread count (wg 0+1)
-    constexpr int PD   = 3;     // pipeline depth for sQ_sw / sdO_sw / sD
+    constexpr int PD   = 4;     // V32: deeper pipeline (V31 freed 18KB) — hide TMA-feed latency
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
@@ -10418,20 +10405,17 @@ gqa_backward_v32_kv(
         consumer_sync();   // dS->sDS visible cross-warp (+ dV done) before the transposed dK read
 
         // dK += dSᵀ·Q  — TRANSPOSE-ELIMINATED: A = dSᵀ read DIRECTLY from swizzled sP.
-        // V32: OVERLAP dK ∥ dQ.  Both read sDS (ready), write disjoint accumulators, read
-        // different B (sQ vs sK) — independent.  Issue both, wait dK first (for empty), then
-        // dQ's wgmma runs UNDER the [C] barrier + empty arrive (tensor core busy during the
-        // sync instead of idle).  Bit-identical: same GEMMs, same accumulation order.
-        float accq[32]; zeroN<32>(accq);
-        run_gemm_dVdK_half_te_issue(dk,   sDS, sQ_sw[s] + wg * 4096);   // dK commit (group A)
-        run_gemm_dQ_half_te_issue  (accq, sDS, sK_sw    + wg * 4096);   // dQ commit (group B) — overlaps
-        wgmma_wait1();                    // wait dK (group A); dQ (B) stays in flight
-        fence_operandN<32>(dk);
-        consumer_sync();                  // [C] dK done (all threads) before empty
+        run_gemm_dVdK_half_te(dk, sDS, sQ_sw[s] + wg * 4096);
+        consumer_sync();
         if (tid == 0) mbar_arrive_v11(&empty[s]);
-        wgmma_wait0();                    // wait dQ (ran under [C] + empty)
-        fence_operandN<32>(accq);
-        store_acc_smem_v6<64, SS_STRIDE_V24>(accq, (wg == 0) ? sS : sdP, wtid, scale);
+
+        // dQ_tile = dS*K (transient) - V23: TRANSPOSE-STAGING ELIMINATED. dS read
+        // DIRECTLY from swizzled sP as a Major::K A-operand (col=k=contraction);
+        // the ldmatrix->stmatrix staging round-trip + its consumer_sync are DELETED
+        // (sP=dS already made cross-warp visible by the dK consumer_sync above).
+        { float acc[32]; zeroN<32>(acc);
+          run_gemm_dQ_half_te(acc, sDS, sK_sw + wg * 4096);
+          store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
         consumer_sync();
         atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
         consumer_sync();
@@ -10742,7 +10726,7 @@ int main(){
 
     launch_gqa_backward_v32<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V32 Br=64 Bc=64 dK||dQ wgmma overlap (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V32 Br=64 Bc=64 PD=4 deeper pipeline (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -10979,7 +10963,7 @@ int main(){
             [&](){ launch_gqa_backward_v32<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V32 Br=64, Bc=64  dK||dQ wgmma overlap  (Hopper SM_90)", s);
+        displayStats("GQA bwd V32 Br=64, Bc=64  PD=4 deeper pipeline  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
