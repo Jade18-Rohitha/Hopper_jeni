@@ -1,5 +1,25 @@
 # V31+ blueprint — single-warpgroup-per-tile + RS-wgmma (the cuDNN-structure rewrite)
 
+> ## ⛔ VERDICT (after Step 1 + PTX-level review): DEAD END. RS-wgmma cannot free the backward's smem.
+> **Step 1 (1-consumer single-wg) built + H200-verified: bit-identical, but 5.33 ms vs V30 4.30 ms
+> (the expected 8-warp-vs-12 occupancy tax).** Then the RS operand-layout review killed the premise:
+> - **dV=Pᵀ·dO and dK=dSᵀ·Q need a TRANSPOSED A-operand.** The transpose is *inter-warp* (row-owner
+>   warp ≠ column-owner warp); `__shfl` is 32-lane-scoped so a 64×64 register transpose across a
+>   128-thread warpgroup is IMPOSSIBLE, and `ldmatrix.trans` still reads smem. The `Major::MN`
+>   swizzle-aliased descriptor we've used since V23 is ALREADY a zero-movement transpose — RS can't beat it.
+> - **So P must stay in sP (for dV) and dS in sDS (for dK) no matter what.** RS can NEVER delete sP/sDS.
+> - **RS only helps the non-transposed dQ** — and only saves a cheap *async descriptor read* of sDS while
+>   costing pa[16]=16 live registers at the 232-reg cap → wash-to-marginal, likely a spill/regression.
+> - **Premise falsified:** RS was supposed to free ~104 KB so 2 consumer wgs fit. It can't → the 2nd wg
+>   never fits → occupancy stays at 8 warps → single-wg stays below V30. **V30's cooperative structure
+>   is the right answer for the backward.** The forward won from RS-P@V only because P is consumed ONCE
+>   there; in the backward P/dS are multi-consumer AND transposed → smem materialization is unavoidable.
+> - cuDNN's residual ~1.5× is structural (persistent grid + TMA addressing + accepting spills), NOT
+>   RS-reclaimable. **Landing at V30.** (Original blueprint kept below as the record of the exploration.)
+
+---
+
+
 Goal: cross from memory-bound (V30, 45% compute) to compute-bound like cuDNN (59%). The enabler
 is **each consumer warpgroup owning a full kv-tile** — which makes P/dP/dS register-local (no
 cross-wg smem), balances the work (symmetric tiles), and lets RS-wgmma eliminate sP/sDS.
