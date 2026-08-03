@@ -11266,6 +11266,7 @@ void launch_gqa_backward_v35(
     convert_dq_accum_to_bf16_v5<<<convGrid,convBlock>>>(d_dq_accum,d_dQ,dqN);
 }
 
+__device__ __forceinline__ void consumer_sync_wg1_v36(){ asm volatile("bar.sync 4, 128;\n":::"memory"); }
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_v36_kv(
@@ -11312,7 +11313,6 @@ gqa_backward_v36_kv(
         return;
     }
     const float scale2 = scale*LOG2E_V29;
-    const int bid = 3 + wg;
     mbar_wait_v4(&mbar_kv, 0);
     float dv[64]; zeroN<64>(dv); float dk[64]; zeroN<64>(dk);
     uint32_t cpar[NB]={0};
@@ -11325,34 +11325,36 @@ gqa_backward_v36_kv(
         fused_p_keepP_v35<Bc>(accS, sP[wg], d_LSE + base, pReg, wtid, q_row0, k_row0, scale2, qc==qc0);
         float accP[32]; zeroN<32>(accP); run_gemm_n64_sw2(accP, sdO_sw[bu], sV_sw);
         store_dS_reg_v35<Bc>(pReg, accP, d_Drow + base, sDS[wg], wtid);
-        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+        if(wg==0) consumer_sync_wg0(); else consumer_sync_wg1_v36();
         run_gemm_dVdK_half_te(dv,    sP[wg], sdO_sw[bu]+0);
         run_gemm_dVdK_half_te(dv+32, sP[wg], sdO_sw[bu]+4096);
         run_gemm_dVdK_half_te(dk,    sDS[wg],sQ_sw[bu]+0);
         run_gemm_dVdK_half_te(dk+32, sDS[wg],sQ_sw[bu]+4096);
-        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+        if(wg==0) consumer_sync_wg0(); else consumer_sync_wg1_v36();
         if(wtid==0) mbar_arrive_v11(&empty[bu]);
         { float acc[32]; zeroN<32>(acc); run_gemm_dQ_half_te(acc, sDS[wg], sK_sw+0);
           store_acc_smem_v6<64,64>(acc, sS[wg], wtid, scale); }
-        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+        if(wg==0) consumer_sync_wg0(); else consumer_sync_wg1_v36();
         atomic_flush_stage_s<Br,64,64>(sS[wg], d_dq_accum, lBaseOf(g,qc)*D, D, 0, wtid);
-        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+        if(wg==0) consumer_sync_wg0(); else consumer_sync_wg1_v36();
         { float acc[32]; zeroN<32>(acc); run_gemm_dQ_half_te(acc, sDS[wg], sK_sw+4096);
           store_acc_smem_v6<64,64>(acc, sS[wg], wtid, scale); }
-        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+        if(wg==0) consumer_sync_wg0(); else consumer_sync_wg1_v36();
         atomic_flush_stage_s<Br,64,64>(sS[wg], d_dq_accum, lBaseOf(g,qc)*D, D, 64, wtid);
-        asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
+        if(wg==0) consumer_sync_wg0(); else consumer_sync_wg1_v36();
     }
     float* red = reinterpret_cast<float*>(&sQ_sw[0][0]);
     float* rwg = red + wg*(Br*D);
+    fence_operandN<64>(dv);
     store_acc_smem_v6<128,128>(dv, rwg, wtid, 1.0f);
-    __syncthreads();
+    consumer_sync();
     for (int i=tid; i<Br*D; i+=256){ int key=i/D,d=i%D;
         float sv = red[key*D+d] + red[Br*D + key*D + d];
         d_dV[kvBase + (long)key*D + d] = __float2bfloat16(sv); }
     __syncthreads();
+    fence_operandN<64>(dk);
     store_acc_smem_v6<128,128>(dk, rwg, wtid, scale);
-    __syncthreads();
+    consumer_sync();
     for (int i=tid; i<Br*D; i+=256){ int key=i/D,d=i%D;
         float sk = red[key*D+d] + red[Br*D + key*D + d];
         d_dK[kvBase + (long)key*D + d] = __float2bfloat16(sk); }
