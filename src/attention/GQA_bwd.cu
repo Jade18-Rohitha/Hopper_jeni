@@ -1324,6 +1324,15 @@ __device__ __forceinline__ void tma_load_2d_v4(
         ".mbarrier::complete_tx::bytes [%0], [%1, {%2, %3}], [%4];\n"
         :: "r"(dst), "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(mb) : "memory");
 }
+// V34: 2-D TMA bulk STORE (swizzle-none): smem tile -> global d_dV/d_dK. cx=D-col offset, cy=row.
+__device__ __forceinline__ void tma_store_2d_v34(const void* tma_desc, const bf16* smem, uint32_t cx, uint32_t cy) {
+    uint32_t src = (uint32_t)__cvta_generic_to_shared(smem);
+    asm volatile(
+        "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%0, {%1, %2}], [%3];\n"
+        :: "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(src) : "memory");
+}
+__device__ __forceinline__ void tma_store_commit_v34() { asm volatile("cp.async.bulk.commit_group;\n" ::: "memory"); }
+__device__ __forceinline__ void tma_store_wait_v34()   { asm volatile("cp.async.bulk.wait_group 0;\n" ::: "memory"); }
 
 // ── wgmma SS descriptor for a 128B-SWIZZLED, Major::K (K-contiguous) bf16 operand.
 // Authoritative field values from CUTLASS cute::GmmaDescriptor + make_gmma_desc
@@ -10770,8 +10779,7 @@ void launch_gqa_backward_v33(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// V34 = V33 + PERSISTENT GRID (2048 blocks -> 132, one/SM; grid-stride over work-units,
-// mbarriers re-init per unit). Amortizes block launch/scheduling + L2 reuse of K/V. Bit-identical.
+// V34 = V33 + TMA-store epilogue (dV/dK writeback offloaded to the TMA engine). Bit-identical.
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_v34_kv(
@@ -10779,6 +10787,8 @@ gqa_backward_v34_kv(
     const __grid_constant__ CUtensorMap tma_V_sw,
     const __grid_constant__ CUtensorMap tma_Q_sw,
     const __grid_constant__ CUtensorMap tma_dO_sw,
+    const __grid_constant__ CUtensorMap tma_dV_st,   // V34: TMA-store outputs
+    const __grid_constant__ CUtensorMap tma_dK_st,
     const float * __restrict__ d_Drow,               // V22: precomputed D=Σ dO·O
     const float * __restrict__ d_LSE,
     bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV, float * __restrict__ d_dq_accum,
@@ -10808,18 +10818,14 @@ gqa_backward_v34_kv(
     const int tid   = threadIdx.x;
     const int wg    = tid >> 7;
     const int wtid  = tid & 127;
-    const int nQTiles = S / Br;
-    const int nKt     = S / Bc;                                        // V34: persistent grid-stride units
-    const int TOTAL   = B * Hkv * nKt;
-    const uint32_t bytesTile  = (uint32_t)(Br * D * sizeof(bf16));
-    const uint32_t bytesAtom  = (uint32_t)(Bc * 64 * sizeof(bf16));
-    for (int uidx = blockIdx.x; uidx < TOTAL; uidx += gridDim.x) {      // V34: work-unit loop (persistent)
-    const int k_tile = uidx % nKt;
-    const int hkv    = (uidx / nKt) % Hkv;
-    const int b      = uidx / (nKt * Hkv);
+    const int b = blockIdx.x, hkv = blockIdx.y, k_tile = blockIdx.z;
     const int k_row0 = k_tile * Bc;
+    const int nQTiles = S / Br;
+
     const long     kvBase     = ((long)(b * Hkv + hkv) * S + k_row0) * D;
     const uint32_t kvFlatRow  = (uint32_t)((b * Hkv + hkv) * S + k_row0);
+    const uint32_t bytesTile  = (uint32_t)(Br * D * sizeof(bf16));
+    const uint32_t bytesAtom  = (uint32_t)(Bc * 64 * sizeof(bf16));
 
     if (tid == 0) {
         mbar_init_v4(&mbar_kv, 1);
@@ -10880,7 +10886,9 @@ gqa_backward_v34_kv(
             if (leader) mbar_arrive_v11(&d_ready[s]);
             if (++qcP == nQTiles) { qcP = qc0; ++gP; }
         }
-    } else {   // V34: producer no longer returns; consumer in else, then loop continues
+        return;
+    }
+
     reg_inc_consumer_v30();   // V30: consumers -> 232 regs (claim from pool)
     // ── CONSUMERS (wg 0,1) — IDENTICAL to V21 except sD is now PD-deep ────────
     const float scale2 = scale * LOG2E_V29;   // V29: exp2f fold
@@ -10954,20 +10962,22 @@ gqa_backward_v34_kv(
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
 
-    // ── Epilogue — coalesced dV/dK writeback. V25: stage @ stride-72 (kills 8-way). ──
-    bf16 *stage = reinterpret_cast<bf16*>(&sQ_sw[0][0]) + wg * (64 * 72);   // V31: reuse idle sQ_sw as epilogue stage (sA_t removed, -18KB)
+    // ── V34 Epilogue — TMA-store. Stage @ stride-64 (contiguous for TMA), separate dv/dk buffers. ──
+    bf16 *qflat    = reinterpret_cast<bf16*>(&sQ_sw[0][0]);
+    bf16 *stage_dv = qflat + wg * 4096;            // [64][64] contiguous, per wg
+    bf16 *stage_dk = qflat + 8192 + wg * 4096;
     fence_operandN<32>(dv);
-    stage_acc_bf16_s<64, 72>(dv, stage, wtid, 1.0f);
-    consumer_sync();
-    store_stage_vec_s<Bc, 64, 72>(stage, d_dV, kvBase, D, wg * 64, wtid);
-    consumer_sync();
+    stage_acc_bf16_s<64, 64>(dv, stage_dv, wtid, 1.0f);
     fence_operandN<32>(dk);
-    stage_acc_bf16_s<64, 72>(dk, stage, wtid, scale);
+    stage_acc_bf16_s<64, 64>(dk, stage_dk, wtid, scale);
     consumer_sync();
-    store_stage_vec_s<Bc, 64, 72>(stage, d_dK, kvBase, D, wg * 64, wtid);
-    }   // V34: end else (consumer)
-    __syncthreads();   // V34: barrier before next work-unit's mbar re-init
-    }   // V34: end work-unit loop
+    fence_proxy_async_shared();   // stage STS visible to the TMA (async) proxy
+    if (wtid == 0) {
+        tma_store_2d_v34(&tma_dV_st, stage_dv, (uint32_t)(wg * 64), kvFlatRow);
+        tma_store_2d_v34(&tma_dK_st, stage_dk, (uint32_t)(wg * 64), kvFlatRow);
+        tma_store_commit_v34();
+        tma_store_wait_v34();
+    }
 }
 
 template<int Br, int Bc, int D>
@@ -11002,6 +11012,15 @@ void launch_gqa_backward_v34(
     CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
     CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
     CUtensorMap tma_dO_sw = make_tma_sw128(d_dO, Rq,  Br);   // V22: no tma_O_sw
+    auto make_tma_out = [&](const bf16* ptr, uint64_t rows) {   // V34: no-swizzle [64,64] output store desc
+        CUtensorMap desc{};
+        uint64_t gSize[2]={(uint64_t)D, rows}; uint64_t gStride[1]={(uint64_t)D*sizeof(bf16)};
+        uint32_t box[2]={64u,64u}; uint32_t eStride[2]={1,1};
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)ptr,gSize,gStride,box,eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out v34: %s\n",e);exit(1);} return desc; };
+    CUtensorMap tma_dV_st = make_tma_out(d_dV, Rkv);
+    CUtensorMap tma_dK_st = make_tma_out(d_dK, Rkv);
 
     // Cached static d_Drow buffer — one fp32 per (b,hq,s) row = B*Hq*S floats.
     const long drowN = (long)B * Hq * S;
@@ -11031,11 +11050,9 @@ void launch_gqa_backward_v34(
 
     // (2) Main backward kernel (reads d_Drow, drops the inline D-rowsum + O TMA).
     constexpr dim3 BLOCK(384);
-    int numSM_v34 = 132;
-    CUDA_CHECK(cudaDeviceGetAttribute(&numSM_v34, cudaDevAttrMultiProcessorCount, 0));
-    dim3 GRID(numSM_v34);   // V34: persistent — 1 block/SM, grid-strides over B*Hkv*(S/Bc) units
+    dim3 GRID(B, Hkv, S / Bc);
     gqa_backward_v34_kv<Br,Bc,D><<<GRID, BLOCK>>>(
-        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw,
+        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st,
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
@@ -11273,7 +11290,7 @@ int main(){
 
     launch_gqa_backward_v34<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V34 Br=64 Bc=64 persistent grid (132 blocks) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V34 Br=64 Bc=64 TMA-store epilogue (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -11524,7 +11541,7 @@ int main(){
             [&](){ launch_gqa_backward_v34<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V34 Br=64, Bc=64  persistent grid (132 blocks)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V34 Br=64, Bc=64  TMA-store epilogue  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
