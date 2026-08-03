@@ -10504,21 +10504,7 @@ void launch_gqa_backward_v32(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// V33: store dP fragment as bf16 (packed STS.32) — mirrors store_acc_smem_v6's layout so the
-// dS loop reads it at the same r*ROWSTRIDE+c index. Halves the dP exchange (write+read).
-template<int NCOL, int ROWSTRIDE>
-__device__ __forceinline__ void store_acc_smem_bf16_v33(const float *d, bf16 *smem, int tid, float scl) {
-    int w = tid >> 5, lane = tid & 31;
-    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
-#pragma unroll
-    for (int nt = 0; nt < NCOL / 8; nt++) {
-        int c = nt * 8 + cc;
-        *reinterpret_cast<__nv_bfloat162*>(&smem[r0 * ROWSTRIDE + c]) = __float22bfloat162_rn(make_float2(d[nt*4+0]*scl, d[nt*4+1]*scl));
-        *reinterpret_cast<__nv_bfloat162*>(&smem[r1 * ROWSTRIDE + c]) = __float22bfloat162_rn(make_float2(d[nt*4+2]*scl, d[nt*4+3]*scl));
-    }
-}
-// V33 = V32 + bf16-sdP: dP exchanged through smem as bf16 (halves that L1TEX traffic).
-// PRECISION: dP rounds to bf16 before dS=P*(dP-D) — below cuDNN (fp32 dP). Gated behind check().
+// V33 = V32 + D/LSE prefetch lag-0 (PD-deep, with the TMA — was lag-1). Bit-identical.
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_v33_kv(
@@ -10602,25 +10588,12 @@ gqa_backward_v33_kv(
             tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kvFlatRow);
             tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
         }
-        uint32_t epar[PD] = {0}, fpar[PD] = {0};
-        int gP = 0, qcP = qc0;   // TMA (g,qc), tile `it`
-        int gD = 0, qcD = qc0;   // D-load (g,qc), monotonic over td = 0,1,2,…
-        // Load D for tile `td` from d_Drow → sD[td%PD].  sD is now PD-deep (same
-        // period as full/empty/d_ready) → its buffer reuse is safe by the SAME
-        // gate as sQ_sw/sdO_sw.  Keep the full[s] wait so the load is ordered in
-        // the pipeline (harmless over-sync; producer is not the bottleneck).
-        auto do_dload = [&](int td) {
-            const int s = td % PD;
-            mbar_wait_v4(&full[s], fpar[s]); fpar[s] ^= 1;
-            const long dbase = lBaseOf(gD, qcD);           // flat base for tile td
-            if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }   // V32: LSE also prefetched
-            producer_sync();
-            if (leader) mbar_arrive_v11(&d_ready[s]);
-            if (++qcD == nQTiles) { qcD = qc0; ++gD; }
-        };
+        uint32_t epar[PD] = {0};
+        int gP = 0, qcP = qc0;   // TMA + D/LSE (g,qc), tile `it`
         for (int it = 0; it < nIter; it++) {
-            const int s = it % PD;      // Q/dO slot (3-deep)
+            const int s = it % PD;      // Q/dO + D/LSE slot (PD-deep)
             if (it >= PD) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
+            const long dbase = lBaseOf(gP, qcP);
             if (leader) {
                 const uint32_t r = qFlatRowOf(gP, qcP);
                 mbar_expect_tx_v4(&full[s], bytesTile * 2);   // V22: 2 tiles (Q,dO); O gone
@@ -10629,10 +10602,13 @@ gqa_backward_v33_kv(
                 tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
                 tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
             }
-            if (it >= 1) do_dload(it - 1);   // lagged one tile → keeps TMAs in flight
+            // V33: D/LSE for tile `it` loaded NOW (lag-0, PD-deep — was lag-1 via do_dload).
+            // Gated by empty[s] (buffer free); no full[s] over-sync → d_ready fires a tile earlier.
+            if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }
+            producer_sync();
+            if (leader) mbar_arrive_v11(&d_ready[s]);
             if (++qcP == nQTiles) { qcP = qc0; ++gP; }
         }
-        do_dload(nIter - 1);                 // tail: final tile's D
         return;
     }
 
@@ -10662,7 +10638,7 @@ gqa_backward_v33_kv(
         } else {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
-            store_acc_smem_bf16_v33<Bc, SS_STRIDE_V24>(acc, reinterpret_cast<bf16*>(sdP), wtid, 1.0f);   // V33: dP as bf16
+            store_acc_smem_v6<Bc, SS_STRIDE_V24>(acc, sdP, wtid, 1.0f);
         }
         consumer_sync();   // wg0's swizzled sP writes visible cross-warp before the transposed reads
 
@@ -10680,13 +10656,10 @@ gqa_backward_v33_kv(
                 const float d  = sD[s][r];
                 const __nv_bfloat162 pA = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx]);
                 const __nv_bfloat162 pB = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx + 2]);
-                const bf16* sdPb = reinterpret_cast<const bf16*>(sdP);   // V33: dP stored bf16 at r*72+c
-                const __nv_bfloat162 dq0 = *reinterpret_cast<const __nv_bfloat162*>(&sdPb[sdi]);
-                const __nv_bfloat162 dq1 = *reinterpret_cast<const __nv_bfloat162*>(&sdPb[sdi + 2]);
-                const float2 dpf0 = __bfloat1622float2(dq0), dpf1 = __bfloat1622float2(dq1);
+                const float4 dp = *reinterpret_cast<const float4*>(&sdP[sdi]);
                 const float2 pfA = __bfloat1622float2(pA), pfB = __bfloat1622float2(pB);
-                const float2 rA = make_float2(pfA.x * (dpf0.x - d), pfA.y * (dpf0.y - d));
-                const float2 rB = make_float2(pfB.x * (dpf1.x - d), pfB.y * (dpf1.y - d));
+                const float2 rA = make_float2(pfA.x * (dp.x - d), pfA.y * (dp.y - d));
+                const float2 rB = make_float2(pfB.x * (dp.z - d), pfB.y * (dp.w - d));
                 *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx])     = __float22bfloat162_rn(rA);
                 *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx + 2]) = __float22bfloat162_rn(rB);
             }
@@ -11022,7 +10995,7 @@ int main(){
 
     launch_gqa_backward_v33<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V33 Br=64 Bc=64 bf16-sdP (dP exchange halved) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V33 Br=64 Bc=64 D/LSE prefetch lag-0 (PD-deep) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -11266,7 +11239,7 @@ int main(){
             [&](){ launch_gqa_backward_v33<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V33 Br=64, Bc=64  bf16-sdP (dP exchange halved)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V33 Br=64, Bc=64  D/LSE prefetch lag-0 (PD-deep)  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
