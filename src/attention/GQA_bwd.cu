@@ -10227,8 +10227,8 @@ void launch_gqa_backward_v31(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// V33 = V31 + cross-iteration flush overlap. dQ flush deferred to next tile start (atomicAdds
-// overlap S/dP GEMMs); wg1 uses dedicated sQ1 so its dQ survives the next dP write; [E] dropped.
+// V33 = V31, LSE load MOVED to producer (prefetched like D). Deletes the consumer LSE LDG/STS
+// AND the wg0-scoped barrier; consumer reads sLSE[s] from smem. Bit-identical.
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_v33_kv(
@@ -10253,10 +10253,9 @@ gqa_backward_v33_kv(
     // separate kernel.  dV uses dO (sdO_sw), not O.
     __shared__ __align__(16)   float sS [Br * SS_STRIDE_V24];   // wg0 dQ stage
     __shared__ __align__(16)   float sdP[Br * SS_STRIDE_V24];
-    __shared__ __align__(16)   float sQ1[Br * SS_STRIDE_V24];   // V33: wg1 deferred-dQ flush stage (dedicated; survives to next tile)
     __shared__ __align__(1024) bf16  sP [Br * 64];             // 64-wide 128-B swizzle atom
     __shared__ __align__(1024) bf16  sDS[Br * 64];             // V27: dS output (was overwriting sP)
-    __shared__                 float sLSE[Br];
+    __shared__                 float sLSE[PD][Br];   // V33: producer-loaded, PD-deep (like sD)
     __shared__                 float sD  [PD][Br];             // V22: PD-deep (was 2) — robust vs the 3-deep pipeline
     __shared__ __align__(8)    uint64_t mbar_kv;
     __shared__ __align__(8)    uint64_t full   [PD];
@@ -10324,7 +10323,7 @@ gqa_backward_v33_kv(
             const int s = td % PD;
             mbar_wait_v4(&full[s], fpar[s]); fpar[s] ^= 1;
             const long dbase = lBaseOf(gD, qcD);           // flat base for tile td
-            if (pl < Br) sD[s][pl] = d_Drow[dbase + pl];   // coalesced 64×fp32 = 256 B
+            if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }   // V33: LSE also prefetched
             producer_sync();
             if (leader) mbar_arrive_v11(&d_ready[s]);
             if (++qcD == nQTiles) { qcD = qc0; ++gD; }
@@ -10357,23 +10356,19 @@ gqa_backward_v33_kv(
 
     uint32_t cpar[PD] = {0}, dpar[PD] = {0};
     int gC = 0, qcC = qc0;   // V15 incremental (g,qc)
-    long prevQBase = 0; bool havePrevFlush = false;   // V33: cross-iter deferred flush
     for (int it = 0; it < nIter; it++) {
         const int s = it % PD;
         const int q_row0 = qcC * Br;
         mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
-        if (havePrevFlush)   // V33: flush PREV tile's dQ here — atomicAdds overlap this tile's S/dP GEMMs
-            atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sQ1, d_dq_accum, prevQBase, D, wg * 64, wtid);
-        if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(gC, qcC) + tid];
-        if (wg == 0) consumer_sync_wg0();   // V26: sLSE RAW is wg0-only; wg1 overlaps dP-GEMM w/ LSE-load latency
+        mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;   // V33: LSE+D producer-loaded — one early wait, wg0-barrier + consumer LDG deleted
 
         // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to swizzled sP (wg0)
         //  ∥  dP = dO·Vᵀ → sdP (wg1).
         if (wg == 0) {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
-            if (qcC == qc0) fused_p_from_acc_v29<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale2);
-            else            fused_p_nomask_v29<Bc>(acc, sP, sLSE, wtid, scale2);
+            if (qcC == qc0) fused_p_from_acc_v29<Bc>(acc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
+            else            fused_p_nomask_v29<Bc>(acc, sP, sLSE[s], wtid, scale2);
         } else {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
@@ -10384,8 +10379,7 @@ gqa_backward_v33_kv(
         // dV += Pᵀ·dO  — TRANSPOSE-ELIMINATED: A = Pᵀ read DIRECTLY from swizzled sP.
         run_gemm_dVdK_half_te_issue(dv, sP, sdO_sw[s] + wg * 4096);   // V27: issue only; overlaps dS below
 
-        // dS = P ⊙ (dP − D) → swizzled sP.  D loaded by wg2 → wait d_ready[s] first.
-        mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
+        // dS = P ⊙ (dP − D) → swizzled sP.  D + LSE already producer-loaded & waited above (V33).
         {   // V28: vectorize dS WIDER — 4 adjacent columns/step (2×bf16×2 + float4) → halves the
             // iteration count, index math, loop branches, and LDS/STS in this hot 256-thread loop.
             const int cbase = (4 * tid) % Bc, c8 = cbase >> 3, clo = cbase & 7;   // 4 cols → clo∈{0,4}
@@ -10418,13 +10412,12 @@ gqa_backward_v33_kv(
         // (sP=dS already made cross-warp visible by the dK consumer_sync above).
         { float acc[32]; zeroN<32>(acc);
           run_gemm_dQ_half_te(acc, sDS, sK_sw + wg * 4096);
-          store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sQ1, wtid, scale); }   // V33: wg1 -> sQ1
-        consumer_sync();   // [D] dQ store visible for next tile's deferred flush (the [E] barrier is now redundant — WAR covered by [A])
-        prevQBase = lBaseOf(gC, qcC) * D; havePrevFlush = true;   // V33: defer this flush to next iter start
+          store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
+        consumer_sync();
+        atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
+        consumer_sync();
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
-    if (havePrevFlush)   // V33: flush the FINAL tile's dQ (no next iter to defer into)
-        atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sQ1, d_dq_accum, prevQBase, D, wg * 64, wtid);
 
     // ── Epilogue — coalesced dV/dK writeback. V25: stage @ stride-72 (kills 8-way). ──
     bf16 *stage = reinterpret_cast<bf16*>(&sQ_sw[0][0]) + wg * (64 * 72);   // V31: reuse idle sQ_sw as epilogue stage (sA_t removed, -18KB)
@@ -11009,7 +11002,7 @@ int main(){
 
     launch_gqa_backward_v33<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V33 Br=64 Bc=64 cross-iter flush overlap (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V33 Br=64 Bc=64 LSE moved to producer (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_v32<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -11247,17 +11240,17 @@ int main(){
     }
     {
         KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v33<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V33 Br=64, Bc=64  LSE moved to producer  (Hopper SM_90)", s);
+    }
+    {
+        KernelStats s = benchmarkKernel(
             [&](){ launch_gqa_backward_v32<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats("GQA bwd V32 Br=64, Bc=64  sLSE hidden under S-GEMM  (Hopper SM_90)", s);
-    }
-   {
-        KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_v33<Br2,Bc2,D>(
-                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
-            100, 10, bwd_flops);
-        displayStats("GQA bwd V33 Br=64, Bc=64  cross-iter flush overlap  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
