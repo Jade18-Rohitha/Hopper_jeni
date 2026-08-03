@@ -10504,11 +10504,11 @@ void launch_gqa_backward_v32(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// V33: 64-thread producer + 256 wgmma-consumers + 64 dS-loop helpers (320 elementwise).
-//   The producer only ever used ~64 threads (1 TMA leader + 64 D/LSE loads); the freed 64 join
-//   the dS elementwise loop (they can't wgmma). [A]/[B] use a 320-wide bar; wgmma tail stays 256-wide.
+// V33 (forced-168): 64-thread producer + 256 wgmma consumers + 64 dS helpers.
 __device__ __forceinline__ void elementwise_sync_v33() { asm volatile("bar.sync 4, 320;\n" ::: "memory"); }
 __device__ __forceinline__ void producer_sync_64_v33()  { asm volatile("bar.sync 2, 64;\n"  ::: "memory"); }
+__device__ __forceinline__ void reg_inc_184_v33() { asm volatile("setmaxnreg.inc.sync.aligned.u32 184;\n" ::: "memory"); }
+__device__ __forceinline__ void reg_dec_120_v33() { asm volatile("setmaxnreg.dec.sync.aligned.u32 120;\n" ::: "memory"); }
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_v33_kv(
@@ -10554,6 +10554,7 @@ gqa_backward_v33_kv(
     const uint32_t bytesTile  = (uint32_t)(Br * D * sizeof(bf16));
     const uint32_t bytesAtom  = (uint32_t)(Bc * 64 * sizeof(bf16));
 
+    if (tid < 256) reg_inc_184_v33(); else reg_dec_120_v33();   // V33: force 168 on wg0/wg1; wg2(helpers+prod) to 120
     if (tid == 0) {
         mbar_init_v4(&mbar_kv, 1);
         #pragma unroll
@@ -10581,9 +10582,9 @@ gqa_backward_v33_kv(
 
     // ── PRODUCER (wg 2): TMA loads (3-deep) + LAGGED d_Drow load (replaces the
     // V21 inline swizzled D-rowsum).  D is now precomputed in d_Drow[flatRow]. ──
-    if (tid >= 320) {   // V33: producer shrunk to 64 threads (was 128); freed 64 -> dS helpers
+    if (tid >= 320) {   // V33: producer = 64 threads (was 128); freed 64 -> dS helpers
         const bool leader = (tid == 320);
-        const int  pl     = tid - 320;          // producer-local thread id [0,64)
+        const int  pl     = tid - 320;
         if (leader) {
             mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
             tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
@@ -10625,9 +10626,8 @@ gqa_backward_v33_kv(
         return;
     }
 
-    // V33: no setmaxnreg (64-thread producer isn't a full warpgroup) -> uniform regs.
-    // wg0/wg1 (tid<256) = wgmma consumers; 256-319 = dS-loop helpers.
-    const float scale2 = scale * LOG2E_V29;   // V29: exp2f fold
+    // V33: 168 forced via setmaxnreg above. wg0/wg1(tid<256)=wgmma; 256-319=dS helpers.
+    const float scale2 = scale * LOG2E_V29;
     if (tid < 256) mbar_wait_v4(&mbar_kv, 0);
 
     float dv[32]; zeroN<32>(dv);
@@ -10639,7 +10639,7 @@ gqa_backward_v33_kv(
         const int s = it % PD;
         const int q_row0 = qcC * Br;
         if (tid < 256) { mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1; }   // V33: only wgmma consumers need Q/dO
-        mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;   // all (wg0/wg1/helpers) need D
+        mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
 
         // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to swizzled sP (wg0)
         //  ∥  dP = dO·Vᵀ → sdP (wg1).
@@ -10652,17 +10652,17 @@ gqa_backward_v33_kv(
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
             store_acc_smem_v6<Bc, SS_STRIDE_V24>(acc, sdP, wtid, 1.0f);
-        }   // helpers (256-319): skip S/dP
-        elementwise_sync_v33();   // [A] (320): sP/sdP visible; helpers join for dS
+        }
+        elementwise_sync_v33();   // [A] (320)
 
         // dV += Pᵀ·dO  — TRANSPOSE-ELIMINATED: A = Pᵀ read DIRECTLY from swizzled sP.
-        if (tid < 256) run_gemm_dVdK_half_te_issue(dv, sP, sdO_sw[s] + wg * 4096);   // V27: overlaps dS
+        if (tid < 256) run_gemm_dVdK_half_te_issue(dv, sP, sdO_sw[s] + wg * 4096);   // V27
 
         // dS = P ⊙ (dP − D) → swizzled sP.  D + LSE already producer-loaded & waited above (V32).
         {   // V28: vectorize dS WIDER — 4 adjacent columns/step (2×bf16×2 + float4) → halves the
             // iteration count, index math, loop branches, and LDS/STS in this hot 256-thread loop.
             const int cbase = (4 * tid) % Bc, c8 = cbase >> 3, clo = cbase & 7;   // 4 cols → clo∈{0,4}
-            for (int pp = tid; pp < Br * Bc / 4; pp += 320) {   // V33: 320 elementwise threads
+            for (int pp = tid; pp < Br * Bc / 4; pp += 320) {   // V33: 320 elementwise
                 const int r    = (4 * pp) / Bc;                                    // r += 16/iter → r&7 const
                 const int pidx = r * 64 + ((c8 ^ (r & 7)) << 3) + clo;             // 4 contig cols → pidx..+3
                 const int sdi  = r * SS_STRIDE_V24 + cbase;
@@ -10677,14 +10677,14 @@ gqa_backward_v33_kv(
                 *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx + 2]) = __float22bfloat162_rn(rB);
             }
         }
-        if (tid < 256) run_gemm_dVdK_half_te_wait(dv);   // V27: dV done under dS
-        elementwise_sync_v33();   // [B] (320): sDS visible; helpers re-sync then idle to next [A]
+        if (tid < 256) run_gemm_dVdK_half_te_wait(dv);
+        elementwise_sync_v33();   // [B] (320)
 
-        if (tid < 256) {   // V33: wgmma tail — wg0/wg1 only (helpers idle until next [A])
-            run_gemm_dVdK_half_te(dk, sDS, sQ_sw[s] + wg * 4096);   // dK += dSᵀ·Q
+        if (tid < 256) {   // V33: wgmma tail — wg0/wg1 only
+            run_gemm_dVdK_half_te(dk, sDS, sQ_sw[s] + wg * 4096);
             consumer_sync();
             if (tid == 0) mbar_arrive_v11(&empty[s]);
-            { float acc[32]; zeroN<32>(acc);   // dQ = dS·K -> flush
+            { float acc[32]; zeroN<32>(acc);
               run_gemm_dQ_half_te(acc, sDS, sK_sw + wg * 4096);
               store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
             consumer_sync();
@@ -10694,9 +10694,9 @@ gqa_backward_v33_kv(
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
 
-    // ── Epilogue (wg0/wg1 only) — coalesced dV/dK writeback. ──
+    // ── Epilogue (wg0/wg1 only) ──
     if (tid < 256) {
-        bf16 *stage = reinterpret_cast<bf16*>(&sQ_sw[0][0]) + wg * (64 * 72);   // V31: reuse idle sQ_sw
+        bf16 *stage = reinterpret_cast<bf16*>(&sQ_sw[0][0]) + wg * (64 * 72);
         fence_operandN<32>(dv);
         stage_acc_bf16_s<64, 72>(dv, stage, wtid, 1.0f);
         consumer_sync();
@@ -11006,7 +11006,7 @@ int main(){
 
     launch_gqa_backward_v33<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V33 Br=64 Bc=64 64-prod/320-cons (dS helpers) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V33 Br=64 Bc=64 64/320 dS-helpers FORCED-168 (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -11250,7 +11250,7 @@ int main(){
             [&](){ launch_gqa_backward_v33<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V33 Br=64, Bc=64  64-prod/320-cons dS-helpers  (Hopper SM_90)", s);
+        displayStats("GQA bwd V33 Br=64, Bc=64  64/320 dS-helpers forced-168  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
