@@ -11343,6 +11343,10 @@ gqa_backward_v36_kv(
         atomic_flush_stage_s<Br,64,64>(sS[wg], d_dq_accum, lBaseOf(g,qc)*D, D, 64, wtid);
         if(wg==0) consumer_sync_wg0(); else consumer_sync_wg1_v36();
     }
+    // BOTH consumer wgs must exit their loops before the reduction reuses sQ_sw:
+    // rwg regions interleave the two wgs' live pipeline buffers, so an early-finishing
+    // wg would otherwise clobber the other's in-flight sQ_sw -> garbage GEMMs -> inf.
+    consumer_sync();
     float* red = reinterpret_cast<float*>(&sQ_sw[0][0]);
     float* rwg = red + wg*(Br*D);
     fence_operandN<64>(dv);
@@ -11351,7 +11355,7 @@ gqa_backward_v36_kv(
     for (int i=tid; i<Br*D; i+=256){ int key=i/D,d=i%D;
         float sv = red[key*D+d] + red[Br*D + key*D + d];
         d_dV[kvBase + (long)key*D + d] = __float2bfloat16(sv); }
-    __syncthreads();
+    consumer_sync();
     fence_operandN<64>(dk);
     store_acc_smem_v6<128,128>(dk, rwg, wtid, scale);
     consumer_sync();
