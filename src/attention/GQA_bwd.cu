@@ -10227,9 +10227,8 @@ void launch_gqa_backward_v31(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// V32 = V31 + PD 3->4 (deeper producer pipeline). Attacks the #1 long_scoreboard (TMA-feed
-// spin); DRAM only 20% so producer is latency-limited -> more TMAs in flight hides it.
-// Fits: 186448 + ~33KB = ~219KB < 231KB cap. Bit-identical.
+// V32 = V31, sLSE sync moved AFTER wg0 S-GEMM so the LSE global-load latency overlaps the
+// S-GEMM instead of serializing before it. Still wg0-scoped (no cross-wg barrier). Bit-identical.
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_v32_kv(
@@ -10244,7 +10243,7 @@ gqa_backward_v32_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V24 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;   // consumer thread count (wg 0+1)
-    constexpr int PD   = 4;     // V32: deeper pipeline (V31 freed 18KB) — hide TMA-feed latency
+    constexpr int PD   = 3;     // pipeline depth for sQ_sw / sdO_sw / sD
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
@@ -10361,14 +10360,14 @@ gqa_backward_v32_kv(
         const int s = it % PD;
         const int q_row0 = qcC * Br;
         mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
-        if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(gC, qcC) + tid];
-        if (wg == 0) consumer_sync_wg0();   // V26: sLSE RAW is wg0-only; wg1 overlaps dP-GEMM w/ LSE-load latency
+        if (tid < Br) sLSE[tid] = d_LSE[lBaseOf(gC, qcC) + tid];   // V32: LDG issued; sync moved past S-GEMM
 
         // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to swizzled sP (wg0)
         //  ∥  dP = dO·Vᵀ → sdP (wg1).
         if (wg == 0) {
             float acc[32]; zeroN<32>(acc);
-            run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
+            run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);   // V32: S-GEMM runs UNDER the sLSE LDG latency
+            consumer_sync_wg0();                        // V32: sLSE RAW barrier here (after S-GEMM) — LSE load now hidden, not serial
             if (qcC == qc0) fused_p_from_acc_v29<Bc>(acc, sP, sLSE, wtid, q_row0, k_row0, scale2);
             else            fused_p_nomask_v29<Bc>(acc, sP, sLSE, wtid, scale2);
         } else {
@@ -10726,7 +10725,7 @@ int main(){
 
     launch_gqa_backward_v32<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V32 Br=64 Bc=64 PD=4 deeper pipeline (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V32 Br=64 Bc=64 sLSE load hidden under S-GEMM (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -10963,7 +10962,7 @@ int main(){
             [&](){ launch_gqa_backward_v32<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V32 Br=64, Bc=64  PD=4 deeper pipeline  (Hopper SM_90)", s);
+        displayStats("GQA bwd V32 Br=64, Bc=64  sLSE hidden under S-GEMM  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
