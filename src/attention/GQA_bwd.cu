@@ -10504,6 +10504,283 @@ void launch_gqa_backward_v32(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
+// V33: 64-thread producer + 256 wgmma-consumers + 64 dS-loop helpers (320 elementwise).
+//   The producer only ever used ~64 threads (1 TMA leader + 64 D/LSE loads); the freed 64 join
+//   the dS elementwise loop (they can't wgmma). [A]/[B] use a 320-wide bar; wgmma tail stays 256-wide.
+__device__ __forceinline__ void elementwise_sync_v33() { asm volatile("bar.sync 4, 320;\n" ::: "memory"); }
+__device__ __forceinline__ void producer_sync_64_v33()  { asm volatile("bar.sync 2, 64;\n"  ::: "memory"); }
+template<int Br, int Bc, int D>
+__global__ void __launch_bounds__(384, 1)
+gqa_backward_v33_kv(
+    const __grid_constant__ CUtensorMap tma_K_sw,
+    const __grid_constant__ CUtensorMap tma_V_sw,
+    const __grid_constant__ CUtensorMap tma_Q_sw,
+    const __grid_constant__ CUtensorMap tma_dO_sw,
+    const float * __restrict__ d_Drow,               // V22: precomputed D=Σ dO·O
+    const float * __restrict__ d_LSE,
+    bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV, float * __restrict__ d_dq_accum,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V24 requires Br=Bc=64, D=128");
+    constexpr int CONS = 256;   // consumer thread count (wg 0+1)
+    constexpr int PD   = 3;     // pipeline depth for sQ_sw / sdO_sw / sD
+
+    __shared__ __align__(128)  bf16 sK_sw[Bc * D];
+    __shared__ __align__(128)  bf16 sV_sw[Bc * D];
+    __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];      // 3-deep
+    __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];      // 3-deep
+    // V22: sO_sw DELETED (−32,768 B) — O only fed the inline D-rowsum, now a
+    // separate kernel.  dV uses dO (sdO_sw), not O.
+    __shared__ __align__(16)   float sS [Br * SS_STRIDE_V24];   // wg0 dQ stage
+    __shared__ __align__(16)   float sdP[Br * SS_STRIDE_V24];
+    __shared__ __align__(1024) bf16  sP [Br * 64];             // 64-wide 128-B swizzle atom
+    __shared__ __align__(1024) bf16  sDS[Br * 64];             // V27: dS output (was overwriting sP)
+    __shared__                 float sLSE[PD][Br];   // V32: producer-loaded, PD-deep (like sD)
+    __shared__                 float sD  [PD][Br];             // V22: PD-deep (was 2) — robust vs the 3-deep pipeline
+    __shared__ __align__(8)    uint64_t mbar_kv;
+    __shared__ __align__(8)    uint64_t full   [PD];
+    __shared__ __align__(8)    uint64_t empty  [PD];
+    __shared__ __align__(8)    uint64_t d_ready[PD];           // producer→consumer D-ready signal
+
+    const int tid   = threadIdx.x;
+    const int wg    = tid >> 7;
+    const int wtid  = tid & 127;
+    const int b = blockIdx.x, hkv = blockIdx.y, k_tile = blockIdx.z;
+    const int k_row0 = k_tile * Bc;
+    const int nQTiles = S / Br;
+
+    const long     kvBase     = ((long)(b * Hkv + hkv) * S + k_row0) * D;
+    const uint32_t kvFlatRow  = (uint32_t)((b * Hkv + hkv) * S + k_row0);
+    const uint32_t bytesTile  = (uint32_t)(Br * D * sizeof(bf16));
+    const uint32_t bytesAtom  = (uint32_t)(Bc * 64 * sizeof(bf16));
+
+    if (tid == 0) {
+        mbar_init_v4(&mbar_kv, 1);
+        #pragma unroll
+        for (int i = 0; i < PD; i++) {
+            mbar_init_v4(&full[i], 1);
+            mbar_init_v4(&empty[i], 1);
+            mbar_init_v4(&d_ready[i], 1);
+        }
+    }
+    __syncthreads();
+
+    const int qc0    = k_row0 / Br;
+    const int perG   = nQTiles - qc0;
+    const int nIter  = G * perG;
+
+    // V15: (g,qc) maintained incrementally in each loop → no per-iter IDIV/IREM.
+    auto qFlatRowOf = [&](int g, int qc) -> uint32_t {
+        const int hq = hkv * G + g;
+        return (uint32_t)((b * Hq + hq) * S + qc * Br);
+    };
+    auto lBaseOf = [&](int g, int qc) -> long {
+        const int hq = hkv * G + g;
+        return (long)(b * Hq + hq) * S + (long)qc * Br;
+    };
+
+    // ── PRODUCER (wg 2): TMA loads (3-deep) + LAGGED d_Drow load (replaces the
+    // V21 inline swizzled D-rowsum).  D is now precomputed in d_Drow[flatRow]. ──
+    if (tid >= 320) {   // V33: producer shrunk to 64 threads (was 128); freed 64 -> dS helpers
+        const bool leader = (tid == 320);
+        const int  pl     = tid - 320;          // producer-local thread id [0,64)
+        if (leader) {
+            mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
+            tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
+            tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+            tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kvFlatRow);
+            tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+        }
+        uint32_t epar[PD] = {0}, fpar[PD] = {0};
+        int gP = 0, qcP = qc0;   // TMA (g,qc), tile `it`
+        int gD = 0, qcD = qc0;   // D-load (g,qc), monotonic over td = 0,1,2,…
+        // Load D for tile `td` from d_Drow → sD[td%PD].  sD is now PD-deep (same
+        // period as full/empty/d_ready) → its buffer reuse is safe by the SAME
+        // gate as sQ_sw/sdO_sw.  Keep the full[s] wait so the load is ordered in
+        // the pipeline (harmless over-sync; producer is not the bottleneck).
+        auto do_dload = [&](int td) {
+            const int s = td % PD;
+            mbar_wait_v4(&full[s], fpar[s]); fpar[s] ^= 1;
+            const long dbase = lBaseOf(gD, qcD);           // flat base for tile td
+            if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }   // V32: LSE also prefetched
+            producer_sync_64_v33();
+            if (leader) mbar_arrive_v11(&d_ready[s]);
+            if (++qcD == nQTiles) { qcD = qc0; ++gD; }
+        };
+        for (int it = 0; it < nIter; it++) {
+            const int s = it % PD;      // Q/dO slot (3-deep)
+            if (it >= PD) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
+            if (leader) {
+                const uint32_t r = qFlatRowOf(gP, qcP);
+                mbar_expect_tx_v4(&full[s], bytesTile * 2);   // V22: 2 tiles (Q,dO); O gone
+                tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  r);
+                tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, r);
+                tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
+                tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
+            }
+            if (it >= 1) do_dload(it - 1);   // lagged one tile → keeps TMAs in flight
+            if (++qcP == nQTiles) { qcP = qc0; ++gP; }
+        }
+        do_dload(nIter - 1);                 // tail: final tile's D
+        return;
+    }
+
+    // V33: no setmaxnreg (64-thread producer isn't a full warpgroup) -> uniform regs.
+    // wg0/wg1 (tid<256) = wgmma consumers; 256-319 = dS-loop helpers.
+    const float scale2 = scale * LOG2E_V29;   // V29: exp2f fold
+    if (tid < 256) mbar_wait_v4(&mbar_kv, 0);
+
+    float dv[32]; zeroN<32>(dv);
+    float dk[32]; zeroN<32>(dk);
+
+    uint32_t cpar[PD] = {0}, dpar[PD] = {0};
+    int gC = 0, qcC = qc0;   // V15 incremental (g,qc)
+    for (int it = 0; it < nIter; it++) {
+        const int s = it % PD;
+        const int q_row0 = qcC * Br;
+        if (tid < 256) { mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1; }   // V33: only wgmma consumers need Q/dO
+        mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;   // all (wg0/wg1/helpers) need D
+
+        // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to swizzled sP (wg0)
+        //  ∥  dP = dO·Vᵀ → sdP (wg1).
+        if (tid < 128) {
+            float acc[32]; zeroN<32>(acc);
+            run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
+            if (qcC == qc0) fused_p_from_acc_v29<Bc>(acc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
+            else            fused_p_nomask_v29<Bc>(acc, sP, sLSE[s], wtid, scale2);
+        } else if (tid < 256) {
+            float acc[32]; zeroN<32>(acc);
+            run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
+            store_acc_smem_v6<Bc, SS_STRIDE_V24>(acc, sdP, wtid, 1.0f);
+        }   // helpers (256-319): skip S/dP
+        elementwise_sync_v33();   // [A] (320): sP/sdP visible; helpers join for dS
+
+        // dV += Pᵀ·dO  — TRANSPOSE-ELIMINATED: A = Pᵀ read DIRECTLY from swizzled sP.
+        if (tid < 256) run_gemm_dVdK_half_te_issue(dv, sP, sdO_sw[s] + wg * 4096);   // V27: overlaps dS
+
+        // dS = P ⊙ (dP − D) → swizzled sP.  D + LSE already producer-loaded & waited above (V32).
+        {   // V28: vectorize dS WIDER — 4 adjacent columns/step (2×bf16×2 + float4) → halves the
+            // iteration count, index math, loop branches, and LDS/STS in this hot 256-thread loop.
+            const int cbase = (4 * tid) % Bc, c8 = cbase >> 3, clo = cbase & 7;   // 4 cols → clo∈{0,4}
+            for (int pp = tid; pp < Br * Bc / 4; pp += 320) {   // V33: 320 elementwise threads
+                const int r    = (4 * pp) / Bc;                                    // r += 16/iter → r&7 const
+                const int pidx = r * 64 + ((c8 ^ (r & 7)) << 3) + clo;             // 4 contig cols → pidx..+3
+                const int sdi  = r * SS_STRIDE_V24 + cbase;
+                const float d  = sD[s][r];
+                const __nv_bfloat162 pA = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx]);
+                const __nv_bfloat162 pB = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx + 2]);
+                const float4 dp = *reinterpret_cast<const float4*>(&sdP[sdi]);
+                const float2 pfA = __bfloat1622float2(pA), pfB = __bfloat1622float2(pB);
+                const float2 rA = make_float2(pfA.x * (dp.x - d), pfA.y * (dp.y - d));
+                const float2 rB = make_float2(pfB.x * (dp.z - d), pfB.y * (dp.w - d));
+                *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx])     = __float22bfloat162_rn(rA);
+                *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx + 2]) = __float22bfloat162_rn(rB);
+            }
+        }
+        if (tid < 256) run_gemm_dVdK_half_te_wait(dv);   // V27: dV done under dS
+        elementwise_sync_v33();   // [B] (320): sDS visible; helpers re-sync then idle to next [A]
+
+        if (tid < 256) {   // V33: wgmma tail — wg0/wg1 only (helpers idle until next [A])
+            run_gemm_dVdK_half_te(dk, sDS, sQ_sw[s] + wg * 4096);   // dK += dSᵀ·Q
+            consumer_sync();
+            if (tid == 0) mbar_arrive_v11(&empty[s]);
+            { float acc[32]; zeroN<32>(acc);   // dQ = dS·K -> flush
+              run_gemm_dQ_half_te(acc, sDS, sK_sw + wg * 4096);
+              store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
+            consumer_sync();
+            atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
+            consumer_sync();
+        }
+        if (++qcC == nQTiles) { qcC = qc0; ++gC; }
+    }
+
+    // ── Epilogue (wg0/wg1 only) — coalesced dV/dK writeback. ──
+    if (tid < 256) {
+        bf16 *stage = reinterpret_cast<bf16*>(&sQ_sw[0][0]) + wg * (64 * 72);   // V31: reuse idle sQ_sw
+        fence_operandN<32>(dv);
+        stage_acc_bf16_s<64, 72>(dv, stage, wtid, 1.0f);
+        consumer_sync();
+        store_stage_vec_s<Bc, 64, 72>(stage, d_dV, kvBase, D, wg * 64, wtid);
+        consumer_sync();
+        fence_operandN<32>(dk);
+        stage_acc_bf16_s<64, 72>(dk, stage, wtid, scale);
+        consumer_sync();
+        store_stage_vec_s<Bc, 64, 72>(stage, d_dK, kvBase, D, wg * 64, wtid);
+    }
+}
+
+template<int Br, int Bc, int D>
+void launch_gqa_backward_v33(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V30 requires Br=Bc=64, D=128");
+
+    auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
+        uint32_t box[2]     = {64u, tile_rows};
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(
+            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) failed: %s\n", e); exit(1); }
+        return desc;
+    };
+
+    const uint64_t Rq  = (uint64_t)B * Hq  * S;
+    const uint64_t Rkv = (uint64_t)B * Hkv * S;
+
+    CUtensorMap tma_K_sw  = make_tma_sw128(d_K,  Rkv, Bc);
+    CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
+    CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
+    CUtensorMap tma_dO_sw = make_tma_sw128(d_dO, Rq,  Br);   // V22: no tma_O_sw
+
+    // Cached static d_Drow buffer — one fp32 per (b,hq,s) row = B*Hq*S floats.
+    const long drowN = (long)B * Hq * S;
+    static float* d_Drow  = nullptr;
+    static long   drow_cap = 0;
+    if (drowN > drow_cap) {
+        if (d_Drow) CUDA_CHECK(cudaFree(d_Drow));
+        CUDA_CHECK(cudaMalloc(&d_Drow, drowN * sizeof(float)));
+        drow_cap = drowN;
+    }
+
+    const long dqN = (long)B * Hq * S * D;
+    static float* d_dq_accum = nullptr;
+    static long   dq_cap     = 0;
+    if (dqN > dq_cap) {
+        if (d_dq_accum) CUDA_CHECK(cudaFree(d_dq_accum));
+        CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
+        dq_cap = dqN;
+    }
+    CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
+
+    // (1) Precompute D = Σ_d dO·O → d_Drow (one warp / row, grid-stride covers ALL
+    // drowN rows — bug fix: no stale rows in the cached buffer).
+    const int  dBlock = 256;                       // 8 warps / block
+    const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
+    compute_drowsum_v22<<<(unsigned)dGrid, dBlock>>>(d_dO, d_O, d_Drow, drowN);
+
+    // (2) Main backward kernel (reads d_Drow, drops the inline D-rowsum + O TMA).
+    constexpr dim3 BLOCK(384);
+    dim3 GRID(B, Hkv, S / Bc);
+    gqa_backward_v33_kv<Br,Bc,D><<<GRID, BLOCK>>>(
+        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw,
+        d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
+
+    // (3) dQ fp32 accumulator → bf16.
+    const int convBlock = 256;
+    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+}
+
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -10726,6 +11003,10 @@ int main(){
     launch_gqa_backward_v32<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V32 Br=64 Bc=64 LSE moved to producer (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
+    launch_gqa_backward_v33<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── V33 Br=64 Bc=64 64-prod/320-cons (dS helpers) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -10963,6 +11244,13 @@ int main(){
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats("GQA bwd V32 Br=64, Bc=64  LSE moved to producer  (Hopper SM_90)", s);
+    }
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v33<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V33 Br=64, Bc=64  64-prod/320-cons dS-helpers  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
