@@ -210,12 +210,19 @@ Hkv=4, G=3, S=4096, D=128, bf16, causal. cuDNN SDPA backward ≈ 2.78–2.81 ms 
 | V24 | **shared-store bank cut** (stride 72) | 4.99 | **−12.5%** | broke 5 ms AND 2× (1.78×) |
 | V25 | bf16 dV/dK stage stride-72 | 4.9353 | −0.98% | last shared conflict → 1-way |
 | V26 | **wg0-scoped sLSE barrier** | 4.6853 | **−5.71%** | 1.69× off cuDNN; IPC 1.77→1.87 |
+| V27 | sP-reuse-chain break (sDS + dV overlap) | 4.6752 | −0.77% | hide dV wgmma under dS; −1 barrier |
+| V28 | **dS loop bf16×2 → bf16×4** | 4.4927 | **−3.26%** | dynamic instrs −6%; broke 4.5 ms |
+| V29 | exp2f softmax (fold scale·log2e) | 4.3990 | −0.52% | FMUL −189; bit-identical; **2.0× total** |
+| V30 | **__launch_bounds__(384,1)** (+setmaxnreg scaffold) | 4.3222 | **−1.86%** | 157→168 regs; 1.55× off cuDNN |
 
-Three regime shifts drove which lever worked: **compute/latency-bound** (V13–V21, cut
+Four regime shifts drove which lever worked: **compute/latency-bound** (V13–V21, cut
 instructions/staging) → **L1/shared-throughput-bound** (V22–V25, cut shared traffic & bank
-conflicts) → **feed/sync-bound** (V26+, keep the scheduler fed by scoping barriers). The same
-class of lever can be inert in one regime and decisive in another — a store-conflict fix did
-nothing while latency-bound but won −12.5% once the kernel became L1/shared-bound (V24).
+conflicts) → **feed/sync-bound** (V26–V27, keep the scheduler fed by scoping barriers / hiding
+wgmma waits under ALU) → **memory-bound** (V28–V30, cut dynamic instructions until L1TEX became
+the wall). The same class of lever can be inert in one regime and decisive in another — a
+store-conflict fix did nothing while latency-bound but won −12.5% once L1/shared-bound (V24);
+"instruction count is structural/unreachable" was wrong once the hot elementwise loops were
+widened (V28, −3.26%).
 
 ## V14 — `__expf` fast softmax
 V13 clone; the single change is the softmax exponential in `fused_p`: **`expf` → `__expf`** (the
@@ -324,6 +331,55 @@ next `bar 1,256`. Pure scheduling win — instruction count flat, but **IPC 1.77
 (no-eligible 55.7% → 53.2%). **4.9353 → 4.6853 ms (−5.71%), 1.69× off cuDNN.** Introduced the
 "wg-scope a barrier whose hazard is intra-warpgroup so the other wg overlaps latency" lever.
 
+## V27 — break the sP-reuse chain (separate `sDS` + dV overlap, −0.77%)
+The consumer's 6 GEMMs serialized because `dS` **overwrote `sP` in place**, forcing dV (which
+reads `sP`) to complete before dS. V27 gives dS its own **`sDS`** buffer, splits dV into
+issue/wait (`run_gemm_dVdK_half_te_issue`/`_wait`), and runs **dV's wgmma in flight across the dS
+elementwise** — hiding the wgmma latency under ALU — while the dV→dS WAR barrier drops (256-thread
+barriers 9→8). First win after the profile reframe: the kernel is **consumer-bound** (the #1
+"stall" is the *producer idling on `empty[]`*, benign), so the lever is shortening the consumer
+serial chain. Bit-identical.
+
+## V28 — dS loop widened bf16×2 → bf16×4 (−3.26%, broke 4.5 ms)
+The hot 256-thread dS loop went from 2 columns/iter to **4** (two bf16×2 reads of `sP` + one
+`float4` `sdP` + two bf16×2 writes to `sDS`). Iterations halve → the per-iteration index math,
+loop branch, and `sdP` reads halve while the compute is unchanged. Static count *rose* (bigger
+body) but **dynamic executed instructions fell 6%** → −3.26%. Reversed the "instruction count is
+structural (cuDNN's TMA-addressing, unreachable)" pessimism: the address math in the hot
+elementwise loops *is* reducible by widening. Bit-identical.
+
+## V29 — exp2f softmax (fold scale·log2e), ported from the cuDNN-beating forward
+`fused_p`: `__expf(acc*scale − lse)` → **`ex2.approx.ftz(fmaf(acc, scale2, −lse2))`**
+(`scale2 = scale·log2e`, `lse2 = lse·log2e`). Since `exp(x)=2^(x·log2e)`, this folds the `*scale`
+and `__expf`'s internal `*log2e` into **one FFMA** + one raw SFU `ex2.approx`. **FMUL −189,
+static −392.** Bit-identical — `ex2.approx.ftz`'s ~1-ulp fp32 difference rounds to the same bf16
+(check max_abs unchanged). **4.3990 ms — crosses 2.0× total speedup.** After V28/V29 the kernel
+is **memory-bound** (60% L1TEX SOL vs 45% compute).
+
+## V30 — `__launch_bounds__(384,1)` + setmaxnreg scaffold (−1.86%)
+The backward had *no* launch bounds → the compiler self-capped at **157** regs. Adding
+`__launch_bounds__(384,1)` let it use up to 170 (took **168**); the extra headroom held more live
+values and cut register-shuffle instructions (−2.6%) for **−1.86%** — *more registers = faster
+even at the same 1-block/SM occupancy*. The `setmaxnreg 40/232` calls are scaffolding for a
+ping-pong that turned out **infeasible** (below). **4.3222 ms, 1.55× off cuDNN.**
+
+## The landing — why V30 is the floor for this architecture
+The forward (`GQA_fwd_ref.cu`, gqa_v62) *beats* cuDNN by keeping `P` in **registers** (RS-wgmma)
+and running an **FA3 consumer ping-pong** (two warpgroups on different tiles, softmax overlapping
+tensor). Neither ports to the backward: (1) its wgmma A-operands are **transposed** (Pᵀ for dV,
+dSᵀ for dK), so `P`/`dS` must live in **swizzled smem** — two independent warpgroups would need
+2× the staged buffers (~256–307 KB > the 232 KB cap); (2) the **persistent `dv`/`dk`
+accumulators** forbid cross-tile tensor overlap (holding a scaleD=1 group live across another
+group races — the rule that killed V28's dK∥dQ). The only rule-legal overlap (wgmma ∥ ALU) is
+already spent (V27 dV∥dS). And the kernel is memory-bound with **non-reducible** shared loads
+(the inherent HGMMA operand fetches) at occupancy hard-locked to 18.75% (157–168 regs × 384 + 200
+KB smem both pin 1 block/SM). `--fmad=true` is already the default, so the 104 M "non-fused" FP32
+ops are non-contractable. **No reachable lever remains.**
+
+**Final: 8.82 ms → 4.3222 ms — 3.14× → ~1.55× off cuDNN, 2.04× total, every version
+bit-identical, 0 spill throughout.** The residual gap is cuDNN's (and the forward's) register-
+source-operand structure, which the backward's transposed operands can't fit in Hopper smem.
+
 ---
 
 ## Recurring concepts & gotchas (cross-version)
@@ -338,7 +394,15 @@ next `bar 1,256`. Pure scheduling win — instruction count flat, but **IPC 1.77
 - **dQ is always atomic in the fused kernels (V5+):** it reduces over the key axis, so no single KV-block owns it → fp32 scratch + convert. dK/dV are block-owned → plain accumulate, no atomics.
 
 ## The arc in one breath
-portable wmma (V1/V2) → wgmma correctness (V3) → TMA+swizzle+double-buffer (V4) → fused KV-centric, atomic dQ (V5) → bank-conflict padding (V6) → transpose-buffer elimination via `trans-b=1` (V7) → warp-shuffle D-rowsum (V8) → 2-WG column bisection (V9) → coalesced writeback (V10) → 3-WG producer/consumer (V11) → `ldmatrix→stmatrix` reshuffle (V12) → register-fused softmax + producer-side D-rowsum (V13) → *[structure frozen; perf tuning begins]* → no-div + hoist address math (V15/V17) → dV/dK transpose-staging elimination (V16) → vectorize dS/P-write (V18/V19) → PD=3 pipeline (V20) → causal-mask specialization (V21) → **D-rowsum split kernel, −20% (V22)** → dQ transpose-staging elimination (V23) → **shared-store bank cut, −12.5%, sub-2× (V24)** → bf16-stage 1-way (V25) → **wg0-scoped sLSE barrier, −5.7% (V26)**.
+portable wmma (V1/V2) → wgmma correctness (V3) → TMA+swizzle+double-buffer (V4) → fused KV-centric, atomic dQ (V5) → bank-conflict padding (V6) → transpose-buffer elimination via `trans-b=1` (V7) → warp-shuffle D-rowsum (V8) → 2-WG column bisection (V9) → coalesced writeback (V10) → 3-WG producer/consumer (V11) → `ldmatrix→stmatrix` reshuffle (V12) → register-fused softmax + producer-side D-rowsum (V13) → *[structure frozen; perf tuning begins]* → no-div + hoist address math (V15/V17) → dV/dK transpose-staging elimination (V16) → vectorize dS/P-write (V18/V19) → PD=3 pipeline (V20) → causal-mask specialization (V21) → **D-rowsum split kernel, −20% (V22)** → dQ transpose-staging elimination (V23) → **shared-store bank cut, −12.5%, sub-2× (V24)** → bf16-stage 1-way (V25) → **wg0-scoped sLSE barrier, −5.7% (V26)** → sP-reuse-chain break + dV∥dS overlap (V27) → **dS bf16×4, −3.3% (V28)** → exp2f softmax, 2.0× total (V29) → **__launch_bounds__ register headroom, −1.9% (V30)**.
+
+**8.82 ms → 4.3222 ms: 3.14× → ~1.55× off cuDNN, 2.04× total speedup, every version
+bit-identical, 0 spill throughout.** Regimes: compute-bound → L1/shared-bound → feed/sync-bound
+→ memory-bound. The recurring lesson — a lever dead in one regime revives in another; trust the
+current measurement, not the old verdict (D-split, the store-conflict cut, and the "structural"
+instruction count were each predicted flat and each landed a headline win). The residual to
+cuDNN is structural: register-source wgmma operands the backward's transposed dV/dK can't fit
+in smem.
 
 **8.82 ms (3.14×) → 4.6853 ms (1.69× off cuDNN), every version bit-identical.** Three regimes:
 compute-bound (cut instructions) → L1/shared-bound (cut bank conflicts) → feed/sync-bound (keep

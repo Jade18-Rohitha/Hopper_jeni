@@ -34,10 +34,13 @@ which the fp32 stride-2 column pattern couldn't reach.
 dQ-stage aliasing** — restriding it is safe. Logical (row,col)→value unchanged → dV/dK
 bit-identical to the ULP.
 
-## To confirm on H200
-1. `check(── V25 …)` — must print bit-identical (0 mismatches) vs the reference.
-2. Benchmark line **V25** vs V24 (4.9893 ms) — expect a small improvement.
-3. `ncu` shared-store conflicts: `l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum`
-   should drop from 4.5 M toward ~0.8 M (the 3.67 M 8-way excessive → ~0 at 1-way).
+## Profile — the store conflicts hit the floor (H200-confirmed)
+`ncu` shared-store conflicts (`l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum`):
+**4,504,677 → 823,934 (−82%)** — the 3.67 M 8-way excessive collapsed to ~0 at 1-way, exactly
+as the bank math predicted. Shared-*load* conflicts unchanged at 33.5 M (the inherent HGMMA
+operand fetches, 0 excessive — not ours to fix). The remaining 0.82 M store conflicts are the
+residual floor. **This is the shared-conflict lever fully mined out** — V24 took the O(S²) fp32
+stores, V25 the O(S) bf16 stores, loads are wgmma-inherent, and there is no reducible shared
+conflict left. The wall now moves to feed/sync (see V26).
 
-Cumulative: V13 8.82 → V22 5.89 → V23 5.70 → V24 4.99 → **V25 (pending)**.
+Cumulative: V13 8.82 → V22 5.89 → V23 5.70 → V24 4.99 → **V25 4.9353 (~1.77×)**.

@@ -38,13 +38,23 @@ write→read RAW via `bar 3,128` (all 128 wg0 threads arrive). wg1 skips a barri
 stake in and re-synchronizes at `@8365` before the first cross-wg `sP`/`sdP` dependency. No
 named-barrier collision (id 3 used by exactly wg0's 128 threads → completes, no deadlock).
 
-## To confirm on H200
-1. `check(── V26 …)` — must be 0 mismatches (bit-identical vs reference).
-2. Benchmark **V26 vs V25** (4.9353 ms) — expect small: this hides one warpgroup's LSE-load
-   latency at one of 7 barriers. Could be a few %, could be flat if wg1's dP-GEMM already
-   overlapped enough. If it moves, the same wg-scoping may extend to the flush barriers
-   (`@8400`/`@8402`, which are intra-wg: wg0↔`sS`, wg1↔`sdP`) as V27.
-3. `ncu` barrier stall — `smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio`
-   should dip below 1.42 if wg1's wait shrank.
+## Profile — a pure scheduling win (H200-confirmed)
 
-Cumulative: V13 8.82 → V22 5.89 → V24 4.99 → V25 4.9353 → **V26 (pending)**.
+| metric | V25 | **V26** |
+|---|---|---|
+| Elapsed cycles | 8.23 M | **7.83 M (−4.9%)** |
+| **Executed IPC** | 1.77 | **1.87** |
+| warp-cyc / issued inst | 6.70 | 6.33 |
+| No-eligible | 55.7% | 53.2% |
+| barrier stall | 1.42 | 1.29 |
+| instructions | ~flat | ~flat |
+
+The mechanism is **scheduling, not a cheaper barrier**: instruction count is unchanged, but
+letting wg1 do its dP-GEMM instead of parking on wg0's LSE load raised the *eligible*-warp
+count, so IPC rose 1.77 → 1.87 (warp-cyc/issue 6.70 → 6.33). The barrier stall itself only dips
+1.42 → 1.29 — the win is the extra warp eligibility it buys. That confirmed the lever for V27:
+**wg-scope a barrier whose hazard is intra-warpgroup so the freed wg overlaps latency.** (The
+flush barriers `@8400`/`@8402` looked like the next target — but they turned out *balanced*, so
+scoping them regressed; V27 instead hid the dV wgmma under the dS elementwise.)
+
+Cumulative: V13 8.82 → V22 5.89 → V24 4.99 → V25 4.9353 → **V26 4.6853 (~1.69×)**.
