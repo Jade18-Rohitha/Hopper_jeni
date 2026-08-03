@@ -11277,23 +11277,21 @@ gqa_backward_v36_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "");
     constexpr int NB = 4;
+    __shared__ __align__(1024) bf16 sP [2][Br*64];   // 1024-aligned first -> no pad
+    __shared__ __align__(1024) bf16 sDS[2][Br*64];
     __shared__ __align__(128) bf16 sK_sw[Bc*D];
     __shared__ __align__(128) bf16 sV_sw[Bc*D];
     __shared__ __align__(128) bf16 sQ_sw [NB][Br*D];
     __shared__ __align__(128) bf16 sdO_sw[NB][Br*D];
     __shared__ __align__(16)  float sS [2][Br*64];
-    __shared__ __align__(1024) bf16 sP [2][Br*64];
-    __shared__ __align__(1024) bf16 sDS[2][Br*64];
-    __shared__ float sLSE[NB][Br];
-    __shared__ float sD  [NB][Br];
-    __shared__ __align__(8) uint64_t mbar_kv, full[NB], empty[NB], d_ready[NB];
+    __shared__ __align__(8) uint64_t mbar_kv, full[NB], empty[NB];
     const int tid=threadIdx.x, wg=tid>>7, wtid=tid&127;
     const int b=blockIdx.x, hkv=blockIdx.y, k_tile=blockIdx.z, k_row0=k_tile*Bc, nQTiles=S/Br;
     const long kvBase=((long)(b*Hkv+hkv)*S+k_row0)*D; const uint32_t kvFlatRow=(uint32_t)((b*Hkv+hkv)*S+k_row0);
     const uint32_t bytesTile=(uint32_t)(Br*D*sizeof(bf16)), bytesAtom=(uint32_t)(Bc*64*sizeof(bf16));
     if(tid==0){ mbar_init_v4(&mbar_kv,1);
         #pragma unroll
-        for(int i=0;i<NB;i++){mbar_init_v4(&full[i],1);mbar_init_v4(&empty[i],1);mbar_init_v4(&d_ready[i],1);} }
+        for(int i=0;i<NB;i++){mbar_init_v4(&full[i],1);mbar_init_v4(&empty[i],1);} }
     __syncthreads();
     const int qc0=k_row0/Br, perG=nQTiles-qc0, nIter=G*perG;
     auto qFlatRowOf=[&](int g,int qc)->uint32_t{const int hq=hkv*G+g;return (uint32_t)((b*Hq+hq)*S+qc*Br);};
@@ -11307,13 +11305,9 @@ gqa_backward_v36_kv(
         for(int it=0; it<nIter; it++){
             const int bu=it%NB; const int g=it/perG, qc=qc0+(it%perG);
             if(it>=NB){ mbar_wait_v4(&empty[bu],epar[bu]); epar[bu]^=1; }
-            const long dbase=lBaseOf(g,qc);
             if(leader){ const uint32_t r=qFlatRowOf(g,qc); mbar_expect_tx_v4(&full[bu],bytesTile*2);
                 tma_load_2d_v4(&tma_Q_sw, sQ_sw[bu],       &full[bu],0,r); tma_load_2d_v4(&tma_Q_sw, sQ_sw[bu]+64*64,&full[bu],64,r);
                 tma_load_2d_v4(&tma_dO_sw,sdO_sw[bu],      &full[bu],0,r); tma_load_2d_v4(&tma_dO_sw,sdO_sw[bu]+64*64,&full[bu],64,r); }
-            if(pl<Br){ sD[bu][pl]=d_Drow[dbase+pl]; sLSE[bu][pl]=d_LSE[dbase+pl]; }
-            producer_sync();
-            if(leader) mbar_arrive_v11(&d_ready[bu]);
         }
         return;
     }
@@ -11321,16 +11315,16 @@ gqa_backward_v36_kv(
     const int bid = 3 + wg;
     mbar_wait_v4(&mbar_kv, 0);
     float dv[64]; zeroN<64>(dv); float dk[64]; zeroN<64>(dk);
-    uint32_t cpar[NB]={0}, dpar[NB]={0};
+    uint32_t cpar[NB]={0};
     for (int it = wg; it < nIter; it += 2) {
         const int bu=it%NB; const int g=it/perG, qc=qc0+(it%perG), q_row0=qc*Br;
         mbar_wait_v4(&full[bu],  cpar[bu]); cpar[bu]^=1;
-        mbar_wait_v4(&d_ready[bu],dpar[bu]); dpar[bu]^=1;
+        const long base = lBaseOf(g, qc);
         float accS[32]; zeroN<32>(accS); run_gemm_n64_sw2(accS, sQ_sw[bu], sK_sw);
         float pReg[32];
-        fused_p_keepP_v35<Bc>(accS, sP[wg], sLSE[bu], pReg, wtid, q_row0, k_row0, scale2, qc==qc0);
+        fused_p_keepP_v35<Bc>(accS, sP[wg], d_LSE + base, pReg, wtid, q_row0, k_row0, scale2, qc==qc0);
         float accP[32]; zeroN<32>(accP); run_gemm_n64_sw2(accP, sdO_sw[bu], sV_sw);
-        store_dS_reg_v35<Bc>(pReg, accP, sD[bu], sDS[wg], wtid);
+        store_dS_reg_v35<Bc>(pReg, accP, d_Drow + base, sDS[wg], wtid);
         asm volatile("bar.sync %0, 128;\n"::"r"(bid):"memory");
         run_gemm_dVdK_half_te(dv,    sP[wg], sdO_sw[bu]+0);
         run_gemm_dVdK_half_te(dv+32, sP[wg], sdO_sw[bu]+4096);
