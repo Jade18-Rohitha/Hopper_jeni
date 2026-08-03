@@ -37,6 +37,31 @@ fragment — replacing the swizzled-smem round-trip. Note dQ = dS·K is *non-tra
 Major::K), so **dQ's A could go RS-wgmma first** (easier, isolates the technique) before tackling
 the transposed dV/dK.
 
+### ★ Deeper scoping (why RS-wgmma is a ground-up rewrite, not a single V31)
+1. **Cross-wg operand flow forces smem.** `dS = P ⊙ (dP − D)` needs P (wg0 softmax) and dP (wg1
+   dP-GEMM) — different warpgroups. Registers can't cross warpgroups, so P/dP reach dS via smem
+   (`sP`/`sdP`). Any RS scheme must either keep P and dP on the SAME warpgroup (→ single-wg-per-
+   tile) or still round-trip smem (no L1TEX win).
+2. **Cooperative balance ⊥ RS.** The 20/20 wgmma split that makes us fast *requires* cross-wg smem
+   sharing. Single-wg-per-tile (one wg does S+softmax+dP+dS+dV+dK+dQ → all operands in its regs,
+   RS-able) is what enables RS — but that's the imbalanced role-split (dead, §2b) or needs 2× smem
+   (dead). Mutually exclusive.
+3. **Transposed dV/dK.** Even single-wg, dV=Pᵀ·dO / dK=dSᵀ·Q need Pᵀ/dSᵀ as the RS A-fragment.
+   `ldmatrix.trans` still reads smem (no win); an in-register warp-shuffle transpose of 64×64 bf16
+   may not beat the round-trip. Only dQ=dS·K is non-transposed.
+4. **cuDNN's tell: it SPILLS.** `sdpa_bwd` shows cuDNN at 168 regs + ~832 K local requests — it
+   accepts spilling cold state to hold the register-heavy single-wg structure. We've guarded
+   0-spill throughout. **The honest path to cuDNN's compute-bound regime = single-wg-per-tile +
+   RS-wgmma + accept bounded spilling of cold state** — abandoning both the cooperative split and
+   the 0-spill invariant.
+
+**Dedicated-session plan:** (a) single-wg-per-tile — each consumer wg owns a *different* kv-tile
+(independent, half the grid each), full dv[64]/dk[64], RS-eliminated sP/sDS (RS frees ~24 KB —
+that reclaim is what lets the per-wg buffers fit under 232 KB at PD=1/2); (b) validate dV/dK
+correctness via `ldmatrix.trans` first, then attempt the shuffle-transpose to drop the smem read;
+(c) allow bounded spilling of *cold* state (never the dv/dk accumulators). One path to sub-1.5×,
+several days — not tonight's version.
+
 ## 3. Persistent kernel (grid 2048 → 132, grid-stride) — MEDIUM reward, MEDIUM effort
 cuDNN is persistent (132 = one CTA/SM, grid-stride over the (b,hkv,k_tile) work). Benefits:
 amortizes launch/prologue over many tiles, keeps K/V resident, better L2 reuse, and enables the
@@ -50,7 +75,17 @@ grid-stride loop over the 2048 work-units. Lower-risk than #1/#2; likely a few %
   saving the per-descriptor IMAD.X. Port `desc_add_lo`.
 - Promote more address math to the **uniform datapath** (UR registers) — cuDNN leans on it.
 
-## 2b. Role-based consumer specialization — the ping-pong flavor that MIGHT fit smem
+## 2b. Role-based consumer specialization — DEAD END (fatal imbalance)
+**Scoped and rejected.** The plan was wg0=ALU(softmax+dS), wg1=tensor(dP+dV+dK+dQ) + sole
+dv/dk. But counting wgmmas: the 40 wgmma/tile (S8 dP8 dV8 dK8 dQ8) are **balanced 20/20 by the
+current column-split**; role-splitting gives wg0=S(8)+ALU=**8 wgmma**, wg1=**32 wgmma** — a 4:1
+tensor imbalance, wg0 idles ¾ of wg1's stream. Strictly worse. (And "wg0 pure-ALU" is worse
+still — it needs S staged wg1→wg0, the V28-Pdiv +12.6% regression.) **Root cause: the forward's
+ping-pong works because its two consumers do *symmetric* work on different tiles; the backward's
+phases have wildly unequal tensor loads, so every role split imbalances and every tile split
+needs 2× smem. The cooperative column-split is the correct structure.** Superseded original note:
+
+<details><summary>original (flawed) #2b</summary>
 The backward already warp-specializes producer/consumer (wg2 TMA, wg0/wg1 consumers, since V11),
 and partially inside the consumers (wg0 softmax ∥ wg1 dP-GEMM). The **tile-based** ping-pong
 (each consumer a different tile) is smem-dead. But a **role-based** split is different: make
@@ -69,6 +104,8 @@ Risk: the softmax→sP→dV and dS→sDS→dK dependencies still chain within a 
 how much of wg0's ALU fills wg1's tensor waits across the tile boundary (could be partial). But
 it's the most promising *specialization* path that respects the smem cap — worth building after
 #1/#3 land.
+
+</details>
 
 ## 5. Larger tile Br=128 — RESEARCH feasibility
 Fewer, larger tiles amortize per-tile overhead (barriers, index math, softmax setup). Needs
