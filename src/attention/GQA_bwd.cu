@@ -10504,11 +10504,21 @@ void launch_gqa_backward_v32(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// V33 (forced-168): 64-thread producer + 256 wgmma consumers + 64 dS helpers.
-__device__ __forceinline__ void elementwise_sync_v33() { asm volatile("bar.sync 4, 320;\n" ::: "memory"); }
-__device__ __forceinline__ void producer_sync_64_v33()  { asm volatile("bar.sync 2, 64;\n"  ::: "memory"); }
-__device__ __forceinline__ void reg_inc_184_v33() { asm volatile("setmaxnreg.inc.sync.aligned.u32 184;\n" ::: "memory"); }
-__device__ __forceinline__ void reg_dec_120_v33() { asm volatile("setmaxnreg.dec.sync.aligned.u32 120;\n" ::: "memory"); }
+// V33: store dP fragment as bf16 (packed STS.32) — mirrors store_acc_smem_v6's layout so the
+// dS loop reads it at the same r*ROWSTRIDE+c index. Halves the dP exchange (write+read).
+template<int NCOL, int ROWSTRIDE>
+__device__ __forceinline__ void store_acc_smem_bf16_v33(const float *d, bf16 *smem, int tid, float scl) {
+    int w = tid >> 5, lane = tid & 31;
+    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+#pragma unroll
+    for (int nt = 0; nt < NCOL / 8; nt++) {
+        int c = nt * 8 + cc;
+        *reinterpret_cast<__nv_bfloat162*>(&smem[r0 * ROWSTRIDE + c]) = __float22bfloat162_rn(make_float2(d[nt*4+0]*scl, d[nt*4+1]*scl));
+        *reinterpret_cast<__nv_bfloat162*>(&smem[r1 * ROWSTRIDE + c]) = __float22bfloat162_rn(make_float2(d[nt*4+2]*scl, d[nt*4+3]*scl));
+    }
+}
+// V33 = V32 + bf16-sdP: dP exchanged through smem as bf16 (halves that L1TEX traffic).
+// PRECISION: dP rounds to bf16 before dS=P*(dP-D) — below cuDNN (fp32 dP). Gated behind check().
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_v33_kv(
@@ -10554,7 +10564,6 @@ gqa_backward_v33_kv(
     const uint32_t bytesTile  = (uint32_t)(Br * D * sizeof(bf16));
     const uint32_t bytesAtom  = (uint32_t)(Bc * 64 * sizeof(bf16));
 
-    if (tid < 256) reg_inc_184_v33(); else reg_dec_120_v33();   // V33: force 168 on wg0/wg1; wg2(helpers+prod) to 120
     if (tid == 0) {
         mbar_init_v4(&mbar_kv, 1);
         #pragma unroll
@@ -10582,9 +10591,10 @@ gqa_backward_v33_kv(
 
     // ── PRODUCER (wg 2): TMA loads (3-deep) + LAGGED d_Drow load (replaces the
     // V21 inline swizzled D-rowsum).  D is now precomputed in d_Drow[flatRow]. ──
-    if (tid >= 320) {   // V33: producer = 64 threads (was 128); freed 64 -> dS helpers
-        const bool leader = (tid == 320);
-        const int  pl     = tid - 320;
+    if (wg == 2) {
+        reg_dec_producer_v30();   // V30: producer -> 40 regs, releases to pool
+        const bool leader = (tid == 256);
+        const int  pl     = tid - 256;          // producer-local thread id [0,128)
         if (leader) {
             mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
             tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
@@ -10604,7 +10614,7 @@ gqa_backward_v33_kv(
             mbar_wait_v4(&full[s], fpar[s]); fpar[s] ^= 1;
             const long dbase = lBaseOf(gD, qcD);           // flat base for tile td
             if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }   // V32: LSE also prefetched
-            producer_sync_64_v33();
+            producer_sync();
             if (leader) mbar_arrive_v11(&d_ready[s]);
             if (++qcD == nQTiles) { qcD = qc0; ++gD; }
         };
@@ -10626,9 +10636,10 @@ gqa_backward_v33_kv(
         return;
     }
 
-    // V33: 168 forced via setmaxnreg above. wg0/wg1(tid<256)=wgmma; 256-319=dS helpers.
-    const float scale2 = scale * LOG2E_V29;
-    if (tid < 256) mbar_wait_v4(&mbar_kv, 0);
+    reg_inc_consumer_v30();   // V30: consumers -> 232 regs (claim from pool)
+    // ── CONSUMERS (wg 0,1) — IDENTICAL to V21 except sD is now PD-deep ────────
+    const float scale2 = scale * LOG2E_V29;   // V29: exp2f fold
+    mbar_wait_v4(&mbar_kv, 0);
 
     float dv[32]; zeroN<32>(dv);
     float dk[32]; zeroN<32>(dk);
@@ -10638,75 +10649,80 @@ gqa_backward_v33_kv(
     for (int it = 0; it < nIter; it++) {
         const int s = it % PD;
         const int q_row0 = qcC * Br;
-        if (tid < 256) { mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1; }   // V33: only wgmma consumers need Q/dO
-        mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
+        mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
+        mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;   // V32: LSE+D producer-loaded — one early wait, wg0-barrier + consumer LDG deleted
 
         // S = Q·Kᵀ·scale → P = exp(S − LSE)+causal DIRECT to swizzled sP (wg0)
         //  ∥  dP = dO·Vᵀ → sdP (wg1).
-        if (tid < 128) {
+        if (wg == 0) {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sQ_sw[s], sK_sw);
             if (qcC == qc0) fused_p_from_acc_v29<Bc>(acc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
             else            fused_p_nomask_v29<Bc>(acc, sP, sLSE[s], wtid, scale2);
-        } else if (tid < 256) {
+        } else {
             float acc[32]; zeroN<32>(acc);
             run_gemm_n64_sw2(acc, sdO_sw[s], sV_sw);
-            store_acc_smem_v6<Bc, SS_STRIDE_V24>(acc, sdP, wtid, 1.0f);
+            store_acc_smem_bf16_v33<Bc, SS_STRIDE_V24>(acc, reinterpret_cast<bf16*>(sdP), wtid, 1.0f);   // V33: dP as bf16
         }
-        elementwise_sync_v33();   // [A] (320)
+        consumer_sync();   // wg0's swizzled sP writes visible cross-warp before the transposed reads
 
         // dV += Pᵀ·dO  — TRANSPOSE-ELIMINATED: A = Pᵀ read DIRECTLY from swizzled sP.
-        if (tid < 256) run_gemm_dVdK_half_te_issue(dv, sP, sdO_sw[s] + wg * 4096);   // V27
+        run_gemm_dVdK_half_te_issue(dv, sP, sdO_sw[s] + wg * 4096);   // V27: issue only; overlaps dS below
 
         // dS = P ⊙ (dP − D) → swizzled sP.  D + LSE already producer-loaded & waited above (V32).
         {   // V28: vectorize dS WIDER — 4 adjacent columns/step (2×bf16×2 + float4) → halves the
             // iteration count, index math, loop branches, and LDS/STS in this hot 256-thread loop.
             const int cbase = (4 * tid) % Bc, c8 = cbase >> 3, clo = cbase & 7;   // 4 cols → clo∈{0,4}
-            for (int pp = tid; pp < Br * Bc / 4; pp += 320) {   // V33: 320 elementwise
+            for (int pp = tid; pp < Br * Bc / 4; pp += CONS) {
                 const int r    = (4 * pp) / Bc;                                    // r += 16/iter → r&7 const
                 const int pidx = r * 64 + ((c8 ^ (r & 7)) << 3) + clo;             // 4 contig cols → pidx..+3
                 const int sdi  = r * SS_STRIDE_V24 + cbase;
                 const float d  = sD[s][r];
                 const __nv_bfloat162 pA = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx]);
                 const __nv_bfloat162 pB = *reinterpret_cast<const __nv_bfloat162*>(&sP[pidx + 2]);
-                const float4 dp = *reinterpret_cast<const float4*>(&sdP[sdi]);
+                const bf16* sdPb = reinterpret_cast<const bf16*>(sdP);   // V33: dP stored bf16 at r*72+c
+                const __nv_bfloat162 dq0 = *reinterpret_cast<const __nv_bfloat162*>(&sdPb[sdi]);
+                const __nv_bfloat162 dq1 = *reinterpret_cast<const __nv_bfloat162*>(&sdPb[sdi + 2]);
+                const float2 dpf0 = __bfloat1622float2(dq0), dpf1 = __bfloat1622float2(dq1);
                 const float2 pfA = __bfloat1622float2(pA), pfB = __bfloat1622float2(pB);
-                const float2 rA = make_float2(pfA.x * (dp.x - d), pfA.y * (dp.y - d));
-                const float2 rB = make_float2(pfB.x * (dp.z - d), pfB.y * (dp.w - d));
+                const float2 rA = make_float2(pfA.x * (dpf0.x - d), pfA.y * (dpf0.y - d));
+                const float2 rB = make_float2(pfB.x * (dpf1.x - d), pfB.y * (dpf1.y - d));
                 *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx])     = __float22bfloat162_rn(rA);
                 *reinterpret_cast<__nv_bfloat162*>(&sDS[pidx + 2]) = __float22bfloat162_rn(rB);
             }
         }
-        if (tid < 256) run_gemm_dVdK_half_te_wait(dv);
-        elementwise_sync_v33();   // [B] (320)
+        run_gemm_dVdK_half_te_wait(dv);   // V27: dV wgmma completed under the dS elementwise
+        consumer_sync();   // dS->sDS visible cross-warp (+ dV done) before the transposed dK read
 
-        if (tid < 256) {   // V33: wgmma tail — wg0/wg1 only
-            run_gemm_dVdK_half_te(dk, sDS, sQ_sw[s] + wg * 4096);
-            consumer_sync();
-            if (tid == 0) mbar_arrive_v11(&empty[s]);
-            { float acc[32]; zeroN<32>(acc);
-              run_gemm_dQ_half_te(acc, sDS, sK_sw + wg * 4096);
-              store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
-            consumer_sync();
-            atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
-            consumer_sync();
-        }
+        // dK += dSᵀ·Q  — TRANSPOSE-ELIMINATED: A = dSᵀ read DIRECTLY from swizzled sP.
+        run_gemm_dVdK_half_te(dk, sDS, sQ_sw[s] + wg * 4096);
+        consumer_sync();
+        if (tid == 0) mbar_arrive_v11(&empty[s]);
+
+        // dQ_tile = dS*K (transient) - V23: TRANSPOSE-STAGING ELIMINATED. dS read
+        // DIRECTLY from swizzled sP as a Major::K A-operand (col=k=contraction);
+        // the ldmatrix->stmatrix staging round-trip + its consumer_sync are DELETED
+        // (sP=dS already made cross-warp visible by the dK consumer_sync above).
+        { float acc[32]; zeroN<32>(acc);
+          run_gemm_dQ_half_te(acc, sDS, sK_sw + wg * 4096);
+          store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
+        consumer_sync();
+        atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
+        consumer_sync();
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
 
-    // ── Epilogue (wg0/wg1 only) ──
-    if (tid < 256) {
-        bf16 *stage = reinterpret_cast<bf16*>(&sQ_sw[0][0]) + wg * (64 * 72);
-        fence_operandN<32>(dv);
-        stage_acc_bf16_s<64, 72>(dv, stage, wtid, 1.0f);
-        consumer_sync();
-        store_stage_vec_s<Bc, 64, 72>(stage, d_dV, kvBase, D, wg * 64, wtid);
-        consumer_sync();
-        fence_operandN<32>(dk);
-        stage_acc_bf16_s<64, 72>(dk, stage, wtid, scale);
-        consumer_sync();
-        store_stage_vec_s<Bc, 64, 72>(stage, d_dK, kvBase, D, wg * 64, wtid);
-    }
+    // ── Epilogue — coalesced dV/dK writeback. V25: stage @ stride-72 (kills 8-way). ──
+    bf16 *stage = reinterpret_cast<bf16*>(&sQ_sw[0][0]) + wg * (64 * 72);   // V31: reuse idle sQ_sw as epilogue stage (sA_t removed, -18KB)
+    fence_operandN<32>(dv);
+    stage_acc_bf16_s<64, 72>(dv, stage, wtid, 1.0f);
+    consumer_sync();
+    store_stage_vec_s<Bc, 64, 72>(stage, d_dV, kvBase, D, wg * 64, wtid);
+    consumer_sync();
+    fence_operandN<32>(dk);
+    stage_acc_bf16_s<64, 72>(dk, stage, wtid, scale);
+    consumer_sync();
+    store_stage_vec_s<Bc, 64, 72>(stage, d_dK, kvBase, D, wg * 64, wtid);
 }
 
 template<int Br, int Bc, int D>
@@ -11006,7 +11022,7 @@ int main(){
 
     launch_gqa_backward_v33<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V33 Br=64 Bc=64 64/320 dS-helpers FORCED-168 (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V33 Br=64 Bc=64 bf16-sdP (dP exchange halved) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -11250,7 +11266,7 @@ int main(){
             [&](){ launch_gqa_backward_v33<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V33 Br=64, Bc=64  64/320 dS-helpers forced-168  (Hopper SM_90)", s);
+        displayStats("GQA bwd V33 Br=64, Bc=64  bf16-sdP (dP exchange halved)  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
