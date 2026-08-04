@@ -11403,8 +11403,10 @@ void launch_gqa_backward_v35(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// V36 = V35 + wg-scoped dQ-flush barriers. sS (wg0) and sdP (wg1) are private per-wg in the dQ
-// flush, so the two 256-thread consumer_sync there are over-sync -> scope to 128 (bar 3 / bar 4). Bit-identical.
+// V36 = V35 + barrier reduction (attacks the #2 stall, barrier=1.28 cyc/issue @ V35). Two moves:
+// (1) DELETE the 256-thread consumer_sync after dK (dK->dQ share sDS read-only) and defer empty[s]
+//     to end-of-tile behind a 256-barrier that proves both wgs finished sQ_sw reads; (2) scope the
+// dQ store->flush barrier to 128 (sS wg0-private, sdP wg1-private). 5 loop barriers -> 4. Bit-identical.
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_v36_kv(
@@ -11554,19 +11556,18 @@ gqa_backward_v36_kv(
 
         // dK += dSᵀ·Q  — TRANSPOSE-ELIMINATED: A = dSᵀ read DIRECTLY from swizzled sP.
         run_gemm_dVdK_half_te(dk, sDS, sQ_sw[s] + wg * 4096);
-        consumer_sync();
-        if (tid == 0) mbar_arrive_v11(&empty[s]);
+        // V36: barrier-after-dK DELETED (was a 256-thread consumer_sync + empty here). dK->dQ both
+        // read sDS with no write between -> no cross-wg hazard; empty[s] is DEFERRED to end-of-tile,
+        // where the 256-thread barrier below proves BOTH wgs finished dK's sQ_sw reads before refill.
 
-        // dQ_tile = dS*K (transient) - V23: TRANSPOSE-STAGING ELIMINATED. dS read
-        // DIRECTLY from swizzled sP as a Major::K A-operand (col=k=contraction);
-        // the ldmatrix->stmatrix staging round-trip + its consumer_sync are DELETED
-        // (sP=dS already made cross-warp visible by the dK consumer_sync above).
+        // dQ_tile = dS*K (transient) - V23: dS read DIRECTLY from swizzled sDS as a Major::K A-operand.
         { float acc[32]; zeroN<32>(acc);
           run_gemm_dQ_half_te(acc, sDS, sK_sw + wg * 4096);
           store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
-        if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // V36: wg-scoped (private sS/sdP)
+        if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // V36: scoped (intra-wg store->flush)
         atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
-        if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // V36: wg-scoped (private sS/sdP)
+        consumer_sync();                                              // V36: 256 — flush done + BOTH wgs past dK
+        if (tid == 0) mbar_arrive_v11(&empty[s]);                     // empty DEFERRED here -> sQ_sw free for producer
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
 
@@ -11910,7 +11911,7 @@ int main(){
 
     launch_gqa_backward_v36<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("-- V36 Br=64 Bc=64 wg-scoped dQ-flush barriers (Hopper SM_90) --", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("-- V36 Br=64 Bc=64 barrier cut + scoped (Hopper SM_90) --", Nq, Nkv, d_dQ, d_dK, d_dV);
 
 
 
@@ -12179,7 +12180,7 @@ int main(){
             [&](){ launch_gqa_backward_v36<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V36 Br=64, Bc=64  wg-scoped dQ-flush barriers  (Hopper SM_90)", s);
+        displayStats("GQA bwd V36 Br=64, Bc=64  barrier cut + scoped  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
