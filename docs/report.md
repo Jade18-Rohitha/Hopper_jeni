@@ -1,1 +1,0 @@
-Today was all about squeezing the last bits of performance out, so many failed attempts ,regressing nearly 7-8 versions but at the end we are at 
