@@ -1,0 +1,1 @@
+Today I tried a set of optimizations ,some moved the 
