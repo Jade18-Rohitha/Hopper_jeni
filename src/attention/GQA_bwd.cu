@@ -11670,7 +11670,27 @@ void launch_gqa_backward_v36(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// V37 = V36 + PD 3->4 (deeper producer pipeline; attacks long_scoreboard=1.88 = consumer parking on TMA). Bit-identical.
+// V37: dQ flush straight from the wgmma fragment (same r0/r1/cc layout as store_acc_smem_v6) to
+// global d_dq_accum via atomicAdd -- no smem stage. Each (q,d) still gets exactly one add of this
+// tile's dQ, so bit-identical vs the staged path; moves the flush off L1TEX onto idle DRAM/L2.
+template<int Bc, int D>
+__device__ __forceinline__ void atomic_flush_reg_dq(
+    const float acc[32], float* __restrict__ d_dq_accum, long base, int coloff, float scale, int wtid) {
+    const int w = wtid >> 5, lane = wtid & 31;
+    const int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+#pragma unroll
+    for (int nt = 0; nt < Bc / 8; nt++) {
+        const int c = nt * 8 + cc;
+        atomicAdd(&d_dq_accum[base + (long)r0 * D + coloff + c    ], acc[nt*4+0] * scale);
+        atomicAdd(&d_dq_accum[base + (long)r0 * D + coloff + c + 1], acc[nt*4+1] * scale);
+        atomicAdd(&d_dq_accum[base + (long)r1 * D + coloff + c    ], acc[nt*4+2] * scale);
+        atomicAdd(&d_dq_accum[base + (long)r1 * D + coloff + c + 1], acc[nt*4+3] * scale);
+    }
+}
+
+// V37 = V36 + direct dQ atomicAdd (no sS/sdP stage). dQ fragment atomicAdds straight to d_dq_accum
+// -> deletes the register->smem->global round-trip off the contended L1TEX path onto idle DRAM/L2,
+// frees sS+sdP (~36KB), cuts a barrier. Bit-identical (one atomicAdd of this tile's dQ[q,d] either way).
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_v37_kv(
@@ -11687,7 +11707,7 @@ gqa_backward_v37_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V24 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;   // consumer thread count (wg 0+1)
-    constexpr int PD   = 4;   // V37: PD 3->4 (more producer runway; fits 219,984B<227KB, 1 blk/SM, 0 reg cost)     // pipeline depth for sQ_sw / sdO_sw / sD
+    constexpr int PD   = 3;     // pipeline depth for sQ_sw / sdO_sw / sD
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
@@ -11695,8 +11715,6 @@ gqa_backward_v37_kv(
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];      // 3-deep
     // V22: sO_sw DELETED (−32,768 B) — O only fed the inline D-rowsum, now a
     // separate kernel.  dV uses dO (sdO_sw), not O.
-    __shared__ __align__(16)   float sS [Br * SS_STRIDE_V24];   // wg0 dQ stage
-    __shared__ __align__(16)   float sdP[Br * SS_STRIDE_V24];
     __shared__ __align__(1024) bf16  sP [Br * 64];             // 64-wide 128-B swizzle atom
     __shared__ __align__(1024) bf16  sDS[Br * 64];             // V27: dS output (was overwriting sP)
     __shared__                 float sLSE[PD][Br];   // V32: producer-loaded, PD-deep (like sD)
@@ -11824,14 +11842,13 @@ gqa_backward_v37_kv(
         // read sDS with no write between -> no cross-wg hazard; empty[s] is DEFERRED to end-of-tile,
         // where the 256-thread barrier below proves BOTH wgs finished dK's sQ_sw reads before refill.
 
-        // dQ_tile = dS*K (transient) - V23: dS read DIRECTLY from swizzled sDS as a Major::K A-operand.
+        // V37: dQ = dS*K, atomicAdd DIRECTLY from the register fragment (no sS/sdP smem stage) ->
+        // register->smem->global round-trip DELETED off the L1TEX wall onto idle DRAM/L2.
         { float acc[32]; zeroN<32>(acc);
           run_gemm_dQ_half_te(acc, sDS, sK_sw + wg * 4096);
-          store_acc_smem_v6<64, SS_STRIDE_V24>(acc, (wg == 0) ? sS : sdP, wtid, scale); }
-        if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // V37: scoped (intra-wg store->flush)
-        atomic_flush_stage_s<Br, 64, SS_STRIDE_V24>((wg == 0) ? sS : sdP, d_dq_accum, lBaseOf(gC, qcC) * D, D, wg * 64, wtid);
-        consumer_sync();                                              // V37: 256 — flush done + BOTH wgs past dK
-        if (tid == 0) mbar_arrive_v11(&empty[s]);                     // empty DEFERRED here -> sQ_sw free for producer
+          atomic_flush_reg_dq<Bc, D>(acc, d_dq_accum, lBaseOf(gC, qcC) * D, wg * 64, scale, wtid); }
+        consumer_sync();                                              // both wgs past dK+dQ -> empty safe
+        if (tid == 0) mbar_arrive_v11(&empty[s]);
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
 
@@ -12179,7 +12196,7 @@ int main(){
 
     launch_gqa_backward_v37<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("-- V37 Br=64 Bc=64 PD=4 (deeper producer pipeline) (Hopper SM_90) --", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("-- V37 Br=64 Bc=64 direct dQ atomicAdd (no smem stage) (Hopper SM_90) --", Nq, Nkv, d_dQ, d_dK, d_dV);
 
 
 
@@ -12455,7 +12472,7 @@ int main(){
             [&](){ launch_gqa_backward_v37<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V37 Br=64, Bc=64  PD=4 deeper pipeline  (Hopper SM_90)", s);
+        displayStats("GQA bwd V37 Br=64, Bc=64  direct dQ atomicAdd  (Hopper SM_90)", s);
     }
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
