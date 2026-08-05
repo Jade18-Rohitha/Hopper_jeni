@@ -14147,10 +14147,22 @@ gqa_backward_v45_kv(
         descKhalf = make_desc_sw128_MN(sK_sw + wg * 4096);
     }
 
-    // ── Persistent grid-stride over work-items.  Decode (heaviest k_tile=0 lands at
-    //    low widx; the 132-vs-64 stride offset spreads k_tiles across each CTA for
-    //    causal-tail balance).
-    for (int widx = blockIdx.x; widx < TOTAL; widx += gridDim.x) {
+    // ── Persistent CONTIGUOUS/BLOCKED assignment over work-items.  Each CTA owns one
+    //    contiguous run [wlo,whi) of work-items.  With the decode below (k_tile fastest),
+    //    consecutive work-items on a CTA share (b,hkv) and walk k_tile 0..nKt-1 → the
+    //    group's ~9 MB Q/dO/O reuse set stays L2-resident across its kv-tiles.  This is
+    //    the load-bearing property: an earlier widx+=gridDim.x SCATTER made each CTA hop
+    //    across many (b,hkv) groups, evicting the reuse set (measured +47% at B=8).
+    //    NOTE (causal imbalance): a blocked chunk lands adjacent (all-heavy vs all-light)
+    //    k_tiles on different CTAs (nIter ranges G·nKt→G·1), so light-chunk CTAs retire
+    //    early.  If the H200 shows locality recovered but a load-imbalance tail remains,
+    //    the balance-preserving refinement is a group-blocked + strided-k assignment
+    //    (each CTA still shares one (b,hkv) but takes k_tiles {j, j+nCTA/grp, ...}).
+    const int nCTA  = gridDim.x;
+    const int chunk = (TOTAL + nCTA - 1) / nCTA;
+    const int wlo   = blockIdx.x * chunk;
+    const int whi   = min(wlo + chunk, TOTAL);
+    for (int widx = wlo; widx < whi; widx++) {
         const int k_tile = widx % nKt;
         const int t      = widx / nKt;
         const int hkv    = t % Hkv;
