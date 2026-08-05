@@ -14136,7 +14136,46 @@ __device__ __forceinline__ void run_dQ_rsA_half(float dqh[32], const float dS[32
     fence_operandN<32>(dqh);
 }
 
-template<int Br, int Bc, int D>
+// ── M1 BISECT Path A: stage register dS[32] (accumulator layout) → swizzled sDS via STMATRIX,
+//    then run the PROVEN V44 SS-A dQ GEMM (wgmma_m64n64k16_tB, dS Major::K from shared, K Major::MN).
+//    dS→sDS STSM copied VERBATIM from fuse_dS_ldstsm's write half (pr0[nt]=(r0,c),(r0,c+1);
+//    pr1[nt]=(r1,c),(r1,c+1) = my dS[nt*4+0..3]); same swizzled dst addresses. Isolates the GEMM:
+//    Path A (SS) vs Path B (RS) on IDENTICAL dS ⇒ both-wrong=upstream dS, A-ok/B-wrong=RS path.
+__device__ __forceinline__ void stage_dS_to_sDS_m1(const float dS[32], bf16* sDS, int wtid) {
+    const int w = wtid >> 5, lane = wtid & 31;
+    const int ph = lane & 7, mm = lane >> 3;
+    const int qr0 = 16 * w + ph, qr1 = 16 * w + 8 + ph;
+    uint32_t pr0[8], pr1[8];
+#pragma unroll
+    for (int nt = 0; nt < 8; nt++) {
+        *reinterpret_cast<__nv_bfloat162*>(&pr0[nt]) = __float22bfloat162_rn(make_float2(dS[nt*4+0], dS[nt*4+1]));
+        *reinterpret_cast<__nv_bfloat162*>(&pr1[nt]) = __float22bfloat162_rn(make_float2(dS[nt*4+2], dS[nt*4+3]));
+    }
+    const uint32_t d0 = (uint32_t)__cvta_generic_to_shared(&sDS[qr0 * 64 + (((mm    ) ^ ph) << 3)]);
+    const uint32_t d1 = (uint32_t)__cvta_generic_to_shared(&sDS[qr0 * 64 + (((mm + 4) ^ ph) << 3)]);
+    const uint32_t d2 = (uint32_t)__cvta_generic_to_shared(&sDS[qr1 * 64 + (((mm    ) ^ ph) << 3)]);
+    const uint32_t d3 = (uint32_t)__cvta_generic_to_shared(&sDS[qr1 * 64 + (((mm + 4) ^ ph) << 3)]);
+    stmatrix_x4(d0, pr0[0], pr0[1], pr0[2], pr0[3]);
+    stmatrix_x4(d1, pr0[4], pr0[5], pr0[6], pr0[7]);
+    stmatrix_x4(d2, pr1[0], pr1[1], pr1[2], pr1[3]);
+    stmatrix_x4(d3, pr1[4], pr1[5], pr1[6], pr1[7]);
+}
+// SS-A dQ GEMM (V44 path verbatim): A=dS Major::K from sDS, B=K Major::MN, wgmma_m64n64k16_tB, 4 k-steps.
+__device__ __forceinline__ void run_gemm_dQ_ss_half_m1(float dqh[32], const bf16* sDS, const bf16* sK_sw, int hhalf) {
+    fence_proxy_async_shared();
+    fence_operandN<32>(dqh);
+    wgmma_fence();
+    const uint64_t descDSk   = make_desc_sw128_K (sDS);
+    const uint64_t descKhalf = make_desc_sw128_MN(sK_sw + hhalf * 4096);
+#pragma unroll
+    for (int k = 0; k < 4; k++)
+        wgmma_m64n64k16_tB(dqh, descDSk + (uint64_t)(k * 2), descKhalf + (uint64_t)(k * 128));
+    wgmma_commit();
+    wgmma_wait0();
+    fence_operandN<32>(dqh);
+}
+
+template<int Br, int Bc, int D, bool USE_RSA>
 __global__ void __launch_bounds__(256, 1)
 gqa_backward_dc_m1_kv(
     const __grid_constant__ CUtensorMap tma_Q_sw,
@@ -14155,6 +14194,7 @@ gqa_backward_dc_m1_kv(
     __shared__ __align__(128) bf16 sdO_sw[Br * D];        // persistent dO-tile
     __shared__ __align__(128) bf16 sK_sw [PD][Bc * D];    // KV loop, double/triple-buffered
     __shared__ __align__(128) bf16 sV_sw [PD][Bc * D];
+    __shared__ __align__(1024) bf16 sDS[Br * 64];         // Path A (SS-A) staged dS (swizzled); unused when USE_RSA
     __shared__ float sLSE[Br];
     __shared__ float sD  [Br];
     __shared__ __align__(8) uint64_t mbar_qo;
@@ -14254,8 +14294,16 @@ gqa_backward_dc_m1_kv(
             dS[nt*4+3] = p11 * (accdP[nt*4+3] - d1) * scale;
         }
 
-        run_dQ_rsA_half(dq_lo, dS, sK_sw[s], 0);        // dQ[:, 0:64]  += dS·K
-        run_dQ_rsA_half(dq_hi, dS, sK_sw[s], 1);        // dQ[:, 64:128]+= dS·K
+        if (USE_RSA) {                                  // Path B: dS from REGISTERS (RS-A)
+            run_dQ_rsA_half(dq_lo, dS, sK_sw[s], 0);        // dQ[:, 0:64]  += dS·K
+            run_dQ_rsA_half(dq_hi, dS, sK_sw[s], 1);        // dQ[:, 64:128]+= dS·K
+        } else {                                        // Path A: dS via swizzled shared (PROVEN SS-A)
+            stage_dS_to_sDS_m1(dS, sDS, wtid);
+            consumer_sync_wg0();                            // STSM writes → wgmma read (wg0 128-thread barrier)
+            run_gemm_dQ_ss_half_m1(dq_lo, sDS, sK_sw[s], 0);
+            run_gemm_dQ_ss_half_m1(dq_hi, sDS, sK_sw[s], 1);
+            consumer_sync_wg0();                            // GEMM done reading sDS before next iter STSM
+        }
         if (wtid == 0) mbar_arrive_v11(&empty[s]);
     }
 
@@ -14274,7 +14322,7 @@ gqa_backward_dc_m1_kv(
     }
 }
 
-template<int Br, int Bc, int D>
+template<int Br, int Bc, int D, bool USE_RSA>
 void launch_gqa_backward_dc_m1(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
     const bf16 *d_dO, const float *d_LSE,
@@ -14315,7 +14363,7 @@ void launch_gqa_backward_dc_m1(
     CUDA_CHECK(cudaMemset(d_dV, 0, (size_t)B * Hkv * S * D * sizeof(bf16)));
 
     dim3 GRID(B, Hq, S / Br);
-    gqa_backward_dc_m1_kv<Br,Bc,D><<<GRID, dim3(256)>>>(
+    gqa_backward_dc_m1_kv<Br,Bc,D,USE_RSA><<<GRID, dim3(256)>>>(
         tma_Q_sw, tma_K_sw, tma_V_sw, tma_dO_sw, d_Drow, d_LSE, d_dQ, B, Hq, Hkv, G, S, scale);
 }
 
@@ -14592,9 +14640,15 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_dc_m1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    // M1 BISECT — SAME dS, two dQ paths, dQ-only. SS-A(proven)=Path A ; RS-A(new)=Path B.
+    // BOTH wrong ⇒ upstream Q-parallel dS (mask/LSE/D/dP). A-ok/B-wrong ⇒ RS register path.
+    launch_gqa_backward_dc_m1<Br2,Bc2,D,false>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── D-collapse M1 Q-parallel full-D consumer (Hopper SM_90) [dQ only; dK/dV stubbed] ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── M1-bisect SS-A dQ (proven path) (Hopper SM_90) [dQ only; dK/dV stubbed] ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
+    launch_gqa_backward_dc_m1<Br2,Bc2,D,true>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── M1-bisect RS-A dQ (register path) (Hopper SM_90) [dQ only; dK/dV stubbed] ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
