@@ -14086,10 +14086,13 @@ void launch_gqa_backward_v44(
 // RS form drops transA (reg-A has no transpose); trailing imms = scaleD,scaleA,scaleB,transB.
 __device__ __forceinline__ void wgmma_m64n64k16_rsA(float d[32], const uint32_t a[4], uint64_t descB) {
     asm volatile(
+        // RS-A: {d}, {a0..a3}, descB, scaleD, scaleA, scaleB, transB.  transB=1: K is read
+        // Major::MN (D-contiguous) for dQ=dS·K (contract over key) — matches the proven SS
+        // wgmma_m64n64k16_tB path (1,1,1,0,1).  transB=0 read K with the wrong layout → 1e35.
         "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 "
         "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
         "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
-        "{%32,%33,%34,%35}, %36, 1, 1, 1, 0;\n"
+        "{%32,%33,%34,%35}, %36, 1, 1, 1, 1;\n"
         : "+f"(d[0]),  "+f"(d[1]),  "+f"(d[2]),  "+f"(d[3]),
           "+f"(d[4]),  "+f"(d[5]),  "+f"(d[6]),  "+f"(d[7]),
           "+f"(d[8]),  "+f"(d[9]),  "+f"(d[10]), "+f"(d[11]),
