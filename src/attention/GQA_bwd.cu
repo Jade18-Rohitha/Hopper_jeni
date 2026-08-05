@@ -14064,6 +14064,251 @@ void launch_gqa_backward_v44(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// D-COLLAPSE M1 — isolated Q-parallel full-D consumer  [SM_90a only]
+//
+// Kill-gate probe for the D-collapse (Q-parallel, whole-tile-per-warpgroup, dS kept
+// in REGISTERS as a wgmma-A operand → no cross-wg P/dS exchange).  This M1 isolates
+// the load-bearing risk: dQ += dS·K with dS register-resident (RS-A wgmma), no shared
+// round-trip.  Grid (B,Hq,S/Br): each block owns ONE Q-tile (Br=64 rows), 1 consumer
+// warpgroup (128) + 1 TMA producer (128).  Loops KV-tiles (causal).  dQ is the resident
+// one-writer accumulator (64 fp32/thread), flushed once at the end (no atomics/reduce).
+// dK/dV are STUBBED (the transposed-dS relayout is deferred to M2) — the check's dK/dV
+// lines are expected-fail; only the dQ line is the M1 gate.
+//
+// RS-A chain (dQ=dS·K): dS is the m64n64 dP-derived acc fragment (32 fp32).  Downconvert
+// fp32→bf16 and feed as the wgmma A register operand (CUTLASS "accumulator-as-A" reuse;
+// acc-N = key = the new A-K, so NO transpose).  A-frag k-step k uses acc n-subtiles 2k,2k+1.
+// The exact .b32 ORDERING of the A fragment is the residual layout risk — H200 check() is
+// the validator (register envelope + no-shared-round-trip are verifiable here on the box).
+// ═════════════════════════════════════════════════════════════════════════════
+
+// wgmma m64n64k16 with A from REGISTERS (RS): A = 4×.b32 (bf16x2), B = shared descriptor.
+// RS form drops transA (reg-A has no transpose); trailing imms = scaleD,scaleA,scaleB,transB.
+__device__ __forceinline__ void wgmma_m64n64k16_rsA(float d[32], const uint32_t a[4], uint64_t descB) {
+    asm volatile(
+        "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 "
+        "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
+        "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
+        "{%32,%33,%34,%35}, %36, 1, 1, 1, 0;\n"
+        : "+f"(d[0]),  "+f"(d[1]),  "+f"(d[2]),  "+f"(d[3]),
+          "+f"(d[4]),  "+f"(d[5]),  "+f"(d[6]),  "+f"(d[7]),
+          "+f"(d[8]),  "+f"(d[9]),  "+f"(d[10]), "+f"(d[11]),
+          "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]),
+          "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]),
+          "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]),
+          "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]),
+          "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "l"(descB));
+}
+__device__ __forceinline__ uint32_t pack_bf16x2_m1(float x, float y) {
+    __nv_bfloat162 v = __float22bfloat162_rn(make_float2(x, y));
+    return *reinterpret_cast<uint32_t*>(&v);
+}
+// dQ += dS·K over one n-half (D-cols [hhalf*64, +64)).  4 k16-steps (keys), RS-A = dS regs.
+// B = K swizzled Major::MN, base sK_sw + hhalf*4096, advance k*1024 elems.
+__device__ __forceinline__ void run_dQ_rsA_half(float dqh[32], const float dS[32], const bf16* sK_sw, int hhalf) {
+    fence_proxy_async_shared();
+    fence_operandN<32>(dqh);
+    wgmma_fence();
+#pragma unroll
+    for (int k = 0; k < 4; k++) {
+        uint32_t a[4] = {
+            pack_bf16x2_m1(dS[8*k+0], dS[8*k+1]),   // n-subtile 2k , row-pair r0
+            pack_bf16x2_m1(dS[8*k+2], dS[8*k+3]),   // n-subtile 2k , row-pair r1
+            pack_bf16x2_m1(dS[8*k+4], dS[8*k+5]),   // n-subtile 2k+1, row-pair r0
+            pack_bf16x2_m1(dS[8*k+6], dS[8*k+7]) }; // n-subtile 2k+1, row-pair r1
+        uint64_t dB = make_desc_sw128_MN(sK_sw + hhalf * 4096 + k * 1024);
+        wgmma_m64n64k16_rsA(dqh, a, dB);
+    }
+    wgmma_commit();
+    wgmma_wait0();
+    fence_operandN<32>(dqh);
+}
+
+template<int Br, int Bc, int D>
+__global__ void __launch_bounds__(256, 1)
+gqa_backward_dc_m1_kv(
+    const __grid_constant__ CUtensorMap tma_Q_sw,
+    const __grid_constant__ CUtensorMap tma_K_sw,
+    const __grid_constant__ CUtensorMap tma_V_sw,
+    const __grid_constant__ CUtensorMap tma_dO_sw,
+    const float * __restrict__ d_Drow,
+    const float * __restrict__ d_LSE,
+    bf16 * __restrict__ d_dQ,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "M1 requires Br=Bc=64, D=128");
+    constexpr int PD = 3;
+
+    __shared__ __align__(128) bf16 sQ_sw [Br * D];        // persistent Q-tile (2 atoms)
+    __shared__ __align__(128) bf16 sdO_sw[Br * D];        // persistent dO-tile
+    __shared__ __align__(128) bf16 sK_sw [PD][Bc * D];    // KV loop, double/triple-buffered
+    __shared__ __align__(128) bf16 sV_sw [PD][Bc * D];
+    __shared__ float sLSE[Br];
+    __shared__ float sD  [Br];
+    __shared__ __align__(8) uint64_t mbar_qo;
+    __shared__ __align__(8) uint64_t full [PD];
+    __shared__ __align__(8) uint64_t empty[PD];
+
+    const int tid = threadIdx.x;
+    const int wg  = tid >> 7;       // 0 = consumer, 1 = producer
+    const int wtid = tid & 127;
+    const int b = blockIdx.x, hq = blockIdx.y, q_tile = blockIdx.z;
+    const int hkv = hq / G;
+    const int q_row0 = q_tile * Br;
+    const int nKV = q_tile + 1;     // causal: KV-tiles 0..q_tile
+
+    const uint32_t qFlatRow = (uint32_t)((b * Hq  + hq ) * S + q_row0);
+    const long     qBase    = (long)(b * Hq + hq) * S + q_row0;
+    const uint32_t bytesAtom = (uint32_t)(Bc * 64 * sizeof(bf16));
+
+    if (tid == 0) {
+        mbar_init_v4(&mbar_qo, 1);
+        #pragma unroll
+        for (int i = 0; i < PD; i++) { mbar_init_v4(&full[i], 1); mbar_init_v4(&empty[i], 1); }
+    }
+    __syncthreads();
+
+    if (wg == 1) {                                  // ── producer ──
+        reg_dec_producer_v30();
+        const bool leader = (tid == 128);
+        const int  pl     = tid - 128;
+        if (leader) {                               // persistent Q, dO
+            mbar_expect_tx_v4(&mbar_qo, bytesAtom * 4);
+            tma_load_2d_v4(&tma_Q_sw,  sQ_sw,            &mbar_qo, 0,  qFlatRow);
+            tma_load_2d_v4(&tma_Q_sw,  sQ_sw  + 64 * 64, &mbar_qo, 64, qFlatRow);
+            tma_load_2d_v4(&tma_dO_sw, sdO_sw,           &mbar_qo, 0,  qFlatRow);
+            tma_load_2d_v4(&tma_dO_sw, sdO_sw + 64 * 64, &mbar_qo, 64, qFlatRow);
+        }
+        if (pl < Br) { sLSE[pl] = d_LSE[qBase + pl]; sD[pl] = d_Drow[qBase + pl]; }
+        uint32_t epar[PD] = {0};
+        for (int j = 0; j < nKV; j++) {
+            const int s = j % PD;
+            if (j >= PD) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
+            if (leader) {
+                const uint32_t kvRow = (uint32_t)((b * Hkv + hkv) * S + j * Bc);
+                mbar_expect_tx_v4(&full[s], bytesAtom * 4);
+                tma_load_2d_v4(&tma_K_sw, sK_sw[s],            &full[s], 0,  kvRow);
+                tma_load_2d_v4(&tma_K_sw, sK_sw[s] + 64 * 64,  &full[s], 64, kvRow);
+                tma_load_2d_v4(&tma_V_sw, sV_sw[s],            &full[s], 0,  kvRow);
+                tma_load_2d_v4(&tma_V_sw, sV_sw[s] + 64 * 64,  &full[s], 64, kvRow);
+            }
+        }
+        return;
+    }
+
+    // ── consumer ──
+    reg_inc_consumer_v30();
+    const float scale2 = scale * LOG2E_V29;
+    mbar_wait_v4(&mbar_qo, 0);
+
+    const int w = wtid >> 5, lane = wtid & 31;
+    const int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+    const float lse0 = sLSE[r0] * LOG2E_V29, lse1 = sLSE[r1] * LOG2E_V29;
+    const float d0 = sD[r0], d1 = sD[r1];
+    const int gr0 = q_row0 + r0, gr1 = q_row0 + r1;
+
+    float dq_lo[32]; zeroN<32>(dq_lo);
+    float dq_hi[32]; zeroN<32>(dq_hi);
+
+    uint32_t cpar[PD] = {0};
+    for (int j = 0; j < nKV; j++) {
+        const int s = j % PD;
+        const int k_row0 = j * Bc;
+        mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
+
+        float accS[32]; zeroN<32>(accS);
+        run_gemm_n64_sw2(accS, sQ_sw, sK_sw[s]);        // S = Q·Kᵀ
+        float accdP[32]; zeroN<32>(accdP);
+        run_gemm_n64_sw2(accdP, sdO_sw, sV_sw[s]);      // dP = dO·Vᵀ
+
+        // P = exp2(S·scale2 − LSE) with causal mask;  dS = P⊙(dP − D)·scale  (all in regs)
+        float dS[32];
+#pragma unroll
+        for (int nt = 0; nt < 8; nt++) {
+            const int c0 = k_row0 + nt * 8 + cc, c1 = c0 + 1;
+            float p00 = ex2_approx_v29(__fmaf_rn(accS[nt*4+0], scale2, -lse0));
+            float p01 = ex2_approx_v29(__fmaf_rn(accS[nt*4+1], scale2, -lse0));
+            float p10 = ex2_approx_v29(__fmaf_rn(accS[nt*4+2], scale2, -lse1));
+            float p11 = ex2_approx_v29(__fmaf_rn(accS[nt*4+3], scale2, -lse1));
+            if (j == q_tile) {                          // diagonal tile: causal mask
+                p00 = (c0 > gr0) ? 0.f : p00;
+                p01 = (c1 > gr0) ? 0.f : p01;
+                p10 = (c0 > gr1) ? 0.f : p10;
+                p11 = (c1 > gr1) ? 0.f : p11;
+            }
+            dS[nt*4+0] = p00 * (accdP[nt*4+0] - d0) * scale;
+            dS[nt*4+1] = p01 * (accdP[nt*4+1] - d0) * scale;
+            dS[nt*4+2] = p10 * (accdP[nt*4+2] - d1) * scale;
+            dS[nt*4+3] = p11 * (accdP[nt*4+3] - d1) * scale;
+        }
+
+        run_dQ_rsA_half(dq_lo, dS, sK_sw[s], 0);        // dQ[:, 0:64]  += dS·K
+        run_dQ_rsA_half(dq_hi, dS, sK_sw[s], 1);        // dQ[:, 64:128]+= dS·K
+        if (wtid == 0) mbar_arrive_v11(&empty[s]);
+    }
+
+    // dQ one-writer flush (plain global store; each Q-row written exactly once)
+#pragma unroll
+    for (int nt = 0; nt < 8; nt++) {
+        const int cL = nt * 8 + cc, cH = 64 + nt * 8 + cc;
+        d_dQ[(qBase + r0) * D + cL + 0] = __float2bfloat16(dq_lo[nt*4+0]);
+        d_dQ[(qBase + r0) * D + cL + 1] = __float2bfloat16(dq_lo[nt*4+1]);
+        d_dQ[(qBase + r1) * D + cL + 0] = __float2bfloat16(dq_lo[nt*4+2]);
+        d_dQ[(qBase + r1) * D + cL + 1] = __float2bfloat16(dq_lo[nt*4+3]);
+        d_dQ[(qBase + r0) * D + cH + 0] = __float2bfloat16(dq_hi[nt*4+0]);
+        d_dQ[(qBase + r0) * D + cH + 1] = __float2bfloat16(dq_hi[nt*4+1]);
+        d_dQ[(qBase + r1) * D + cH + 0] = __float2bfloat16(dq_hi[nt*4+2]);
+        d_dQ[(qBase + r1) * D + cH + 1] = __float2bfloat16(dq_hi[nt*4+3]);
+    }
+}
+
+template<int Br, int Bc, int D>
+void launch_gqa_backward_dc_m1(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "M1 requires Br=Bc=64, D=128");
+    auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
+        uint32_t box[2]     = {64u, tile_rows};
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(&desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "tma sw128 M1: %s\n", e); exit(1); }
+        return desc;
+    };
+    const uint64_t Rq  = (uint64_t)B * Hq  * S;
+    const uint64_t Rkv = (uint64_t)B * Hkv * S;
+    CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
+    CUtensorMap tma_K_sw  = make_tma_sw128(d_K,  Rkv, Bc);
+    CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
+    CUtensorMap tma_dO_sw = make_tma_sw128(d_dO, Rq,  Br);
+
+    const long drowN = (long)B * Hq * S;
+    static float* d_Drow = nullptr; static long drow_cap = 0;
+    if (drowN > drow_cap) { if (d_Drow) CUDA_CHECK(cudaFree(d_Drow));
+        CUDA_CHECK(cudaMalloc(&d_Drow, drowN * sizeof(float))); drow_cap = drowN; }
+    const int  dBlock = 256;
+    const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
+    compute_drowsum_v22<<<(unsigned)dGrid, dBlock>>>(d_dO, d_O, d_Drow, drowN);
+
+    // dK/dV STUBBED for M1 isolation — zero them so the check lines are deterministic (expected-fail).
+    CUDA_CHECK(cudaMemset(d_dK, 0, (size_t)B * Hkv * S * D * sizeof(bf16)));
+    CUDA_CHECK(cudaMemset(d_dV, 0, (size_t)B * Hkv * S * D * sizeof(bf16)));
+
+    dim3 GRID(B, Hq, S / Br);
+    gqa_backward_dc_m1_kv<Br,Bc,D><<<GRID, dim3(256)>>>(
+        tma_Q_sw, tma_K_sw, tma_V_sw, tma_dO_sw, d_Drow, d_LSE, d_dQ, B, Hq, Hkv, G, S, scale);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────────────
 // main
@@ -14335,6 +14580,10 @@ int main(){
     launch_gqa_backward_v44<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
+    launch_gqa_backward_dc_m1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── D-collapse M1 Q-parallel full-D consumer (Hopper SM_90) [dQ only; dK/dV stubbed] ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
