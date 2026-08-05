@@ -1337,6 +1337,9 @@ __device__ __forceinline__ void tma_store_2d_v34(const void* tma_desc, const bf1
 }
 __device__ __forceinline__ void tma_store_commit_v34() { asm volatile("cp.async.bulk.commit_group;\n" ::: "memory"); }
 __device__ __forceinline__ void tma_store_wait_v34()   { asm volatile("cp.async.bulk.wait_group 0;\n" ::: "memory"); }
+// V43 double-buffer: keep <=1 bulk group (dQ TMA-reduce) in flight so the reduce of tile N overlaps
+// tile N+1's compute; tile N's reduce is guaranteed done before tile N+2 reuses buffer[N&1].
+__device__ __forceinline__ void tma_bulk_wait1_v43() { asm volatile("cp.async.bulk.wait_group 1;\n" ::: "memory"); }
 
 // ── wgmma SS descriptor for a 128B-SWIZZLED, Major::K (K-contiguous) bf16 operand.
 // Authoritative field values from CUTLASS cute::GmmaDescriptor + make_gmma_desc
@@ -13528,8 +13531,8 @@ gqa_backward_v43_kv(
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
-    __shared__ __align__(128)  float sS [Br * 64];   // V43: packed 64x64 fp32 dQ stage (TMA-reduce src)
-    __shared__ __align__(128)  float sdP[Br * 64];   // V43: packed 64x64 fp32 dQ stage (TMA-reduce src)
+    __shared__ __align__(128)  float sS [2][Br * 64];   // V43: DOUBLE-BUFFERED packed 64x64 fp32 dQ stage (wg0, TMA-reduce src)
+    __shared__ __align__(128)  float sdP[2][Br * 64];   // V43: DOUBLE-BUFFERED packed 64x64 fp32 dQ stage (wg1, TMA-reduce src)
     __shared__ __align__(1024) bf16  sP [Br * 64];
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
@@ -13650,13 +13653,16 @@ gqa_backward_v43_kv(
         float dq[32]; zeroN<32>(dq);
         run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-        store_acc_smem_v6<64, 64>(dq, (wg == 0) ? sS : sdP, wtid, scale);   // packed stride-64 fp32 tile
+        const int db = it & 1;                                        // V43: ping-pong dQ-stage buffer
+        float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
+        store_acc_smem_v6<64, 64>(dq, stageDQ, wtid, scale);          // packed stride-64 fp32 tile -> buf[it&1]
         if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
         fence_proxy_async_shared();                 // generic STS staging -> async-proxy (TMA) read
         if (wtid == 0) {                            // TMA-reduce add: staged fp32 tile -> dq_accum, off the L1TEX/LSU path
-            tma_reduce_add_2d_v43(&tma_dq_red, (wg == 0) ? sS : sdP, (uint32_t)(wg * 64), (uint32_t)lBaseOf(gC, qcC));
+            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ, (uint32_t)(wg * 64), (uint32_t)lBaseOf(gC, qcC));
             tma_store_commit_v34();
-            tma_store_wait_v34();                   // single-buffered sS/sdP: reduce of iter it must land before store_acc(it+1)
+            tma_bulk_wait1_v43();                   // DOUBLE-BUFFER: keep <=1 reduce pending -> reduce(it) overlaps compute(it+1);
+                                                    // reduce(it-1) is done here, so store(it+1) into buf[(it+1)&1]==buf[(it-1)&1] is safe.
         }
         consumer_sync();
         if (tid == 0) mbar_arrive_v11(&empty[s]);
