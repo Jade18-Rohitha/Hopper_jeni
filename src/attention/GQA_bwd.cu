@@ -14109,10 +14109,17 @@ __device__ __forceinline__ uint32_t pack_bf16x2_m1(float x, float y) {
 }
 // dQ += dS·K over one n-half (D-cols [hhalf*64, +64)).  4 k16-steps (keys), RS-A = dS regs.
 // B = K swizzled Major::MN, base sK_sw + hhalf*4096, advance k*1024 elems.
+// NOTE (async register-liveness): the A operand of an RS wgmma is read from registers
+// ASYNCHRONOUSLY and must stay live until wgmma.wait_group.  Batching the 4 k-steps into
+// one group while reusing the same a[4] registers each step lets the compiler clobber
+// a[4] (dead after each asm in its model) before the async wgmma reads it → finite-wrong
+// dQ.  Fix: commit+wait PER k-step so each wgmma consumes its A registers before the next
+// step recomputes a[4].  (The acc-as-A .b32 mapping itself matches CUTLASS ALayout_64x16 ==
+// CLayout_64x16, so it is correct.)  M1 serializes for correctness; M2 can batch with an
+// A-register fence (CUTLASS warpgroup_fence_operand) to reclaim the pipelining.
 __device__ __forceinline__ void run_dQ_rsA_half(float dqh[32], const float dS[32], const bf16* sK_sw, int hhalf) {
     fence_proxy_async_shared();
     fence_operandN<32>(dqh);
-    wgmma_fence();
 #pragma unroll
     for (int k = 0; k < 4; k++) {
         uint32_t a[4] = {
@@ -14121,10 +14128,11 @@ __device__ __forceinline__ void run_dQ_rsA_half(float dqh[32], const float dS[32
             pack_bf16x2_m1(dS[8*k+4], dS[8*k+5]),   // n-subtile 2k+1, row-pair r0
             pack_bf16x2_m1(dS[8*k+6], dS[8*k+7]) }; // n-subtile 2k+1, row-pair r1
         uint64_t dB = make_desc_sw128_MN(sK_sw + hhalf * 4096 + k * 1024);
+        wgmma_fence();
         wgmma_m64n64k16_rsA(dqh, a, dB);
+        wgmma_commit();
+        wgmma_wait0();                              // async op done → a[4] safe to reuse next step
     }
-    wgmma_commit();
-    wgmma_wait0();
     fence_operandN<32>(dqh);
 }
 
