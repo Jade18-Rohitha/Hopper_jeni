@@ -14070,7 +14070,8 @@ __device__ __forceinline__ void store_acc_sw128_f32_v45(const float* d, float* b
     int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
     const int ph0 = r0 & 7, ph1 = r1 & 7;
 #pragma unroll
-    for (int nt = 0; nt < 8; nt++) {
+    for (int step = 0; step < 8; step++) {
+        int nt = (step + (lane >> 2)) & 7;
         const int c   = nt * 8 + cc;               
         const int atom = c >> 5, col32 = c & 31;   
         const int chunk = col32 >> 2, lo = col32 & 3;

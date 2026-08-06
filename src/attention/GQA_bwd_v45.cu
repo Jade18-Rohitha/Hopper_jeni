@@ -1,7 +1,7 @@
 // ═════════════════════════════════════════════════════════════════════════════
 // GQA_bwd_v45.cu — STANDALONE single-kernel extraction of V45 (swizzled TMA-reduce dQ)
 // Extracted mechanically from src/attention/GQA_bwd.cu (V1–V45).  Contains ONLY
-// V45's transitive dependency closure.  Kernel + launcher are byte-identical to
+// V44's transitive dependency closure.  Kernel + launcher are byte-identical to
 // the original.  sm_90a (Hopper H100/H200).
 // ═════════════════════════════════════════════════════════════════════════════
 #include <cuda.h>
@@ -345,21 +345,24 @@ __device__ __forceinline__ void tma_reduce_add_2d_v43(const void* tma_desc, cons
         :: "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(src) : "memory");
 }
 
-__device__ __forceinline__ void store_acc_sw128_f32(const float* d, float* base, int tid, float scl) {
+__device__ __forceinline__ void store_acc_sw128_f32_v45(const float* d, float* base, int tid, float scl) {
     int w = tid >> 5, lane = tid & 31;
     int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
     const int ph0 = r0 & 7, ph1 = r1 & 7;
 #pragma unroll
-    for (int nt = 0; nt < 8; nt++) {
-        const int c   = nt * 8 + cc;               // 0..63 (even)
-        const int atom = c >> 5, col32 = c & 31;   // 128B atom (0/1), col within atom
+    for (int step = 0; step < 8; step++) {
+        int nt = (step + (lane >> 2)) & 7;
+        const int c   = nt * 8 + cc;               
+        const int atom = c >> 5, col32 = c & 31;   
         const int chunk = col32 >> 2, lo = col32 & 3;
         const int abase = atom * (64 * 32);
-        // c and c+1 share the same 4-fp32 chunk (c even) -> adjacent phys slots (lo, lo+1)
-        base[abase + r0 * 32 + ((chunk ^ ph0) << 2) + lo    ] = d[nt * 4 + 0] * scl;
-        base[abase + r0 * 32 + ((chunk ^ ph0) << 2) + lo + 1] = d[nt * 4 + 1] * scl;
-        base[abase + r1 * 32 + ((chunk ^ ph1) << 2) + lo    ] = d[nt * 4 + 2] * scl;
-        base[abase + r1 * 32 + ((chunk ^ ph1) << 2) + lo + 1] = d[nt * 4 + 3] * scl;
+        
+        uint32_t addr0 = (uint32_t)__cvta_generic_to_shared(&base[abase + r0 * 32 + ((chunk ^ ph0) << 2) + lo]);
+        uint32_t addr1 = (uint32_t)__cvta_generic_to_shared(&base[abase + r1 * 32 + ((chunk ^ ph1) << 2) + lo]);
+        float v0 = d[nt * 4 + 0] * scl, v1 = d[nt * 4 + 1] * scl;
+        float v2 = d[nt * 4 + 2] * scl, v3 = d[nt * 4 + 3] * scl;
+        asm volatile("st.shared.v2.f32 [%0], {%1, %2};\n" :: "r"(addr0), "f"(v0), "f"(v1) : "memory");
+        asm volatile("st.shared.v2.f32 [%0], {%1, %2};\n" :: "r"(addr1), "f"(v2), "f"(v3) : "memory");
     }
 }
 
@@ -383,36 +386,18 @@ __global__ void compute_drowsum_v22(
     const int  lane          = threadIdx.x & 31;
     const long warp0         = (long)blockIdx.x * warpsPerBlock + (threadIdx.x >> 5);
     const long stride        = (long)gridDim.x * warpsPerBlock;
+    // Grid-stride over rows → EVERY row in [0, nRows) is covered (bug fix).
     for (long row = warp0; row < nRows; row += stride) {
         const long base = row * 128;
         float partial = 0.f;
+        // EXACT order of producer_drowsum_v20_sw: j = lane, lane+32, lane+64, lane+96.
         #pragma unroll
         for (int j = lane; j < 128; j += 32)
             partial += __bfloat162float(d_dO[base + j]) * __bfloat162float(d_O[base + j]);
         #pragma unroll
         for (int off = 16; off > 0; off >>= 1)
             partial += __shfl_down_sync(0xFFFFFFFFu, partial, off);
-        if (lane == 0) d_Drow[row] = partial;
-    }
-}
-
-__device__ __forceinline__ void store_acc_sw128_f32_v45(const float* d, float* base, int tid, float scl) {
-    int w = tid >> 5, lane = tid & 31;
-    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
-    const int ph0 = r0 & 7, ph1 = r1 & 7;
-#pragma unroll
-    for (int nt = 0; nt < 8; nt++) {
-        const int c   = nt * 8 + cc;               
-        const int atom = c >> 5, col32 = c & 31;   
-        const int chunk = col32 >> 2, lo = col32 & 3;
-        const int abase = atom * (64 * 32);
-        
-        uint32_t addr0 = (uint32_t)__cvta_generic_to_shared(&base[abase + r0 * 32 + ((chunk ^ ph0) << 2) + lo]);
-        uint32_t addr1 = (uint32_t)__cvta_generic_to_shared(&base[abase + r1 * 32 + ((chunk ^ ph1) << 2) + lo]);
-        float v0 = d[nt * 4 + 0] * scl, v1 = d[nt * 4 + 1] * scl;
-        float v2 = d[nt * 4 + 2] * scl, v3 = d[nt * 4 + 3] * scl;
-        asm volatile("st.shared.v2.f32 [%0], {%1, %2};\n" :: "r"(addr0), "f"(v0), "f"(v1) : "memory");
-        asm volatile("st.shared.v2.f32 [%0], {%1, %2};\n" :: "r"(addr1), "f"(v2), "f"(v3) : "memory");
+        if (lane == 0) d_Drow[row] = partial;   // bit-identical fp32 D
     }
 }
 
@@ -561,20 +546,18 @@ gqa_backward_v45_kv(
         float dq[32]; zeroN<32>(dq);
         run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-        
-        const int db = it & 1;                                        
+        const int db = it & 1;                                        // V45: ping-pong dQ-stage buffer
         float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
-        
-        store_acc_sw128_f32_v45(dq, stageDQ, wtid, scale); 
-
+        store_acc_sw128_f32(dq, stageDQ, wtid, scale);               // CONFLICT-FREE swizzled store -> buf[it&1] (2 SW128B atoms)
         if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-        fence_proxy_async_shared();                 
-        if (wtid == 0) {                            
+        fence_proxy_async_shared();                 // generic STS staging -> async-proxy (TMA) read
+        if (wtid == 0) {                            // swizzled TMA-reduce: 2 atoms (cols [wg*64,+32),[+32,+64)) -> dq_accum, off L1TEX
             const uint32_t crow = (uint32_t)lBaseOf(gC, qcC);
-            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,             (uint32_t)(wg * 64),      crow);   
-            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32,   (uint32_t)(wg * 64 + 32), crow);   
+            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,             (uint32_t)(wg * 64),      crow);   // atom 0
+            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32,   (uint32_t)(wg * 64 + 32), crow);   // atom 1
             tma_store_commit_v34();
-            tma_bulk_wait1_v43();                   
+            tma_bulk_wait1_v43();                   // DOUBLE-BUFFER: keep <=1 reduce pending -> reduce(it) overlaps compute(it+1);
+                                                    // reduce(it-1) is done here, so store(it+1) into buf[(it+1)&1]==buf[(it-1)&1] is safe.
         }
         consumer_sync();
         if (tid == 0) mbar_arrive_v11(&empty[s]);
@@ -644,7 +627,7 @@ void launch_gqa_backward_v45(
         uint32_t box[2]={32u,64u}; uint32_t eStride[2]={1,1};
         CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gSize,gStride,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red v45: %s\n",e);exit(1);} return desc; };
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red v44: %s\n",e);exit(1);} return desc; };
 
     const long drowN = (long)B * Hq * S;
     static float* d_Drow  = nullptr;
