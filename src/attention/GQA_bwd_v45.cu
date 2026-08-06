@@ -345,24 +345,21 @@ __device__ __forceinline__ void tma_reduce_add_2d_v43(const void* tma_desc, cons
         :: "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(src) : "memory");
 }
 
-__device__ __forceinline__ void store_acc_sw128_f32_v45(const float* d, float* base, int tid, float scl) {
+__device__ __forceinline__ void store_acc_sw128_f32(const float* d, float* base, int tid, float scl) {
     int w = tid >> 5, lane = tid & 31;
     int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
     const int ph0 = r0 & 7, ph1 = r1 & 7;
 #pragma unroll
-    for (int step = 0; step < 8; step++) {
-        int nt = (step + (lane >> 2)) & 7;
-        const int c   = nt * 8 + cc;               
-        const int atom = c >> 5, col32 = c & 31;   
+    for (int nt = 0; nt < 8; nt++) {
+        const int c   = nt * 8 + cc;               // 0..63 (even)
+        const int atom = c >> 5, col32 = c & 31;   // 128B atom (0/1), col within atom
         const int chunk = col32 >> 2, lo = col32 & 3;
         const int abase = atom * (64 * 32);
-        
-        uint32_t addr0 = (uint32_t)__cvta_generic_to_shared(&base[abase + r0 * 32 + ((chunk ^ ph0) << 2) + lo]);
-        uint32_t addr1 = (uint32_t)__cvta_generic_to_shared(&base[abase + r1 * 32 + ((chunk ^ ph1) << 2) + lo]);
-        float v0 = d[nt * 4 + 0] * scl, v1 = d[nt * 4 + 1] * scl;
-        float v2 = d[nt * 4 + 2] * scl, v3 = d[nt * 4 + 3] * scl;
-        asm volatile("st.shared.v2.f32 [%0], {%1, %2};\n" :: "r"(addr0), "f"(v0), "f"(v1) : "memory");
-        asm volatile("st.shared.v2.f32 [%0], {%1, %2};\n" :: "r"(addr1), "f"(v2), "f"(v3) : "memory");
+        // c and c+1 share the same 4-fp32 chunk (c even) -> adjacent phys slots (lo, lo+1)
+        base[abase + r0 * 32 + ((chunk ^ ph0) << 2) + lo    ] = d[nt * 4 + 0] * scl;
+        base[abase + r0 * 32 + ((chunk ^ ph0) << 2) + lo + 1] = d[nt * 4 + 1] * scl;
+        base[abase + r1 * 32 + ((chunk ^ ph1) << 2) + lo    ] = d[nt * 4 + 2] * scl;
+        base[abase + r1 * 32 + ((chunk ^ ph1) << 2) + lo + 1] = d[nt * 4 + 3] * scl;
     }
 }
 
@@ -548,7 +545,7 @@ gqa_backward_v45_kv(
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
         const int db = it & 1;                                        // V45: ping-pong dQ-stage buffer
         float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
-        store_acc_sw128_f32_v45(dq, stageDQ, wtid, scale);               // CONFLICT-FREE swizzled store -> buf[it&1] (2 SW128B atoms)
+        store_acc_sw128_f32(dq, stageDQ, wtid, scale);               // CONFLICT-FREE swizzled store -> buf[it&1] (2 SW128B atoms)
         if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
         fence_proxy_async_shared();                 // generic STS staging -> async-proxy (TMA) read
         if (wtid == 0) {                            // swizzled TMA-reduce: 2 atoms (cols [wg*64,+32),[+32,+64)) -> dq_accum, off L1TEX

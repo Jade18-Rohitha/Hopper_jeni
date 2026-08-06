@@ -14065,27 +14065,6 @@ void launch_gqa_backward_v44(
 
 // ═════════════════════════════════════════════════════════════════════════════
 
-__device__ __forceinline__ void store_acc_sw128_f32_v45(const float* d, float* base, int tid, float scl) {
-    int w = tid >> 5, lane = tid & 31;
-    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
-    const int ph0 = r0 & 7, ph1 = r1 & 7;
-#pragma unroll
-    for (int step = 0; step < 8; step++) {
-        int nt = (step + (lane >> 2)) & 7;
-        const int c   = nt * 8 + cc;               
-        const int atom = c >> 5, col32 = c & 31;   
-        const int chunk = col32 >> 2, lo = col32 & 3;
-        const int abase = atom * (64 * 32);
-        
-        uint32_t addr0 = (uint32_t)__cvta_generic_to_shared(&base[abase + r0 * 32 + ((chunk ^ ph0) << 2) + lo]);
-        uint32_t addr1 = (uint32_t)__cvta_generic_to_shared(&base[abase + r1 * 32 + ((chunk ^ ph1) << 2) + lo]);
-        float v0 = d[nt * 4 + 0] * scl, v1 = d[nt * 4 + 1] * scl;
-        float v2 = d[nt * 4 + 2] * scl, v3 = d[nt * 4 + 3] * scl;
-        asm volatile("st.shared.v2.f32 [%0], {%1, %2};\n" :: "r"(addr0), "f"(v0), "f"(v1) : "memory");
-        asm volatile("st.shared.v2.f32 [%0], {%1, %2};\n" :: "r"(addr1), "f"(v2), "f"(v3) : "memory");
-    }
-}
-
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_v45_kv(
@@ -14095,7 +14074,7 @@ gqa_backward_v45_kv(
     const __grid_constant__ CUtensorMap tma_dO_sw,
     const __grid_constant__ CUtensorMap tma_dV_st,
     const __grid_constant__ CUtensorMap tma_dK_st,
-    const __grid_constant__ CUtensorMap tma_dq_red,
+    const __grid_constant__ CUtensorMap tma_dq_red,   // fp32 dq_accum (SWIZZLE_128B, box 32x64) — swizzled TMA-reduce add target
     const float * __restrict__ d_Drow,
     const float * __restrict__ d_LSE,
     bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV,
@@ -14103,14 +14082,14 @@ gqa_backward_v45_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V45 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;
-    constexpr int PD   = 3;   // V45: Triple-buffered. Cannot use quad-buffer, exceeds 227KB limit (242KB requested)
+    constexpr int PD   = 3;
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
-    __shared__ __align__(1024) float sS [2][Br * 64];   
-    __shared__ __align__(1024) float sdP[2][Br * 64];   
+    __shared__ __align__(1024) float sS [2][Br * 64];   // V45: DOUBLE-BUFFERED SWIZZLED dQ stage (wg0); each buf = 2 SW128B atoms of [Br*32]
+    __shared__ __align__(1024) float sdP[2][Br * 64];   // V45: DOUBLE-BUFFERED SWIZZLED dQ stage (wg1); atom a at [a*Br*32], SW128B chunk^ (row&7)
     __shared__ __align__(1024) bf16  sP [Br * 64];
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
@@ -14193,11 +14172,12 @@ gqa_backward_v45_kv(
     const float scale2 = scale * LOG2E_V29;
     mbar_wait_v4(&mbar_kv, 0);
 
-    const uint64_t descGemmB = make_desc_sw128_K((wg == 0) ? sK_sw : sV_sw);
-    const uint64_t descP     = make_desc_sw128_MN(sP);
-    const uint64_t descDSmn  = make_desc_sw128_MN(sDS);
-    const uint64_t descDSk   = make_desc_sw128_K (sDS);
-    const uint64_t descKhalf = make_desc_sw128_MN(sK_sw + wg * 4096);
+    // V42: hoist the invariant-buffer wgmma base descriptors — computed once, reused every kv-tile.
+    const uint64_t descGemmB = make_desc_sw128_K((wg == 0) ? sK_sw : sV_sw);   // S/dP GEMM B (K-major)
+    const uint64_t descP     = make_desc_sw128_MN(sP);                          // dV A (Major::MN)
+    const uint64_t descDSmn  = make_desc_sw128_MN(sDS);                         // dK A (Major::MN)
+    const uint64_t descDSk   = make_desc_sw128_K (sDS);                         // dQ A (Major::K)
+    const uint64_t descKhalf = make_desc_sw128_MN(sK_sw + wg * 4096);           // dQ B (Major::MN)
 
     float dv[32]; zeroN<32>(dv);
     float dk[32]; zeroN<32>(dk);
@@ -14222,8 +14202,6 @@ gqa_backward_v45_kv(
         }
         consumer_sync();
 
-        // V45: Overlap WGMMA for dV with scalar dS logic!
-        // Run dV wgmma async issue IMMEDIATELY so it executes during wg1's scalar fuse_dS_ldstsm
         run_gemm_dVdK_half_te_issue_hoA(dv, descP, sdO_sw[s] + wg * 4096);
 
         if (wg == 1) fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
@@ -14232,21 +14210,18 @@ gqa_backward_v45_kv(
         float dq[32]; zeroN<32>(dq);
         run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-        
-        const int db = it & 1;
+        const int db = it & 1;                                        // V45: ping-pong dQ-stage buffer
         float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
-        
-        // V45: Vectorized bank-conflict-free swizzled store
-        store_acc_sw128_f32_v45(dq, stageDQ, wtid, scale); 
-
+        store_acc_sw128_f32(dq, stageDQ, wtid, scale);               // CONFLICT-FREE swizzled store -> buf[it&1] (2 SW128B atoms)
         if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-        fence_proxy_async_shared();
-        if (wtid == 0) {
+        fence_proxy_async_shared();                 // generic STS staging -> async-proxy (TMA) read
+        if (wtid == 0) {                            // swizzled TMA-reduce: 2 atoms (cols [wg*64,+32),[+32,+64)) -> dq_accum, off L1TEX
             const uint32_t crow = (uint32_t)lBaseOf(gC, qcC);
-            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,             (uint32_t)(wg * 64),      crow);
-            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32,   (uint32_t)(wg * 64 + 32), crow);
+            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,             (uint32_t)(wg * 64),      crow);   // atom 0
+            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32,   (uint32_t)(wg * 64 + 32), crow);   // atom 1
             tma_store_commit_v34();
-            tma_bulk_wait1_v43();
+            tma_bulk_wait1_v43();                   // DOUBLE-BUFFER: keep <=1 reduce pending -> reduce(it) overlaps compute(it+1);
+                                                    // reduce(it-1) is done here, so store(it+1) into buf[(it+1)&1]==buf[(it-1)&1] is safe.
         }
         consumer_sync();
         if (tid == 0) mbar_arrive_v11(&empty[s]);
