@@ -14712,7 +14712,7 @@ gqa_backward_dc_m3_kv(
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "M3 requires Br=Bc=64, D=128");
-    constexpr int PD = 2;                                   // shared K/V pipeline depth
+    constexpr int PD = 3;                                   // shared K/V pipeline depth (opt#2b: 3 to feed the S/dP prefetch — consumer holds tile-j + j+1 K/V live)
 
     __shared__ __align__(128)  bf16 sK_sw [PD][Bc * D];     // SHARED across both consumers
     __shared__ __align__(128)  bf16 sV_sw [PD][Bc * D];
