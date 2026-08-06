@@ -548,7 +548,7 @@ gqa_backward_v45_kv(
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
         const int db = it & 1;                                        // V45: ping-pong dQ-stage buffer
         float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
-        store_acc_sw128_f32(dq, stageDQ, wtid, scale);               // CONFLICT-FREE swizzled store -> buf[it&1] (2 SW128B atoms)
+        store_acc_sw128_f32_v45(dq, stageDQ, wtid, scale);               // CONFLICT-FREE swizzled store -> buf[it&1] (2 SW128B atoms)
         if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
         fence_proxy_async_shared();                 // generic STS staging -> async-proxy (TMA) read
         if (wtid == 0) {                            // swizzled TMA-reduce: 2 atoms (cols [wg*64,+32),[+32,+64)) -> dq_accum, off L1TEX
