@@ -14128,8 +14128,8 @@ gqa_backward_v45_kv(
     const int wg      = tid >> 7;
     const int wtid    = tid & 127;
     const int nQTiles = S / Br;
-    const int nKt     = S / Bc;                         // kv-tiles per (b,hkv)
-    const int TOTAL   = (B * Hkv) * nKt;                // total work-items
+    const int nKt     = S / Bc;                         // kv-tiles per (b,hkv) group
+    const int nGroups = B * Hkv;                        // (b,hkv) groups; each = nKt work-items of EQUAL total work
 
     // ── Hoisted ONCE (loop-invariant): warpgroup reg budget + wgmma descriptors.
     //    Descriptors encode FIXED smem addresses (no K/V data dependency), so they are
@@ -14147,26 +14147,45 @@ gqa_backward_v45_kv(
         descKhalf = make_desc_sw128_MN(sK_sw + wg * 4096);
     }
 
-    // ── Persistent CONTIGUOUS/BLOCKED assignment over work-items.  Each CTA owns one
-    //    contiguous run [wlo,whi) of work-items.  With the decode below (k_tile fastest),
-    //    consecutive work-items on a CTA share (b,hkv) and walk k_tile 0..nKt-1 → the
-    //    group's ~9 MB Q/dO/O reuse set stays L2-resident across its kv-tiles.  This is
-    //    the load-bearing property: an earlier widx+=gridDim.x SCATTER made each CTA hop
-    //    across many (b,hkv) groups, evicting the reuse set (measured +47% at B=8).
-    //    NOTE (causal imbalance): a blocked chunk lands adjacent (all-heavy vs all-light)
-    //    k_tiles on different CTAs (nIter ranges G·nKt→G·1), so light-chunk CTAs retire
-    //    early.  If the H200 shows locality recovered but a load-imbalance tail remains,
-    //    the balance-preserving refinement is a group-blocked + strided-k assignment
-    //    (each CTA still shares one (b,hkv) but takes k_tiles {j, j+nCTA/grp, ...}).
-    const int nCTA  = gridDim.x;
-    const int chunk = (TOTAL + nCTA - 1) / nCTA;
-    const int wlo   = blockIdx.x * chunk;
-    const int whi   = min(wlo + chunk, TOTAL);
-    for (int widx = wlo; widx < whi; widx++) {
-        const int k_tile = widx % nKt;
-        const int t      = widx / nKt;
-        const int hkv    = t % Hkv;
-        const int b      = t / Hkv;
+    // ── Persistent STRIDED-WITHIN-GROUP assignment.  Balances the causal triangle
+    //    (nIter(k_tile)=G·(nKt−k_tile): k_tile 0 ≈ G·nKt iters … k_tile nKt−1 ≈ G·1, a
+    //    ~6.6× spread) WITHOUT losing L2 residency.  A CTA owns ONE (b,hkv) group and
+    //    takes a residue-STRIDED subset of its k_tiles {p, p+Pg, p+2·Pg, …}, giving it a
+    //    heavy+light MIX (balanced iter-SUM, not tile-count) while every one of its
+    //    work-items shares that group → the group's ~9 MB Q/dO/O set stays L2-resident
+    //    across the cohort of CTAs co-processing it (all resident at once, 1 CTA/SM).
+    //      • Round-robin group ← CTA:  g = blockIdx.x % nGroups, cohort offset
+    //        p = blockIdx.x / nGroups.  Group g is co-owned by Pg CTAs (base=nCTA/nGroups;
+    //        the first rem=nCTA%nGroups groups get base+1), whose offsets 0..Pg−1 PARTITION
+    //        the nKt k_tiles by residue mod Pg → exact cover, no gaps/dupes.  The outer
+    //        g-loop runs exactly once here (gStride=nGroups).
+    //      • Prior blocked scheme gave a CTA CONTIGUOUS k_tiles → all-heavy vs all-light
+    //        split (max CTA ≈2712 iters, ~56% util); strided drops max CTA to ~1632
+    //        (~93% util) — see the balance note in the report.
+    //      • Fallback (nCTA < nGroups, very large B): each CTA owns WHOLE groups
+    //        grid-strided (equal-work groups → balanced by count); inner does all k_tiles.
+    //      • NEXT ESCALATION if the base-vs-base+1 cohort quantization still imbalances:
+    //        a dynamic global-atomicAdd work-queue (persistent CTAs pull the next (g,k) —
+    //        cuDNN-style work-stealing).  NOT built; strided first.
+    const int nCTA = gridDim.x;
+    int gStart, gStride, kStart, kStride;
+    if (nCTA >= nGroups) {
+        const int base = nCTA / nGroups;
+        const int rem  = nCTA - base * nGroups;         // nCTA % nGroups
+        gStart  = blockIdx.x % nGroups;
+        gStride = nGroups;                              // → outer loop iterates exactly once
+        kStart  = blockIdx.x / nGroups;                 // cohort offset p ∈ [0,Pg)
+        kStride = base + (gStart < rem ? 1 : 0);         // cohort size Pg
+    } else {
+        gStart  = blockIdx.x;
+        gStride = nCTA;                                 // grid-stride over whole groups
+        kStart  = 0;
+        kStride = 1;
+    }
+    for (int g = gStart; g < nGroups; g += gStride) {
+      const int hkv = g % Hkv;
+      const int b   = g / Hkv;
+      for (int k_tile = kStart; k_tile < nKt; k_tile += kStride) {
         const int k_row0 = k_tile * Bc;
 
         const uint32_t kvFlatRow  = (uint32_t)((b * Hkv + hkv) * S + k_row0);
@@ -14294,7 +14313,8 @@ gqa_backward_v45_kv(
             }
         }
         __syncthreads();                                 // rendezvous all 384 threads before next item's mbar_init
-    }
+      }   // inner k_tile loop (strided within group)
+    }     // outer group loop (runs once when nCTA>=nGroups)
 }
 
 template<int Br, int Bc, int D>
