@@ -44,3 +44,6 @@ endmacro()
 add_kernel(gqa_bwd  src/attention/GQA_bwd.cu)
 # V4 uses the CUDA Driver API (cuTensorMapEncodeTiled) for TMA descriptors.
 target_link_libraries(gqa_bwd PRIVATE CUDA::cuda_driver)
+
+add_kernel(gqa_bwd_v44  src/attention/GQA_bwd_v44.cu)
+target_link_libraries(gqa_bwd_v44 PRIVATE CUDA::cuda_driver)
