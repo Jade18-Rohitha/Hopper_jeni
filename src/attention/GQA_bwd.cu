@@ -2577,6 +2577,7 @@ __device__ __forceinline__ void run_gemm_n64_sw2(float acc[32], const bf16* A_sw
     wgmma_wait0();
     fence_operandN<32>(acc);
 }
+// (M3 opt#2 reuses the existing issue-only run_gemm_n64_sw2_issue below to prefetch tile j+1's S/dP.)
 // V42 descriptor-hoist: B operand (sK_sw/sV_sw) is INVARIANT across the kv-loop → its base descriptor
 // is precomputed once and advanced by a COMPILE-TIME constant per k-step.  descB_base + (off_bytes>>4),
 // off_bytes = 2·((k>>2)·4096+(k&3)·16) → addr-field advance = (k>>2)·512+(k&3)·2.  Bit-identical to
@@ -14795,17 +14796,22 @@ gqa_backward_dc_m3_kv(
     float dq_lo[32]; zeroN<32>(dq_lo);
     float dq_hi[32]; zeroN<32>(dq_hi);
 
+    // M3 opt#2 SOFTWARE-PIPELINE: accS/accdP are LOOP-PERSISTENT.  Prologue computes tile 0's S/dP;
+    // each iteration PREFETCHES tile j+1's S/dP (issue-only, async) AFTER staging tile j but BEFORE the
+    // barrier + dV/dK, so that next-tile tensor work fills the STMATRIX/barrier/cp.reduce fence bubble.
+    // accS/accdP are REUSED (overwritten only after tile j's P/dS is computed) → register-neutral.
+    float accS[32];  float accdP[32];
     uint32_t cpar[PD] = {0};
+
+    mbar_wait_v4(&full[0], cpar[0]); cpar[0] ^= 1;        // prologue: tile 0's S/dP (full GEMM w/ wait)
+    zeroN<32>(accS);  run_gemm_n64_sw2(accS,  sQ,  sK_sw[0]);
+    zeroN<32>(accdP); run_gemm_n64_sw2(accdP, sdO, sV_sw[0]);
+
     for (int j = 0; j < nKV; j++) {
         const int s = j % PD;
         const int k_row0 = j * Bc;
         const uint32_t kvRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
-        mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
-
-        float accS[32];  zeroN<32>(accS);
-        run_gemm_n64_sw2(accS,  sQ,  sK_sw[s]);
-        float accdP[32]; zeroN<32>(accdP);
-        run_gemm_n64_sw2(accdP, sdO, sV_sw[s]);
+        if (j > 0) { fence_operandN<32>(accS); fence_operandN<32>(accdP); }   // prefetched S/dP now valid
 
         float P[32], dS[32];
 #pragma unroll
@@ -14827,13 +14833,22 @@ gqa_backward_dc_m3_kv(
             dS[nt*4+2] = p10 * (accdP[nt*4+2] - d1) * scale;
             dS[nt*4+3] = p11 * (accdP[nt*4+3] - d1) * scale;
         }
+        // accS/accdP (tile j) now fully consumed → free to overwrite with the tile j+1 prefetch below.
 
-        run_dQ_rsA_half_batched(dq_lo, dS, sK_sw[s], 0);   // M3 lever: 4-in-1 batched RS-A burst (1 wait vs 4)
+        run_dQ_rsA_half_batched(dq_lo, dS, sK_sw[s], 0);   // dQ += dS·K  (reads sK_sw[s]; dS consumed here)
         run_dQ_rsA_half_batched(dq_hi, dS, sK_sw[s], 1);
 
-        stage_dS_to_sDS_m1(P,  sPc,  wtid);
+        stage_dS_to_sDS_m1(P,  sPc,  wtid);                // P/dS → swizzled shared (STMATRIX); P/dS dead after
         stage_dS_to_sDS_m1(dS, sDSc, wtid);
-        if (cons == 0) consumer_sync_wg0(); else consumer_sync_wg1();
+
+        if (j + 1 < nKV) {                                 // PREFETCH tile j+1's S/dP (async) — fills the bubble
+            const int sn = (j + 1) % PD;
+            mbar_wait_v4(&full[sn], cpar[sn]); cpar[sn] ^= 1;
+            zeroN<32>(accS);  run_gemm_n64_sw2_issue(accS,  sQ,  sK_sw[sn]);
+            zeroN<32>(accdP); run_gemm_n64_sw2_issue(accdP, sdO, sV_sw[sn]);
+        }
+
+        if (cons == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // ← S/dP[j+1] tensor runs through here
 
         const uint64_t descP  = make_desc_sw128_MN(sPc);
         const uint64_t descDS = make_desc_sw128_MN(sDSc);
