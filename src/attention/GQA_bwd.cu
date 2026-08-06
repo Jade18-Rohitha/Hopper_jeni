@@ -14532,8 +14532,6 @@ gqa_backward_dc_m1_kv(
     __shared__ __align__(128) bf16 sK_sw [PD][Bc * D];    // KV loop, double/triple-buffered
     __shared__ __align__(128) bf16 sV_sw [PD][Bc * D];
     __shared__ __align__(1024) bf16 sDS[Br * 64];         // Path A (SS-A) staged dS (swizzled); unused when USE_RSA
-    __shared__ float sLSE[Br];
-    __shared__ float sD  [Br];
     __shared__ __align__(8) uint64_t mbar_qo;
     __shared__ __align__(8) uint64_t full [PD];
     __shared__ __align__(8) uint64_t empty[PD];
@@ -14568,7 +14566,7 @@ gqa_backward_dc_m1_kv(
             tma_load_2d_v4(&tma_dO_sw, sdO_sw,           &mbar_qo, 0,  qFlatRow);
             tma_load_2d_v4(&tma_dO_sw, sdO_sw + 64 * 64, &mbar_qo, 64, qFlatRow);
         }
-        if (pl < Br) { sLSE[pl] = d_LSE[qBase + pl]; sD[pl] = d_Drow[qBase + pl]; }
+        // (LSE/D no longer staged to shared — consumer reads them from global directly.)
         uint32_t epar[PD] = {0};
         for (int j = 0; j < nKV; j++) {
             const int s = j % PD;
@@ -14592,8 +14590,12 @@ gqa_backward_dc_m1_kv(
 
     const int w = wtid >> 5, lane = wtid & 31;
     const int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
-    const float lse0 = sLSE[r0] * LOG2E_V29, lse1 = sLSE[r1] * LOG2E_V29;
-    const float d0 = sD[r0], d1 = sD[r1];
+    // LSE/D read DIRECTLY from global per-consumer-thread (each thread owns rows r0,r1).
+    // (Earlier bug: producer wrote sLSE/sD with plain stores unsynchronized vs the consumer's
+    //  read — only mbar_qo, which tracks Q/dO TMA, gated the consumer → stale LSE → unnormalized
+    //  P = exp(scale·S) → dQ blowup.  Global self-read needs no cross-warp barrier.)
+    const float lse0 = d_LSE[qBase + r0] * LOG2E_V29, lse1 = d_LSE[qBase + r1] * LOG2E_V29;
+    const float d0 = d_Drow[qBase + r0], d1 = d_Drow[qBase + r1];
     const int gr0 = q_row0 + r0, gr1 = q_row0 + r1;
 
     float dq_lo[32]; zeroN<32>(dq_lo);
@@ -14981,9 +14983,9 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V45 Br=64 Bc=64 persistent grid-stride (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-#if 0  // ===== M1 D-collapse ON HOLD (bisect proved bug is upstream Q-parallel dS, not wgmma) =====
     // M1 BISECT — SAME dS, two dQ paths, dQ-only. SS-A(proven)=Path A ; RS-A(new)=Path B.
-    // BOTH wrong ⇒ upstream Q-parallel dS (mask/LSE/D/dP). A-ok/B-wrong ⇒ RS register path.
+    // Re-enabled: upstream dS bug fixed (LSE/D now read from global per-consumer-thread, was an
+    // unsynchronized producer→consumer shared race). BOTH paths should now match the dQ reference.
     launch_gqa_backward_dc_m1<Br2,Bc2,D,false>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── M1-bisect SS-A dQ (proven path) (Hopper SM_90) [dQ only; dK/dV stubbed] ──", Nq, Nkv, d_dQ, d_dK, d_dV);
@@ -14991,7 +14993,6 @@ int main(){
     launch_gqa_backward_dc_m1<Br2,Bc2,D,true>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── M1-bisect RS-A dQ (register path) (Hopper SM_90) [dQ only; dK/dV stubbed] ──", Nq, Nkv, d_dQ, d_dK, d_dV);
-#endif
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
