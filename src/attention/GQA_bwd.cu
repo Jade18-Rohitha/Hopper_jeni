@@ -14136,6 +14136,39 @@ __device__ __forceinline__ void run_dQ_rsA_half(float dqh[32], const float dS[32
     fence_operandN<32>(dqh);
 }
 
+// M3 LATENCY LEVER: BATCHED RS-A dQ burst.  run_dQ_rsA_half above does per-k-step commit+wait0
+// (the M1 async-register-liveness fix) = 4 full tensor-pipe DRAINS per half (8/tile) — a self-
+// inflicted serialization that starves the wgmma pipe (profile: 24% compute).  Here we materialize
+// ALL 16 A-registers up front and hold them live across the async group with a register fence
+// (CUTLASS warpgroup_fence_operand), so the 4 k-step wgmmas issue as ONE group drained by a SINGLE
+// wait — no reuse hazard (each k-step reads its own distinct a[4k..], all kept live until wait).
+// Bit-identical: same 4 wgmmas, same A-fragment values, same in-order accumulation into dqh.
+__device__ __forceinline__ void run_dQ_rsA_half_batched(float dqh[32], const float dS[32], const bf16* sK_sw, int hhalf) {
+    fence_proxy_async_shared();
+    fence_operandN<32>(dqh);
+    uint32_t a[16];
+#pragma unroll
+    for (int k = 0; k < 4; k++) {
+        a[4*k+0] = pack_bf16x2_m1(dS[8*k+0], dS[8*k+1]);
+        a[4*k+1] = pack_bf16x2_m1(dS[8*k+2], dS[8*k+3]);
+        a[4*k+2] = pack_bf16x2_m1(dS[8*k+4], dS[8*k+5]);
+        a[4*k+3] = pack_bf16x2_m1(dS[8*k+6], dS[8*k+7]);
+    }
+#pragma unroll
+    for (int i = 0; i < 16; i++) asm volatile("" : "+r"(a[i]) :: "memory");   // hold A live across the group
+    wgmma_fence();
+#pragma unroll
+    for (int k = 0; k < 4; k++) {
+        const uint64_t dB = make_desc_sw128_MN(sK_sw + hhalf * 4096 + k * 1024);
+        wgmma_m64n64k16_rsA(dqh, &a[4*k], dB);
+    }
+    wgmma_commit();
+    wgmma_wait0();
+#pragma unroll
+    for (int i = 0; i < 16; i++) asm volatile("" : "+r"(a[i]) :: "memory");   // A regs consumed by the async wgmmas
+    fence_operandN<32>(dqh);
+}
+
 // ── M1 BISECT Path A: stage register dS[32] (accumulator layout) → swizzled sDS via STMATRIX,
 //    then run the PROVEN V44 SS-A dQ GEMM (wgmma_m64n64k16_tB, dS Major::K from shared, K Major::MN).
 //    dS→sDS STSM copied VERBATIM from fuse_dS_ldstsm's write half (pr0[nt]=(r0,c),(r0,c+1);
@@ -14795,8 +14828,8 @@ gqa_backward_dc_m3_kv(
             dS[nt*4+3] = p11 * (accdP[nt*4+3] - d1) * scale;
         }
 
-        run_dQ_rsA_half(dq_lo, dS, sK_sw[s], 0);
-        run_dQ_rsA_half(dq_hi, dS, sK_sw[s], 1);
+        run_dQ_rsA_half_batched(dq_lo, dS, sK_sw[s], 0);   // M3 lever: 4-in-1 batched RS-A burst (1 wait vs 4)
+        run_dQ_rsA_half_batched(dq_hi, dS, sK_sw[s], 1);
 
         stage_dS_to_sDS_m1(P,  sPc,  wtid);
         stage_dS_to_sDS_m1(dS, sDSc, wtid);
