@@ -51,5 +51,5 @@ target_link_libraries(gqa_bwd_v44 PRIVATE CUDA::cuda_driver)
 add_kernel(gqa_bwd_v45  src/attention/GQA_bwd_v45.cu)
 target_link_libraries(gqa_bwd_v45 PRIVATE CUDA::cuda_driver)
 
-add_kernel(gqa_fwd_v62  src/attention/GQA_fwd_ref.cu)
-target_link_libraries(gqa_fwd_v62 PRIVATE CUDA::cuda_driver)
+# add_kernel(gqa_fwd_v62  src/attention/GQA_fwd_ref.cu)
+# target_link_libraries(gqa_fwd_v62 PRIVATE CUDA::cuda_driver)

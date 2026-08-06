@@ -14352,6 +14352,13 @@ void launch_gqa_backward_v45(
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 int main(){
+    constexpr int B = 2, Hq = 12, Hkv = 4, G = Hq / Hkv;
+    constexpr int S = 4096, D = 128;
+    constexpr int Br = 16, Bc = 32;            // V1
+    constexpr int Br2 = 64, Bc2 = 64;          // V2+
+    const float scale = 1.0f / sqrtf((float)D);
+
+    const size_t Nq   = (size_t)B * Hq  * S * D;
     const size_t Nkv  = (size_t)B * Hkv * S * D;
     const size_t Nlse = (size_t)B * Hq  * S;
 
