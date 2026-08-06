@@ -502,7 +502,7 @@ def main():
     ap.add_argument("--causal", action="store_true", default=True)
     ap.add_argument("--no-causal", dest="causal", action="store_false")
     ap.add_argument("--dtype", default="bf16")
-    ap.add_argument("--competitors", default="sdpa_bwd,cudnn_bwd,fa4_bwd,flashinfer_bwd",
+    ap.add_argument("--competitors", default="sdpa_bwd,cudnn_bwd,fa4_bwd,flashinfer_bwd,thunderkittens",
                     help="comma list of backward competitors")
     ap.add_argument("--v44-ms", type=float, dest="v44_ms", default=None,
                     help="V44 median ms (from C++ standalone) for speedup column")
