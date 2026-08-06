@@ -321,8 +321,15 @@ class ThunderKittens(Competitor):
 
     def forward(self, q, k, v, shape):
         tk = self._load()
-        # mha_h100's binding is q,k,v,causal -> (o, l_vec); canonical [B,H,S,D]
-        # layout already matches TK's (B,H,N,D), no transpose needed.
+        # mha_h100 is a plain MHA kernel -- it does NOT broadcast KV heads, so with
+        # GQA inputs (Hkv < Hq) it attends the wrong heads and fails the gate.
+        # Expand the Hkv KV heads to Hq (each shared by G query heads) so it computes
+        # the same GQA result the reference does. This also makes the timing honest
+        # (real 12-head KV traffic, not 4).
+        if shape.G > 1:
+            k = k.repeat_interleave(shape.G, dim=1)
+            v = v.repeat_interleave(shape.G, dim=1)
+        # canonical [B,H,S,D] already matches TK's (B,H,N,D), no transpose needed.
         o, _l_vec = tk.mha_forward(q.contiguous(), k.contiguous(), v.contiguous(), shape.causal)
         return o
 
