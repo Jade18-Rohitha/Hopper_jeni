@@ -346,90 +346,13 @@ class FlashInferBwd(BwdCompetitor):
         return lambda: self.backward(q, k, v, do, shape)
 
 
-class TKBwd(BwdCompetitor):
-    name = "thunderkittens"
-    role = "specialized tile kernel"
-
-    def available(self, shape):
-        import importlib.util
-        import os
-        if _cc()[0] < 9:
-            return False, f"TK targets sm_90; this is sm_{_cc()[0]}{_cc()[1]}"
-        tk_root = os.environ.get("THUNDERKITTENS_ROOT", os.path.expanduser("~/ThunderKittens"))
-        kernel_dir = os.path.join(tk_root, "kernels", "attention", "mha_h100")
-        if not os.path.isdir(kernel_dir):
-            return False, "TK mha_h100 not found (run setup_thunderkittens_h200.sh)"
-        try:
-            sys.path.insert(0, kernel_dir)
-            import _C as tk
-            sys.path.pop(0)
-            if not hasattr(tk, "mha_backward"):
-                 return False, "_C has no mha_backward"
-        except BaseException as e:
-            if kernel_dir in sys.path: sys.path.remove(kernel_dir)
-            return False, f"import _C failed: {e}"
-        # TK requires seqlen to be multiple of 64 and D in {64, 128}
-        if shape.S % 64 != 0:
-            return False, "S must be multiple of 64"
-        if shape.D not in {64, 128}:
-            return False, "D must be 64 or 128"
-        return True, ""
-
-    def _get_tk(self):
-        import os
-        tk_root = os.environ.get("THUNDERKITTENS_ROOT", os.path.expanduser("~/ThunderKittens"))
-        kernel_dir = os.path.join(tk_root, "kernels", "attention", "mha_h100")
-        sys.path.insert(0, kernel_dir)
-        import _C as tk
-        sys.path.pop(0)
-        return tk
-
-    def backward(self, q, k, v, do, shape):
-        tk = self._get_tk()
-        qa = q.contiguous()
-        doa = do.contiguous()
-        # mha_h100 is a plain MHA kernel (no GQA broadcast). Expand the Hkv KV heads
-        # to Hq so it attends the correct head per query, matching the GQA reference.
-        if shape.G > 1:
-            ka = k.repeat_interleave(shape.G, dim=1).contiguous()
-            va = v.repeat_interleave(shape.G, dim=1).contiguous()
-        else:
-            ka = k.contiguous()
-            va = v.contiguous()
-        o, l_vec = tk.mha_forward(qa, ka, va, shape.causal)
-        dq, dk, dv = tk.mha_backward(qa, ka, va, o, l_vec, doa, shape.causal)
-        # Reduce the expanded KV grads back to Hkv: each KV head's gradient is the sum
-        # over the G query heads that shared it (what SDPA's GQA backward returns).
-        if shape.G > 1:
-            B, _, S, D = dk.shape
-            dk = dk.view(B, shape.Hkv, shape.G, S, D).sum(dim=2)
-            dv = dv.view(B, shape.Hkv, shape.G, S, D).sum(dim=2)
-        return dq, dk, dv
-
-    def make_bwd(self, q, k, v, do, shape):
-        tk = self._get_tk()
-        qa = q.contiguous()
-        doa = do.contiguous()
-        # Expand KV heads Hkv->Hq (see backward) so the timed kernel does the real
-        # 12-head GQA work, not the 4-head MHA it would otherwise measure.
-        if shape.G > 1:
-            ka = k.repeat_interleave(shape.G, dim=1).contiguous()
-            va = v.repeat_interleave(shape.G, dim=1).contiguous()
-        else:
-            ka = k.contiguous()
-            va = v.contiguous()
-        o, l_vec = tk.mha_forward(qa, ka, va, shape.causal)
-
-        def _run():
-            tk.mha_backward(qa, ka, va, o, l_vec, doa, shape.causal)
-        return _run
-
 BWD_ALL = {
     "sdpa_bwd": SDPABwd(),
     "cudnn_bwd": CuDNNBwd(),
     "fa4_bwd": FA4Bwd(),
     "flashinfer_bwd": FlashInferBwd(),
-    "thunderkittens": TKBwd(),
+    # thunderkittens removed: mha_h100 is a forward-only MHA kernel; its mha_backward
+    # produced invalid GQA grads here (nan dq/dk) — not a valid backward competitor.
 }
 
 
@@ -516,7 +439,7 @@ def main():
     ap.add_argument("--causal", action="store_true", default=True)
     ap.add_argument("--no-causal", dest="causal", action="store_false")
     ap.add_argument("--dtype", default="bf16")
-    ap.add_argument("--competitors", default="sdpa_bwd,cudnn_bwd,fa4_bwd,flashinfer_bwd,thunderkittens",
+    ap.add_argument("--competitors", default="sdpa_bwd,cudnn_bwd,fa4_bwd,flashinfer_bwd",
                     help="comma list of backward competitors")
     ap.add_argument("--v44-ms", type=float, dest="v44_ms", default=None,
                     help="V44 median ms (from C++ standalone) for speedup column")
