@@ -497,6 +497,8 @@ def print_table(shape, results, v44_ms=None):
         spd = f"{v44_ms / r.median_ms:.2f}x" if v44_ms else "-"
         print(f"{r.name:<16} {role:<26} {r.median_ms:>10.4f} {r.tflops:>9.1f} "
               f"{corr:>8} {spd:>8}")
+        if r.correct is False:
+            print(f"    -> max_abs  dq={r.max_abs_dq:.3e}  dk={r.max_abs_dk:.3e}  dv={r.max_abs_dv:.3e}  (tol {'~2e-2'})")
     if v44_ms:
         print(f"\n  (V44 standalone: {v44_ms:.4f} ms — paste from ./build/bin/gqa_bwd_v44 output)")
 
