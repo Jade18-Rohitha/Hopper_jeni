@@ -771,5 +771,6 @@ int main(){
     std::cout << "Prerequisite: python precision/baseline_gqa.py (per B)\n\n";
     run_for_B(2);
     run_for_B(4);
+    run_for_B(8);
     return 0;
 }

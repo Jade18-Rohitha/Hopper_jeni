@@ -14323,6 +14323,123 @@ void launch_gqa_backward_v45(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// V46 = V44 + L2 PERSISTING-ACCESS-WINDOW.  (NOTE: name is V46 not V45 — HEAD already has a
+// committed V45 "vector-swizzled bank-conflict free + wgmma overlap"; this L2 probe is a distinct variant.)  Reuses gqa_backward_v44_kv VERBATIM (no kernel
+// edit → bit-identical by construction).  Launch-side scaling probe for B=8: the grid balloons
+// to ~15.5 waves and the query-side working set (d_Q/d_dO) is RE-READ across every kv-tile block
+// of a (b,hkv) group, thrashing L2 (75% hit vs cuDNN 92%).  K/V is read once per block (its own
+// tile) → NO cross-block reuse, so we mark the QUERY side persisting.  One access-policy window
+// per stream → pick d_Q (the S-GEMM + dK re-read); d_dO is the symmetric alternative.  Full Q
+// (~100MB) ≫ L2 carveout, so num_bytes is capped and hitRatio = carveout/window so the persisting
+// footprint fits the carveout.  Window reset + carveout released after → no policy leak.
+// Honest: long shot — reused set ≫ L2; helps only if the concentrated reuse lands in the carveout.
+template<int Br, int Bc, int D>
+void launch_gqa_backward_v46(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V46 requires Br=Bc=64, D=128");
+
+    // ── L2 persisting carveout + access-policy window over the reused query side (d_Q) ──
+    int dev = 0; CUDA_CHECK(cudaGetDevice(&dev));
+    int maxPersist = 0, maxWin = 0;
+    CUDA_CHECK(cudaDeviceGetAttribute(&maxPersist, cudaDevAttrMaxPersistingL2CacheSize, dev));
+    CUDA_CHECK(cudaDeviceGetAttribute(&maxWin,     cudaDevAttrMaxAccessPolicyWindowSize, dev));
+    const size_t carveout = (size_t)maxPersist;                       // use the full persisting carveout
+    CUDA_CHECK(cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, carveout));
+    const size_t Qbytes  = (size_t)B * Hq * S * D * sizeof(bf16);     // hottest reused region (query side)
+    const size_t winBytes = (Qbytes < (size_t)maxWin) ? Qbytes : (size_t)maxWin;
+    float hitRatio = 1.0f;
+    if (carveout > 0 && winBytes > carveout) hitRatio = (float)carveout / (float)winBytes;
+    cudaStreamAttrValue av = {};
+    av.accessPolicyWindow.base_ptr  = (void*)d_Q;
+    av.accessPolicyWindow.num_bytes = winBytes;
+    av.accessPolicyWindow.hitRatio  = hitRatio;
+    av.accessPolicyWindow.hitProp   = cudaAccessPropertyPersisting;
+    av.accessPolicyWindow.missProp  = cudaAccessPropertyStreaming;
+    CUDA_CHECK(cudaStreamSetAttribute(0, cudaStreamAttributeAccessPolicyWindow, &av));
+
+    // ── V44 launch pipeline (kernel reused verbatim) ──
+    auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
+        uint32_t box[2]     = {64u, tile_rows};
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(
+            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) failed: %s\n", e); exit(1); }
+        return desc;
+    };
+    const uint64_t Rq  = (uint64_t)B * Hq  * S;
+    const uint64_t Rkv = (uint64_t)B * Hkv * S;
+    CUtensorMap tma_K_sw  = make_tma_sw128(d_K,  Rkv, Bc);
+    CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
+    CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
+    CUtensorMap tma_dO_sw = make_tma_sw128(d_dO, Rq,  Br);
+    auto make_tma_out = [&](const bf16* ptr, uint64_t rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]={(uint64_t)D, rows}; uint64_t gStride[1]={(uint64_t)D*sizeof(bf16)};
+        uint32_t box[2]={64u,64u}; uint32_t eStride[2]={1,1};
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)ptr,gSize,gStride,box,eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out v46: %s\n",e);exit(1);} return desc; };
+    CUtensorMap tma_dV_st = make_tma_out(d_dV, Rkv);
+    CUtensorMap tma_dK_st = make_tma_out(d_dK, Rkv);
+    auto make_tma_red = [&](const float* ptr, uint64_t rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]={(uint64_t)D, rows}; uint64_t gStride[1]={(uint64_t)D*sizeof(float)};
+        uint32_t box[2]={32u,64u}; uint32_t eStride[2]={1,1};
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gSize,gStride,box,eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red v46: %s\n",e);exit(1);} return desc; };
+
+    const long drowN = (long)B * Hq * S;
+    static float* d_Drow  = nullptr;
+    static long   drow_cap = 0;
+    if (drowN > drow_cap) {
+        if (d_Drow) CUDA_CHECK(cudaFree(d_Drow));
+        CUDA_CHECK(cudaMalloc(&d_Drow, drowN * sizeof(float)));
+        drow_cap = drowN;
+    }
+    const long dqN = (long)B * Hq * S * D;
+    static float* d_dq_accum = nullptr;
+    static long   dq_cap     = 0;
+    if (dqN > dq_cap) {
+        if (d_dq_accum) CUDA_CHECK(cudaFree(d_dq_accum));
+        CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
+        dq_cap = dqN;
+    }
+    CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
+    CUtensorMap tma_dq_red = make_tma_red(d_dq_accum, (uint64_t)B * Hq * S);
+
+    const int  dBlock = 256;
+    const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
+    compute_drowsum_v22<<<(unsigned)dGrid, dBlock>>>(d_dO, d_O, d_Drow, drowN);
+
+    constexpr dim3 BLOCK(384);
+    dim3 GRID(B, Hkv, S / Bc);
+    gqa_backward_v44_kv<Br,Bc,D><<<GRID, BLOCK>>>(
+        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
+        d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
+
+    const int convBlock = 256;
+    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+
+    // ── reset the window + release the carveout so the policy does not leak to later kernels ──
+    av.accessPolicyWindow.num_bytes = 0;
+    CUDA_CHECK(cudaStreamSetAttribute(0, cudaStreamAttributeAccessPolicyWindow, &av));
+    CUDA_CHECK(cudaCtxResetPersistingL2Cache());
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────────────
 // main
@@ -14596,6 +14713,10 @@ int main(){
     launch_gqa_backward_v45<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V45 Br=64 Bc=64 vector-swizzled free dQ + overlap (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
+    launch_gqa_backward_v46<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── V46 Br=64 Bc=64 L2 persisting-window (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -14928,6 +15049,13 @@ int main(){
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats("GQA bwd V45 Br=64, Bc=64  vector-swizzled bank-conflict free + wgmma overlap (Hopper SM_90)", s);
+    }
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v46<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V46 Br=64, Bc=64  L2 persisting-window (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
