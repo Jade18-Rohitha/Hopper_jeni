@@ -386,28 +386,40 @@ class TKBwd(BwdCompetitor):
 
     def backward(self, q, k, v, do, shape):
         tk = self._get_tk()
-        # TK requires contiguous inputs
         qa = q.contiguous()
-        ka = k.contiguous()
-        va = v.contiguous()
         doa = do.contiguous()
-        
-        # TK requires forward outputs (O, and L_vec) as input to backward
+        # mha_h100 is a plain MHA kernel (no GQA broadcast). Expand the Hkv KV heads
+        # to Hq so it attends the correct head per query, matching the GQA reference.
+        if shape.G > 1:
+            ka = k.repeat_interleave(shape.G, dim=1).contiguous()
+            va = v.repeat_interleave(shape.G, dim=1).contiguous()
+        else:
+            ka = k.contiguous()
+            va = v.contiguous()
         o, l_vec = tk.mha_forward(qa, ka, va, shape.causal)
-        
-        # TK Backward gives qg, kg, vg
         dq, dk, dv = tk.mha_backward(qa, ka, va, o, l_vec, doa, shape.causal)
+        # Reduce the expanded KV grads back to Hkv: each KV head's gradient is the sum
+        # over the G query heads that shared it (what SDPA's GQA backward returns).
+        if shape.G > 1:
+            B, _, S, D = dk.shape
+            dk = dk.view(B, shape.Hkv, shape.G, S, D).sum(dim=2)
+            dv = dv.view(B, shape.Hkv, shape.G, S, D).sum(dim=2)
         return dq, dk, dv
 
     def make_bwd(self, q, k, v, do, shape):
         tk = self._get_tk()
         qa = q.contiguous()
-        ka = k.contiguous()
-        va = v.contiguous()
         doa = do.contiguous()
-        
+        # Expand KV heads Hkv->Hq (see backward) so the timed kernel does the real
+        # 12-head GQA work, not the 4-head MHA it would otherwise measure.
+        if shape.G > 1:
+            ka = k.repeat_interleave(shape.G, dim=1).contiguous()
+            va = v.repeat_interleave(shape.G, dim=1).contiguous()
+        else:
+            ka = k.contiguous()
+            va = v.contiguous()
         o, l_vec = tk.mha_forward(qa, ka, va, shape.causal)
-        
+
         def _run():
             tk.mha_backward(qa, ka, va, o, l_vec, doa, shape.causal)
         return _run
