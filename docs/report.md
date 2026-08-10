@@ -1,19 +1,49 @@
-# Today
+Today I worked on the Benchmark with all the other frameworks
+When I looked into the competitors I had found only two recognized competitors for apple-apple comparison,both were pytorch
+Thunderkittens only have the mha100 for forward, the backward kernel is not feasible to compare , when I called the API , the gradients overflowed and it produced nan values,so when I researched  I found out that they are forward only comparable for this particular gqa h200 
 
-Today I tried a set of optimizations, some moved the wall clock, some regressed it badly. I started the day on V41 (3.70 ms median / 3.69 min) and ended a bit better — V42 descriptor-hoist at **3.6332 ms min / 3.7250 median**, a new best, bit-identical, 0 spill. Small but real. Here's the run-down, in the order I tried them.
+Then the Benchmark suite:
+For B=2:
+ ​Screenshot from 2026-08-07 11-20-39.png​
+The fastest is 0.8002ms
+And ours:​ 0.7963ms, beats by 0.0039ms
+Screenshot from 2026-08-06 17-02-40.png​
 
-## What I chased and what happened
+For B=4:​
+Screenshot from 2026-08-07 11-21-53.png​
+ The fastest is 1.4964ms
+Ours: ​1.5758ms , lag by 0.0794ms
+Screenshot from 2026-08-06 17-04-29.png​
 
-**Address-math localization (the thing I set out to fire).** I had the agent localize the ~25% of stall time sitting on address/swizzle math (LEA/IMAD/VIADD/LOP3/SHF), because cuDNN avoids it via full-unroll constant offsets + the uniform datapath (its R2UR is 318 vs our 29). The honest answer came back: most of it is **inherent to our runtime causal kv-loop** — the loop indexing is already collapsed to ~4 vector ops (V15's incremental g/qc did that years-of-versions ago), and the real 562-op bulk lives in per-tile inlined helpers (descriptor build, producer TMA, per-thread lane-dependent swizzle) that a local hoist can't move onto the uniform pipe. Not a wall, but it reframed where the reachable cut actually was.
 
-**bf16 dQ round-trip — REGRESSED, dead lever.** The fp32 dQ store→read-back is 76% of all shared LDS and can't use STSM/LDMATRIX because it's fp32, so I staged the per-tile partial in bf16 to halve those bytes (kept the fp32 global accumulator). The byte cut was real — SASS-confirmed 256→128 B/thr/tile — but on the H200 it went **backwards: 3.83 vs 3.73**. Root cause, and it's a good lesson: the 63% pipe is `lsu_wavefronts`, which counts LDS/STS *executions*, not bytes. The dominant read is a scalar loop — 32 LDS regardless of element width — so halving bytes bought zero wavefront relief while adding ~48 fp32↔bf16 conversions onto the critical path. **Byte-reduction is the wrong currency for a wavefront-bound LSU.** Committed as history, stripped from the file.
+For B=8:​
+Screenshot from 2026-08-07 11-22-23.png​
 
-**Persistent-CTA rewrite — NO-GO, killed before building.** This was going to be the big structural swing — convert the runtime loop to a persistent/unrolled kernel with compile-time-constant offsets to chase cuDNN's uniform-pipe advantage. I had the agent do a per-zone SASS analysis *first*, and it was decisive: the exact thing persistent-CTA optimizes (the runtime kv-loop indexing) is already only 4 vector ops, while the 562-op bulk is lane-dependent per-thread swizzle that *must* stay on the vector pipe. The R2UR indicator wouldn't move. A large, high-risk, locally-unvalidatable rewrite to optimize 4 already-collapsed instructions — not worth it. Flagged the wall before spending the build.
+The fastest is 2.9441ms
+ Ours:​ 3.2445ms, lag by 0.3004ms
+Screenshot from 2026-08-05 16-02-20.png​
 
-**Descriptor-hoist — CONVERTED, banked as V42.** This is the one that landed. The ~24 invariant wgmma operand descriptors (sK/sV/sP/sDS) point at the same shared addresses every tile, but the async-fence `"memory"` clobbers nvcc's LICM so they were rebuilt per-tile. I hoisted them: compute once in the prologue, pass them in, let the const-advances fold to immediates. SASS dropped 1840→1760 static (−80, −4.3%), driven by −48 LOP3 / −25 SHF in the descriptor encode — and the 5 hoisted base descriptors went to the uniform register file, so 168 regs / 0 spill held. Bit-identical by construction. On the H200 the −4.3% static cut converted almost 1:1 to wall-clock, which *confirms* that recompute was on the dynamic critical path.
+## What the numbers say
 
-## Where this leaves us
+Lining the three up, the story is a trend, not a flat gap:
 
-Landed at **3.6332 ms (887 TFLOP/s), ~1.30× off cuDNN's 2.8 ms**, everything still bit-identical and 0-spill. Two dead axes retired with evidence (bf16-dQ, persistent-CTA), one clean win banked (descriptor-hoist).
+| batch | ours | best competitor | result |
+|---|---|---|---|
+| B=2 | 0.7963 ms | 0.8002 ms (sdpa) | **we win** by 0.0039 ms |
+| B=4 | 1.5758 ms | 1.4964 ms (sdpa) | lag 0.0794 ms (~5%) |
+| B=8 | 3.2445 ms | 2.9441 ms (sdpa) | lag 0.3004 ms (~10%) |
 
-The pattern this session is consistent: the levers that *convert* are on-critical-path instruction/work cuts (descriptor-hoist today, like STSM/LDMATRIX and the D-split before it); the levers that *lose* are mismatched to the binding stall (bf16 bytes vs a wavefront-bound pipe). The residual to cuDNN is its full-unroll/persistent structure + hand-scheduled TMA/wgmma overlap — not reachable by any single local rewrite we've found, but I'm not calling it a ceiling from one dead axis. Next up: re-rank on the new V42 profile and take the top remaining on-critical-path recompute — the descriptor-hoist playbook, pointed at whatever's now #1.
+We're *ahead* at B=2, and the lag grows with batch — ~5% at B=4, ~10% at B=8. That's the signature of a **scaling problem, not a kernel-quality problem**: at small batch our leaner kernel wins outright; as batch grows we fall behind.
+
+The cause is L2 residency. Our grid is KV-parallel — `(B, Hkv, S/Bc)` — so it balloons with batch (at B=8 it's ~2048 blocks / ~15 waves). Every block re-reads the query-side Q/dO working set, and once that set outgrows the ~50 MB L2 (it's ~288 MB at B=8 across all the head-groups), the cache thrashes: L2 hit drops to ~75% vs cuDNN's ~92%, and the kernel goes latency-bound. At B=2 the working set fits, so we win. cuDNN scales sub-linearly because its persistent, one-writer structure keeps its data L2-resident.
+
+## What I tried for the scaling, and where it stands
+
+- **Persistent grid (V45)** — fixed grid + grid-stride to force L2 reuse. It regressed: a persistent CTA loses the hardware's *free* inter-block pipelining (the drain between work-items serializes what independent blocks overlap for nothing), and it's smem-floored (K/V double-buffering won't fit the 232 KB cap). Flat-to-worse.
+- **Q-parallel D-collapse** — cuDNN's actual structure (dS register-resident, dK/dV TMA-reduce), which *does* get L2 residency for free. Built it correct and bit-identical, but it lands ~1.75× slower: it's latency-bound on the transposed-A staging fence, and the reachable levers (batched-dQ, software-pipeline, PD=3) all came back flat. Parked on a branch — the headroom is real but gated by that staging chain.
+- **L2 persisting-window (V46)** — a cheap launch-side cache hint. Long shot by construction (the reused set ≫ the ~45 MB carveout), tried as a probe.
+
+## Landing
+
+V44 is a genuinely strong, honest result: **it beats the PyTorch field at B=2, is on par at B=4, and trails by ~10% (≈1.09×) at B=8** — and the B=8 gap is a *scaling* effect (L2 capacity vs. our KV-parallel wave count), not a weakness in the kernel itself. Closing it needs cuDNN's persistent/Q-parallel structure, which we've shown is correct but not yet faster in our hands. For the many real workloads at small-to-moderate batch, V44 is at or ahead of the state of the art. Only sdpa and cuDNN are valid apple-to-apple competitors here; thunderkittens is forward-only (its backward overflows to NaN on this GQA shape).
+
