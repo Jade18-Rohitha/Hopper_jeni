@@ -14717,30 +14717,41 @@ __device__ __forceinline__ void ldmatrix_x4_trans(uint32_t src, uint32_t& r0, ui
 // Addressing REUSES fuse_dS_ldstsm's proven 128B-swizzle read of sP; the .trans flag transposes the
 // four 8x8 tiles so the registers hold Aᵀ = [key x query] (what dV=Pᵀ·dO / dK=dSᵀ·Q need as RS-A A).
 //   A[0..3]=s0(qr0,kblk mm), A[4..7]=s1(qr0,kblk mm+4), A[8..11]=s2(qr1,mm), A[12..15]=s3(qr1,mm+4).
-__device__ __forceinline__ void load_At_ldmtrans(const bf16* sMat, int wtid, uint32_t A[16]) {
-    const int w = wtid >> 5, lane = wtid & 31, ph = lane & 7, mm = lane >> 3;
-    const int qr0 = 16 * w + ph, qr1 = 16 * w + 8 + ph;
-    const uint32_t s0 = (uint32_t)__cvta_generic_to_shared(&sMat[qr0 * 64 + (((mm    ) ^ ph) << 3)]);
-    const uint32_t s1 = (uint32_t)__cvta_generic_to_shared(&sMat[qr0 * 64 + (((mm + 4) ^ ph) << 3)]);
-    const uint32_t s2 = (uint32_t)__cvta_generic_to_shared(&sMat[qr1 * 64 + (((mm    ) ^ ph) << 3)]);
-    const uint32_t s3 = (uint32_t)__cvta_generic_to_shared(&sMat[qr1 * 64 + (((mm + 4) ^ ph) << 3)]);
-    ldmatrix_x4_trans(s0, A[0],  A[1],  A[2],  A[3]);
-    ldmatrix_x4_trans(s1, A[4],  A[5],  A[6],  A[7]);
-    ldmatrix_x4_trans(s2, A[8],  A[9],  A[10], A[11]);
-    ldmatrix_x4_trans(s3, A[12], A[13], A[14], A[15]);
-}
+// (load_At_ldmtrans removed — its fuse_dS-derived addressing mapped query→warp, which is WRONG for the
+//  A operand; the derived addressing below indexes KEY by warp and QUERY by k16-step. See run_gemm below.)
 // dV/dK half-GEMM with A from REGISTERS (Aᵀ, 4 k16 steps) — no fence.proxy.async (A is register-resident,
 // B=dO/Q is TMA-async).  a[4] for k16 step k = &A[4*k]  (THE H200-TUNABLE FRAGMENT MAPPING — see note).
-__device__ __forceinline__ void run_gemm_dVdK_half_rsA(float acc[32], const uint32_t A[16], const bf16* B_sw_half) {
+// DERIVED (ground truth, ends the guessing): dV/dK half-GEMM, A = Pᵀ/dSᵀ read TRANSPOSED from the
+// swizzled sMat (sP/sDS) via ldmatrix.trans per k16 step, fed as RS-A.  No fence.proxy.async (A is
+// register-resident; B = dO/Q is TMA-async).
+//
+// Two ground-truth layouts, composed:
+//  (A) wgmma RS-A A-fragment = ALayout_64x16 (== CLayout_64x16): per thread (warp w, lane l), for one
+//      k16 step, the 4 .b32 hold A(m=key,k=query) with m = 16w + (l>>2) [+8 for the 2nd row-block j],
+//      k = 2(l%4) [+1 col-pair i][+8 for the 2nd k-half].  Each .b32 packs {A(key,q),A(key,q+1)} —
+//      ADJACENT-QUERY, SAME-KEY.
+//  (B) ldmatrix.m8n8.x4.trans of an 8×8 source tile M[query,key]: thread T's .b32 for matrix mtx =
+//      {M[2(T%4), T/4], M[2(T%4)+1, T/4]} — ALSO ADJACENT-QUERY (2(T%4),+1), SAME-KEY (T/4).
+//  ⇒ packing matches ⇒ the 4 ldmatrix.trans output regs map 1:1 to a[0..3], NO permutation, IF the 4
+//    x4 matrices are addressed as tiles (q0k0,q0k1,q1k0,q1k1) of the 16×16 P[query 16ks.., key 16w..].
+// Addressing: matrix = lane>>3; key-block kb = 2w + (matrix&1) (warp owns keys [16w,16w+16));
+//   query q = 16*ks + (matrix>>1)*8 + (lane&7).  Swizzle: sMat[q*64 + ((kb ^ (q&7))<<3)] (128B, block-granular).
+// If dK/dV STILL mismatch on H200, the derivation is right in structure and the only knobs are: swap
+// the kb parity (2w+(matrix&1) → 2w+1-(matrix&1)) or the q_block bit ((matrix>>1) → 1-(matrix>>1)).
+__device__ __forceinline__ void run_gemm_dVdK_half_rsA(float acc[32], const bf16* sMat, int wtid, const bf16* B_sw_half) {
+    const int w = wtid >> 5, lane = wtid & 31;
+    const int mtx = lane >> 3, r = lane & 7;
+    const int kb    = 2 * w + (mtx & 1);          // key-block (0..7): warp w owns keys [16w, 16w+16)
+    const int q_off = (mtx >> 1) * 8 + r;         // query offset within each k16 step's 16 rows
     fence_operandN<32>(acc);
     wgmma_fence();
 #pragma unroll
-    for (int k = 0; k < 4; k++) {
-        // FIX #2 (transposed-A .b32 permutation): stride-4 gather with the INNER PAIR SWAPPED
-        // (row-pair↔col-pair ambiguity, as in the M1 dQ RS-A saga).  fix#1 {A[k],A[k+4],A[k+8],A[k+12]}
-        // was finite-close-wrong; this swaps a[1]↔a[2].  (Still off → fix #3: swap s0↔s2 / s1↔s3 in load_At_ldmtrans.)
-        const uint32_t a[4] = { A[k], A[k + 8], A[k + 4], A[k + 12] };
-        wgmma_m64n64k16_rsA(acc, a, make_desc_sw128_MN(B_sw_half + k * 1024));
+    for (int ks = 0; ks < 4; ks++) {
+        const int q = 16 * ks + q_off;
+        const uint32_t addr = (uint32_t)__cvta_generic_to_shared(&sMat[q * 64 + ((kb ^ (q & 7)) << 3)]);
+        uint32_t a[4];
+        ldmatrix_x4_trans(addr, a[0], a[1], a[2], a[3]);   // r0..r3 = a[0..3] (derived: no permute)
+        wgmma_m64n64k16_rsA(acc, a, make_desc_sw128_MN(B_sw_half + ks * 1024));
     }
     wgmma_commit();
 }
@@ -14904,19 +14915,17 @@ gqa_backward_v47_kv(
         if (cons == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // ← S/dP[j+1] tensor runs through here
 
         // V47: ldmatrix.trans P/dS back into REGISTERS (generic proxy — NO fence.proxy.async) → RS-A wgmma.
-        // A = Pᵀ / dSᵀ from registers; B = dO / Q (TMA-loaded, async proxy).  consumer_sync above already
-        // ordered the STSM writes; no generic→async crossing on the A path ⇒ the staging fence is gone.
-        uint32_t Ap[16], Ads[16];
-        load_At_ldmtrans(sPc,  wtid, Ap);    // Pᵀ  fragment (transposed load of swizzled sP)
-        load_At_ldmtrans(sDSc, wtid, Ads);   // dSᵀ fragment (swizzled sDS)
+        // A = Pᵀ / dSᵀ read transposed per k16 step inside run_gemm_dVdK_half_rsA (DERIVED addressing);
+        // B = dO / Q (TMA-loaded, async proxy).  consumer_sync above ordered the STSM writes → no generic→
+        // async crossing on the A path ⇒ the staging fence is gone.
         float acc[32];
-        zeroN<32>(acc); run_gemm_dVdK_half_rsA(acc, Ap,  sdO + 0);    run_gemm_dVdK_half_te_wait(acc);
+        zeroN<32>(acc); run_gemm_dVdK_half_rsA(acc, sPc,  wtid, sdO + 0);    run_gemm_dVdK_half_te_wait(acc);
         reduce_vk_half_m3(acc, &tma_dv_red, sVKc, 0,  kvRow, wtid, cons);
-        zeroN<32>(acc); run_gemm_dVdK_half_rsA(acc, Ap,  sdO + 4096); run_gemm_dVdK_half_te_wait(acc);
+        zeroN<32>(acc); run_gemm_dVdK_half_rsA(acc, sPc,  wtid, sdO + 4096); run_gemm_dVdK_half_te_wait(acc);
         reduce_vk_half_m3(acc, &tma_dv_red, sVKc, 64, kvRow, wtid, cons);
-        zeroN<32>(acc); run_gemm_dVdK_half_rsA(acc, Ads, sQ  + 0);    run_gemm_dVdK_half_te_wait(acc);
+        zeroN<32>(acc); run_gemm_dVdK_half_rsA(acc, sDSc, wtid, sQ  + 0);    run_gemm_dVdK_half_te_wait(acc);
         reduce_vk_half_m3(acc, &tma_dk_red, sVKc, 0,  kvRow, wtid, cons);
-        zeroN<32>(acc); run_gemm_dVdK_half_rsA(acc, Ads, sQ  + 4096); run_gemm_dVdK_half_te_wait(acc);
+        zeroN<32>(acc); run_gemm_dVdK_half_rsA(acc, sDSc, wtid, sQ  + 4096); run_gemm_dVdK_half_te_wait(acc);
         reduce_vk_half_m3(acc, &tma_dk_red, sVKc, 64, kvRow, wtid, cons);
 
         if (wtid == 0) mbar_arrive_v11(&empty[s]);
