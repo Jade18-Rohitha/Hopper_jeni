@@ -14736,10 +14736,10 @@ __device__ __forceinline__ void run_gemm_dVdK_half_rsA(float acc[32], const uint
     wgmma_fence();
 #pragma unroll
     for (int k = 0; k < 4; k++) {
-        // FIX #1 (transposed-A .b32 permutation): k16-step A-slice is STRIDE-4 across the 4 ldmatrix.trans
-        // calls {A[k],A[k+4],A[k+8],A[k+12]}, not contiguous A[4k..] — .trans maps query→k so the k16 step
-        // interleaves the 4 loads.  (If dK/dV still mismatch: fix #2 = swap a[1]↔a[2] within this group.)
-        const uint32_t a[4] = { A[k], A[k + 4], A[k + 8], A[k + 12] };
+        // FIX #2 (transposed-A .b32 permutation): stride-4 gather with the INNER PAIR SWAPPED
+        // (row-pair↔col-pair ambiguity, as in the M1 dQ RS-A saga).  fix#1 {A[k],A[k+4],A[k+8],A[k+12]}
+        // was finite-close-wrong; this swaps a[1]↔a[2].  (Still off → fix #3: swap s0↔s2 / s1↔s3 in load_At_ldmtrans.)
+        const uint32_t a[4] = { A[k], A[k + 8], A[k + 4], A[k + 12] };
         wgmma_m64n64k16_rsA(acc, a, make_desc_sw128_MN(B_sw_half + k * 1024));
     }
     wgmma_commit();
