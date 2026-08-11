@@ -27,7 +27,11 @@ import triton
 import triton.language as tl
 import triton.testing
 
+import sys
+# Shape from argv: baseline_gqa.py [B] [Hq] [Hkv]   (default 8 12 4; S=4096, D=128 fixed)
 B, Hq, Hkv, S, D = 8, 12, 4, 4096, 128
+if len(sys.argv) >= 4:
+    B, Hq, Hkv = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
 G = Hq // Hkv
 
 DATA_DIR = Path(__file__).parent.parent / "data"
