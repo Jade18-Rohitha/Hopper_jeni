@@ -14363,14 +14363,14 @@ gqa_backward_v46_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V46 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;
-    constexpr int PD   = 2;   // V46: shallower Q/dO pipe frees 32KB for triple dQ stage
+    constexpr int PD   = 3;
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
-    __shared__ __align__(1024) float sS [3][Br * 64];   // V46: TRIPLE-BUFFERED swizzled dQ stage (wg0); 2 SW128B atoms of [Br*32]
-    __shared__ __align__(1024) float sdP[3][Br * 64];   // V46: TRIPLE-BUFFERED swizzled dQ stage (wg1); atom a at [a*Br*32]
+    __shared__ __align__(1024) float sS [2][Br * 64];   // V46: DOUBLE-BUFFERED SWIZZLED dQ stage (wg0); each buf = 2 SW128B atoms of [Br*32]
+    __shared__ __align__(1024) float sdP[2][Br * 64];   // V46: DOUBLE-BUFFERED SWIZZLED dQ stage (wg1); atom a at [a*Br*32], SW128B chunk^ (row&7)
     __shared__ __align__(1024) bf16  sP [Br * 64];
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
@@ -14465,7 +14465,6 @@ gqa_backward_v46_kv(
 
     uint32_t cpar[PD] = {0}, dpar[PD] = {0};
     int gC = 0, qcC = qc0;
-    int prev_db = 0; uint32_t prev_crow = 0;   // V46: pipelined dQ-reduce carries prev buffer + crow
     for (int it = 0; it < nIter; it++) {
         const int s = it % PD;
         const int q_row0 = qcC * Br;
@@ -14492,34 +14491,22 @@ gqa_backward_v46_kv(
         float dq[32]; zeroN<32>(dq);
         run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-        const int db = it % 3;                                        // V46: TRIPLE-BUFFERED pipelined dQ-stage
+        const int db = it & 1;                                        // V46: ping-pong dQ-stage buffer
         float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
-        store_acc_sw128_f32(dq, stageDQ, wtid, scale);               // swizzled store -> buf[it%3]; NO split barrier (was the 895-sample stall)
+        store_acc_sw128_f32(dq, stageDQ, wtid, scale);               // CONFLICT-FREE swizzled store -> buf[it&1] (2 SW128B atoms)
         fence_proxy_async_shared();                 // generic STS staging -> async-proxy (TMA) read
-        // V46: PIPELINED reduce — reduce the PREVIOUS iter buffer (fully stored + synced by its own
-        //   end-barrier last iter), so no store->reduce barrier is needed this iter. Triple buffer +
-        //   bulk_wait1 gives 2 iters slack: R(it-2) is done before S(it) reuses buf[it%3].
-        if (it > 0 && wtid == 0) {
-            float* pDQ = (wg == 0) ? sS[prev_db] : sdP[prev_db];
-            tma_reduce_add_2d_v43(&tma_dq_red, pDQ,             (uint32_t)(wg * 64),      prev_crow);   // atom 0
-            tma_reduce_add_2d_v43(&tma_dq_red, pDQ + 64 * 32,   (uint32_t)(wg * 64 + 32), prev_crow);   // atom 1
+        consumer_sync();                            // V46 FUSE: the end-of-iter FULL barrier now also orders
+                                                    //   dq-store -> TMA-reduce (all 256 stores done). Deletes the
+                                                    //   separate 128-thread split store->reduce barrier (4 -> 3 loop barriers).
+        if (wtid == 0) {                            // swizzled TMA-reduce: 2 atoms -> dq_accum, off L1TEX
+            const uint32_t crow = (uint32_t)lBaseOf(gC, qcC);
+            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,             (uint32_t)(wg * 64),      crow);   // atom 0
+            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32,   (uint32_t)(wg * 64 + 32), crow);   // atom 1
             tma_store_commit_v34();
             tma_bulk_wait1_v43();
         }
-        prev_db = db; prev_crow = (uint32_t)lBaseOf(gC, qcC);
-        consumer_sync();                            // end-of-iter: syncs THIS store so next iter can reduce it
         if (tid == 0) mbar_arrive_v11(&empty[s]);
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
-    }
-
-    // V46: issue the final pipelined dQ reduce (last buffer, stored+synced in the final iter).
-    //   Drained by the dV/dK epilogue tma_store_wait_v34() (cp.async.bulk.wait_group 0) below.
-    fence_proxy_async_shared();
-    if (wtid == 0) {
-        float* pDQ = (wg == 0) ? sS[prev_db] : sdP[prev_db];
-        tma_reduce_add_2d_v43(&tma_dq_red, pDQ,             (uint32_t)(wg * 64),      prev_crow);
-        tma_reduce_add_2d_v43(&tma_dq_red, pDQ + 64 * 32,   (uint32_t)(wg * 64 + 32), prev_crow);
-        tma_store_commit_v34();
     }
 
     bf16 *qflat    = reinterpret_cast<bf16*>(&sQ_sw[0][0]);
@@ -14900,7 +14887,7 @@ int main(){
 
     launch_gqa_backward_v46<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V46 Br=64 Bc=64 pipelined dQ-reduce (PD=2, no split barrier) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V46 Br=64 Bc=64 fused store->reduce barrier (4->3) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -15239,7 +15226,7 @@ int main(){
             [&](){ launch_gqa_backward_v46<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V46 Br=64, Bc=64  pipelined dQ-reduce (PD=2, no split barrier)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V46 Br=64, Bc=64  fused store->reduce barrier (4->3)  (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
