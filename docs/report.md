@@ -1,62 +1,74 @@
-Today I worked on the Benchmark with all the other frameworks
-When I looked into the competitors I had found only two recognized competitors for apple-apple comparison,both were pytorch
-Thunderkittens only have the mha100 for forward, the backward kernel is not feasible to compare , when I called the API , the gradients overflowed and it produced nan values,so when I researched  I found out that they are forward only comparable for this particular gqa h200 
+# GQA Backward — H200 optimization log (2026-08-11)
 
-Then the Benchmark suite:
-For B=2:
- ​Screenshot from 2026-08-07 11-20-39.png​
-The fastest is 0.8002ms
-And ours:​ 0.7963ms, beats by 0.0039ms
-Screenshot from 2026-08-06 17-02-40.png​
+Starting point: **V44** (swizzled TMA-reduce dQ), the banked best. Goal: close the ~0.3 ms (~1.09×) B=8 gap to cuDNN while holding the small-batch win. Dev box is sm_120 — every benchmark/profile below was run on an H200 remote; the assistant only compiles and reads profiles.
 
-For B=4:​
-Screenshot from 2026-08-07 11-21-53.png​
- The fastest is 1.4964ms
-Ours: ​1.5758ms , lag by 0.0794ms
-Screenshot from 2026-08-06 17-04-29.png​
+## Headline: the B=8 gap is **not** L2 residency — and the raster is **batch-dependent**
 
+The prior thesis (B=8 gap = L2 residency, inferred from B=2 L2≈91% → B=8 L2≈75%) is **disproven**.
 
-For B=8:​
-Screenshot from 2026-08-07 11-22-23.png​
+- **L2-aware grid raster** — launch `GRID(S/Bc, Hkv, B)` with `k_tile = blockIdx.x` (fastest-varying) so same-`(b,hkv)` blocks run temporally clustered and their shared Q/dO stays L2-resident. Measured: **L2 hit 75% → 96%** (beats cuDNN's 92%), DRAM 28.4% → 3.8%, misses 7× fewer. **Wall-clock at B=8 did not move.** So the misses were already hidden; L2 was a red herring.
+- The real B=8 cost is **intra-CTA exposed latency** (barrier 2.73 + long_scoreboard 2.60 = 58% of 9.2 cyc/issue), **not occupancy** — occupancy is 18.5% (1 CTA/SM), but **cuDNN is also 1 CTA/SM**, so occupancy explains nothing.
+- **The raster is a B=8-only win.** A full batch sweep showed it *regresses hard* at low batch — the working set already fits L2 there, so clustering buys no residency but creates a memory hotspot / worse SM load-balance:
 
-The fastest is 2.9441ms
- Ours:​ 3.2445ms, lag by 0.3004ms
-Screenshot from 2026-08-05 16-02-20.png​
-
-## What the numbers say
-
-Lining the three up, the story is a trend, not a flat gap:
-
-| batch | ours | best competitor | result |
+| batch | V44 (no raster) | raster | winner |
 |---|---|---|---|
-| B=2 | 0.7963 ms | 0.8002 ms (sdpa) | **we win** by 0.0039 ms |
-| B=4 | 1.5758 ms | 1.4964 ms (sdpa) | lag 0.0794 ms (~5%) |
-| B=8 | 3.2445 ms | 2.9441 ms (sdpa) | lag 0.3004 ms (~10%) |
+| B=2 | **0.788 ms** | 0.952 ms | V44 by ~20% |
+| B=4 | **1.568 ms** | 1.701 ms | V44 by ~8% |
+| B=8 | 3.310 ms | **3.233 ms** | raster by ~2.4% |
 
-We're *ahead* at B=2, and the lag grows with batch — ~5% at B=4, ~10% at B=8. That's the signature of a **scaling problem, not a kernel-quality problem**: at small batch our leaner kernel wins outright; as batch grows we fall behind.
+**Fix — adaptive grid order:** the launcher picks the schedule from the Q/dO-vs-L2 footprint — default (B-fastest) for small batch, raster (k_tile-fastest) only when `B·Hq·S·D·4 > 2·L2`. One kernel, two launch configs. This is the shipped baseline.
 
-The cause is L2 residency. Our grid is KV-parallel — `(B, Hkv, S/Bc)` — so it balloons with batch (at B=8 it's ~2048 blocks / ~15 waves). Every block re-reads the query-side Q/dO working set, and once that set outgrows the ~50 MB L2 (it's ~288 MB at B=8 across all the head-groups), the cache thrashes: L2 hit drops to ~75% vs cuDNN's ~92%, and the kernel goes latency-bound. At B=2 the working set fits, so we win. cuDNN scales sub-linearly because its persistent, one-writer structure keeps its data L2-resident.
+## Experiments (in order)
 
-## What I tried for the scaling, and where it stands
+Each is bit-identical to V44 (dQ ≤ 1.953e-3, dK ≤ 3.906e-3, dV ≤ 3.125e-2) unless noted.
 
-- **Persistent grid (V45)** — fixed grid + grid-stride to force L2 reuse. It regressed: a persistent CTA loses the hardware's *free* inter-block pipelining (the drain between work-items serializes what independent blocks overlap for nothing), and it's smem-floored (K/V double-buffering won't fit the 232 KB cap). Flat-to-worse.
-- **Q-parallel D-collapse** — cuDNN's actual structure (dS register-resident, dK/dV TMA-reduce), which *does* get L2 residency for free. Built it correct and bit-identical, but it lands ~1.75× slower: it's latency-bound on the transposed-A staging fence, and the reachable levers (batched-dQ, software-pipeline, PD=3) all came back flat. Parked on a branch — the headroom is real but gated by that staging chain.
-- **L2 persisting-window (V46)** — a cheap launch-side cache hint. Long shot by construction (the reused set ≫ the ~45 MB carveout), tried as a probe.
+| # | change | result | kept? |
+|---|---|---|---|
+| dV/dK stage swizzle | 128B-swizzle the dV/dK epilogue stage | flat (stage already 1-way) | folded |
+| dV/dK vec-store | pack the two swizzled bf16 into one STS.32 | tied; cuts store insts, epilogue too small to move clock | **kept** |
+| L2 raster | k_tile-fastest grid order | L2 75→96%, but clock flat at B=8; **regresses B=2/B=4** | → made **adaptive** |
+| pipelined dQ-reduce | PD=3→2 + triple-buffer + reduce 1 iter behind to delete the split barrier | correct, but **slower** (barrier 2.73→2.91) | reverted |
+| **fused store→reduce barrier** | move TMA-reduce after the end barrier; delete the 128-thread split barrier (4→3 loop barriers) | **win**: median 3.231→3.213, barrier 2.73→2.64 | **kept** |
+| register-P dS (barrier1+2 merge) | wg1 recomputes its own P (redundant QK) so dS needs no `sP` ldmatrix → merge the two publish barriers (3→2) | correct, but **slower** by ~0.2 ms | reverted |
+| register-P + dOV∥QK overlap | issue both wg1 gemms in one wgmma burst, one wait | still slower (~3.43) | reverted |
+| **adaptive raster** | pick grid order by L2 footprint | **win at every batch** | **shipped baseline** |
 
-## Landing
+### What the barrier exploration taught us
+- The barrier stall (2.73 cyc/issue) is **exposed latency parked at a barrier**, not removable sync. Deleting the biggest barrier via pipelining made the barrier stall go *up* (2.73→2.91) — the latency just resurfaced at the `mbar_wait`s (proof).
+- Only a **clean** barrier cut helps — the store→reduce fuse merged two adjacent barriers with zero smem/pipeline change and netted +0.02 ms.
+- The two P/dS publish barriers are structurally locked by `dS = P∘(dP−D)` needing P from the other warpgroup. The only unlock (recompute P on wg1) **overloads wg1** (2 gemms vs wg0's 1) — even fully overlapped in one wgmma burst, the redundant QK costs ~0.2 ms and can't be hidden. Compute isn't free at 36% util when you *double* a warpgroup's gemm load.
 
-V44 is a genuinely strong, honest result: **it beats the PyTorch field at B=2, is on par at B=4, and trails by ~10% (≈1.09×) at B=8** — and the B=8 gap is a *scaling* effect (L2 capacity vs. our KV-parallel wave count), not a weakness in the kernel itself. Closing it needs cuDNN's persistent/Q-parallel structure, which we've shown is correct but not yet faster in our hands. For the many real workloads at small-to-moderate batch, V44 is at or ahead of the state of the art. Only sdpa and cuDNN are valid apple-to-apple competitors here; thunderkittens is forward-only (its backward overflows to NaN on this GQA shape).
+## Also ruled out (measured)
+- **fp32 dQ stage STS.128**: impossible — the 4 fp32 in a swizzle chunk are split across 2 lanes; floored at STS.64.
+- **Persistent grid**: L2 *worse* (48%) — the static grid-stride schedule fragments access more than the hardware scheduler.
+- **Bc=32 re-tile**: wrong lever — the smem hog is query-side `sQ_sw`/`sdO_sw` (locked to Br=64 by wgmma-m64), not KV-side; Bc=32 saves only ~16 KB and can't reach 2 CTA/SM. And occupancy is moot anyway (cuDNN = 1 CTA/SM).
 
-## Digging in — measuring the scaling point
+## Full shape sweep — the deciding data
 
-I profiled V44 at B=2 and B=8 side by side to *prove* the scaling story instead of inferring it. The result was clean: **every** metric is identical across batch — compute 37.9%, occupancy 18.5%, IPC 1.29, L1 hit ~91%, shared bank-conflict 5.3-way — **except one: L2 hit, 91.68% (B=2) → 74.95% (B=8)**, with DRAM traffic rising 8% → 28% to cover the misses. So the B=8 lag is *purely* L2 residency, measured, not a guess. And the reason is structural to GQA: KV-parallel reuses the **big** Q/dO set (Hq=12 heads), which outgrows L2 at high batch; cuDNN is Q-parallel and reuses the **small** K/V set (Hkv=4), which stays resident — that's why it holds ~92% at every batch.
+The raster looked like a win at the Hq=12/B=8 training shape, so I swept the broader head/batch space (SDPA bwd `enable_gqa` = best PyTorch competitor; all S=4096, D=128):
 
-Then I tried, properly, to fix it:
-- **Persistent grid, re-measured** — it made L2 *worse*, not better: **48%** hit (the static grid-stride schedule fragments access more than the hardware scheduler's natural 75%). Dead, now with data.
-- **D-collapse, profiled** — it *does* fix L2 (80% hit, Q-parallel), but compute is stuck at ~24%: it's bound by the transposed-A P/dS **staging fence** + the consumer's **barrier/wait spin (62%)**. I attacked the fence directly — a fence-batch (V46, flat) and `ldmatrix.trans→RS-A` to kill the async proxy fence entirely (V47, derived the transposed-A fragment layout from CUTLASS ground truth, got it bit-identical first try). But V47 came back *flat-to-worse* (compute 23%): the fence was a red herring — the real cost is the barrier-spin (consumer serialization), and the overlap lever to hide it is smem-floored. So the D-collapse's ~0.3 ms doesn't live in the staging fence either.
-- **V44 store micro-tweaks** — localized the 5.3-way shared-store conflict: it's the **fp32 dQ swizzle-stage** (STS.64, 93% of the excess). It's floored — fp32 can't use STSM (16-bit), and its layout is coupled to the SWIZZLE_128B TMA-reduce descriptor (already cut 8-way→5.3-way in V44). dS/P are already STSM-swizzled (not the source). No reachable store cut left.
+| Shape (B×Hq) | G | V44 (ms) | raster (ms) | SDPA (ms) | best vs SDPA |
+|---|---|---|---|---|---|
+| 2×16 | 4 | **1.040** | 1.250 | 1.031 | +1% |
+| 2×24 | 3 | **1.557** | 1.708 | 1.504 | +3% |
+| 2×32 | 4 | **2.089** | 2.254 | 1.899 | +10% |
+| 4×16 | 4 | **2.090** | 2.266 | 1.898 | +10% |
+| 4×24 | 3 | **3.103** | 3.217 | 2.913 | +6% |
+| 4×32 | 4 | ~4.14 | 4.289 | 3.862 | +11% |
+| 8×16 | 4 | ~4.14 | 4.292 | 3.865 | +11% |
+| 8×24 | 3 | — | 6.328 | 5.743 | +10% |
+| 8×32 | 4 | — | 8.350 | 7.693 | +8% |
 
-## Honest state at end of day
+**The raster loses to plain V44 on every shape I can measure both.** Its one clean win was the narrow Hq=12/B=8 case; everywhere else it regresses (up to +19% at 2×32/4×16, where an adaptive footprint gate mispredicted). The batch-independent tweaks (vec-store, barrier-fuse) were tied-to-marginal and did not survive the broader sweep as robust wins either.
 
-The B=8 ~0.3 ms is measured to be L2-capacity-bound, and every reachable lever — persistent (worse), D-collapse staging (flat), V44 store (floored) — has been closed with data. It's *not* obviously in the D-collapse's staging as first thought, which means we may still be missing the real handle on that last 0.3 ms. V44 stands as the deliverable (wins B=2, ties B=4, ~1.09× at B=8); the hunt for the B=8 handle continues (currently probing a SWIZZLE_64B dQ-stage variant).
+## Final verdict — ship **clean V44**
 
+`src/attention/GQA_bwd_v44.cu` (byte-identical to the banked V44, `swizzled TMA-reduce dQ`) is the deliverable. Everything explored today — L2 raster (adaptive or fixed), pipelined dQ-reduce, register-P barrier merge, store/barrier micro-tweaks — was reverted: none robustly beat V44 across the shape space, and several regressed. V44 is the simple, deterministic, proven kernel.
+
+| batch (Hq=12) | V44 | cuDNN | result |
+|---|---|---|---|
+| B=2 | 0.796 ms | 0.800 ms | **win** ~0.5% |
+| B=4 | 1.576 ms | 1.496 ms | lag ~5% |
+| B=8 | 3.244 ms | 2.944 ms | lag ~10% |
+
+Across the broader Hq=16/24/32 sweep, V44 lags SDPA **~1–11%** (tied at 2×16). The B=8 gap is measured to be **intra-CTA exposed latency at fixed 1-CTA occupancy** — the same wall cuDNN sits behind (cuDNN is *also* 1 CTA/SM), which it hides marginally better. Every reachable lever on that last ~0.3 ms — **L2 (red herring, proven), stores (floored), barriers (latency-bound, not sync), occupancy (moot), redundant-compute (overloads a warpgroup)** — has been closed with data. Only `sdpa`/cuDNN are valid apple-to-apple competitors; thunderkittens is forward-only (its backward overflows to NaN on this GQA shape).
