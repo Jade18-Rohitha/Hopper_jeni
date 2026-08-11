@@ -14079,7 +14079,7 @@ void launch_gqa_backward_v44(
 __device__ __forceinline__ void store_acc_sw64_f32(const float* d, float* base, int tid, float scl) {
     int w = tid >> 5, lane = tid & 31;
     int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
-    const int ph0 = r0 & 3, ph1 = r1 & 3;              // SW64B period = 4 rows
+    const int ph0 = (r0 >> 1) & 3, ph1 = (r1 >> 1) & 3;  // SW64B: XOR bits are (row>>1)&3, not row&3 (derived vs proven 128B)
 #pragma unroll
     for (int nt = 0; nt < 8; nt++) {
         const int c   = nt * 8 + cc;               // 0..63 (even)
