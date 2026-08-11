@@ -241,9 +241,11 @@ def _gqa_bwd_dq(
 
     dq = tl.zeros([BLOCK_M, D], dtype=tl.float32)
 
-    for start_n in range(0, S, BLOCK_N):
+    hi = (start_m + 1) * BLOCK_M          # causal: only key blocks up to this query tile
+    for start_n in range(0, hi, BLOCK_N):
         offs_n = start_n + tl.arange(0, BLOCK_N)
         mask_n = offs_n < S
+        causal = offs_m[:, None] >= offs_n[None, :]
 
         k = tl.load(k_base + offs_n[:, None] * stride_ks + offs_d[None, :] * stride_kd,
                     mask=mask_n[:, None], other=0.0)                     # [BLOCK_N, D]
@@ -251,9 +253,9 @@ def _gqa_bwd_dq(
                     mask=mask_n[:, None], other=0.0)                     # [BLOCK_N, D]
 
         qk = tl.dot(q, tl.trans(k)) * scale                             # [BLOCK_M, BLOCK_N]
-        qk = tl.where(mask_n[None, :], qk, float('-inf'))
+        qk = tl.where(mask_n[None, :] & causal, qk, float('-inf'))
         p  = tl.exp(qk - lse[:, None])
-        p  = tl.where(mask_n[None, :], p, 0.0)
+        p  = tl.where(mask_n[None, :] & causal, p, 0.0)
 
         dp = tl.dot(do, tl.trans(v))                                     # [BLOCK_M, BLOCK_N]
         dp = tl.where(mask_n[None, :], dp, 0.0)
@@ -310,9 +312,11 @@ def _gqa_bwd_dkv(
         lse_ptr = LSE   + off_b * stride_lb  + off_hq * stride_lh
         d_ptr   = Delta + off_b * stride_db  + off_hq * stride_dh
 
-        for start_m in range(0, S, BLOCK_M):
+        lo = ((start_n * BLOCK_N) // BLOCK_M) * BLOCK_M    # causal: skip query blocks fully below the diagonal
+        for start_m in range(lo, S, BLOCK_M):
             offs_m = start_m + tl.arange(0, BLOCK_M)
             mask_m = offs_m < S
+            causal = offs_m[:, None] >= offs_n[None, :]
 
             q  = tl.load(q_base  + offs_m[:, None] * stride_qs  + offs_d[None, :] * stride_qd,
                          mask=mask_m[:, None], other=0.0)
@@ -322,9 +326,9 @@ def _gqa_bwd_dkv(
             Di  = tl.load(d_ptr   + offs_m * stride_ds, mask=mask_m, other=0.0)
 
             qk = tl.dot(q, tl.trans(k)) * scale
-            qk = tl.where(mask_m[:, None] & mask_n[None, :], qk, float('-inf'))
+            qk = tl.where(mask_m[:, None] & mask_n[None, :] & causal, qk, float('-inf'))
             p  = tl.exp(qk - lse[:, None])
-            p  = tl.where(mask_m[:, None] & mask_n[None, :], p, 0.0)  # [BLOCK_M, BLOCK_N]
+            p  = tl.where(mask_m[:, None] & mask_n[None, :] & causal, p, 0.0)  # [BLOCK_M, BLOCK_N]
 
             dv += tl.dot(tl.trans(p).to(do.dtype), do)                 # [BLOCK_N, D]
 
