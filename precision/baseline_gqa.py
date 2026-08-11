@@ -366,7 +366,7 @@ def triton_gqa_backward(q, k, v, o, lse, do, scale, BLOCK_M=128, BLOCK_N=64):
         *lse.stride(), *delta.stride(),
         Hq, S, G, scale,
         BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, D=D,
-        num_warps=4, num_stages=2,
+        num_warps=8, num_stages=3,
     )
     _gqa_bwd_dkv[grid_dkv](
         q, k, v, do, dk, dv, lse, delta,
@@ -375,7 +375,7 @@ def triton_gqa_backward(q, k, v, o, lse, do, scale, BLOCK_M=128, BLOCK_N=64):
         *lse.stride(), *delta.stride(),
         Hkv, S, scale,
         G=G, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, D=D,
-        num_warps=4, num_stages=2,
+        num_warps=8, num_stages=3,
     )
     return dq, dk, dv
 
