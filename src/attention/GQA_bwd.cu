@@ -14763,6 +14763,7 @@ gqa_backward_v47_kv(
 
     // V42: hoist the invariant-buffer wgmma base descriptors — computed once, reused every kv-tile.
     const uint64_t descGemmB = make_desc_sw128_K((wg == 0) ? sK_sw : sV_sw);   // S/dP GEMM B (K-major)
+    const uint64_t descKgemm = make_desc_sw128_K(sK_sw);                        // V47: K desc for wg1 redundant QK (descGemmB is V on wg1)
     const uint64_t descP     = make_desc_sw128_MN(sP);                          // dV A (Major::MN)
     const uint64_t descDSmn  = make_desc_sw128_MN(sDS);                         // dK A (Major::MN)
     const uint64_t descDSk   = make_desc_sw128_K (sDS);                         // dQ A (Major::K)
@@ -14789,7 +14790,7 @@ gqa_backward_v47_kv(
             zeroN<32>(dPacc);
             run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB);
             float acc2[32]; zeroN<32>(acc2);                             // V47: wg1 computes its OWN P (redundant QK)
-            run_gemm_n64_sw2_hoB(acc2, sQ_sw[s], descGemmB);            //   -> register-P dS, no sP ldmatrix
+            run_gemm_n64_sw2_hoB(acc2, sQ_sw[s], descKgemm);            //   -> register-P dS, no sP ldmatrix
             if (qcC == qc0) fuse_pdS_reg<Bc, true >(acc2, dPacc, sLSE[s], sD[s], sDS, wtid, q_row0, k_row0, scale2);
             else            fuse_pdS_reg<Bc, false>(acc2, dPacc, sLSE[s], sD[s], sDS, wtid, 0,       0,      scale2);
         }
