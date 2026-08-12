@@ -13835,18 +13835,17 @@ void launch_gqa_backward_v43(
 // bank conflict. Reduced by a 5D descriptor {col4,ccBit,nt,laneHi,w}; r0/r1 = two reduces (laneHi coord 0/8).
 __device__ __forceinline__ void store_dq_coalesced(const float* d, float* s0, float* s1, int wtid, float scl) {
     int w = wtid >> 5, lane = wtid & 31;
-    int laneHi = lane >> 2, ccBit = (lane & 3) >> 1;
-    const bool even = !(lane & 1);
+    int laneHi = lane >> 2, colGroup = (lane & 3) >> 1;
+    const bool r0lane = !(lane & 1);            // even lane -> r0 float4 -> s0 ; odd -> r1 -> s1 (ALL 32 active)
+    const int pk = laneHi * 2 + colGroup;       // 0..15 packs the 16 active lanes contiguous per (w,nt)
 #pragma unroll
     for (int nt = 0; nt < 8; nt++) {
-        float a0=d[nt*4+0]*scl, a1=d[nt*4+1]*scl, a2=d[nt*4+2]*scl, a3=d[nt*4+3]*scl;
-        float n0=__shfl_xor_sync(~0u,a0,1), n1=__shfl_xor_sync(~0u,a1,1);
-        float n2=__shfl_xor_sync(~0u,a2,1), n3=__shfl_xor_sync(~0u,a3,1);
-        if (even) {
-            int base = ((((w*8+laneHi)*8+nt)*2+ccBit)*4);
-            s0[base+0]=a0; s0[base+1]=a1; s0[base+2]=n0; s0[base+3]=n1;
-            s1[base+0]=a2; s1[base+1]=a3; s1[base+2]=n2; s1[base+3]=n3;
-        }
+        float v0=d[nt*4+0]*scl, v1=d[nt*4+1]*scl, v2=d[nt*4+2]*scl, v3=d[nt*4+3]*scl; // r0c0,r0c1,r1c0,r1c1
+        float p0=__shfl_xor_sync(~0u,v0,1), p1=__shfl_xor_sync(~0u,v1,1);              // partner r0c2,r0c3
+        float p2=__shfl_xor_sync(~0u,v2,1), p3=__shfl_xor_sync(~0u,v3,1);              // partner r1c2,r1c3
+        int base = ((w*8+nt)*16+pk)*4;          // == col4 + colGroup*4 + laneHi*8 + nt*64 + w*512
+        if (r0lane) { s0[base+0]=v0; s0[base+1]=v1; s0[base+2]=p0; s0[base+3]=p1; }    // r0: 4 contig cols
+        else        { s1[base+0]=p2; s1[base+1]=p3; s1[base+2]=v2; s1[base+3]=v3; }    // r1: 4 contig cols
     }
 }
 __device__ __forceinline__ void red5(const void* desc, const float* s, uint32_t c0, uint32_t c1, uint32_t c2, uint32_t c3, uint32_t c4) {
@@ -14307,8 +14306,8 @@ gqa_backward_v5c_kv(
         if (wtid == 0) {                            // 5D TMA-reduce: r0 half (laneHi=0) + r1 half (laneHi=8) -> dq_accum
             const uint32_t wrow = (uint32_t)(lBaseOf(gC, qcC) >> 4);  // rowbase/16 = w-dim coord
             const uint32_t nt0  = (uint32_t)(wg * 8);                 // nt-dim coord selects wg col-half
-            red5(&tma_dq_red, sa, 0, 0, nt0, 0, wrow);
-            red5(&tma_dq_red, sb, 0, 0, nt0, 8, wrow);
+            red5(&tma_dq_red, sa, 0, 0, 0, nt0, wrow);               // s0=r0 rows (laneHi coord 0)
+            red5(&tma_dq_red, sb, 0, 0, 8, nt0, wrow);               // s1=r1 rows (laneHi coord 8)
             tma_store_commit_v34();
             tma_bulk_wait1_v43();                   // DOUBLE-BUFFER: keep <=1 reduce pending -> overlaps compute(it+1)
         }
@@ -14376,8 +14375,8 @@ void launch_gqa_backward_v5c(
     // dQ D-half is reduced as TWO 32-wide atoms. Probe-confirmed: FP32 SW128B box{64,64} is rejected, box{32,64} OK.
     auto make_tma_red = [&](const float* ptr, uint64_t rows) {
         CUtensorMap desc{};
-        uint64_t gS[5]={4,2,16,16,rows/16};           // V5: full-tensor 5D {col4,ccBit,nt,laneHi,w}
-        uint64_t gStr[4]={16ull,32ull,512ull,8192ull};// elem strides ccBit=4,nt=8,laneHi=128,w=16*128 (bytes)
+        uint64_t gS[5]={4,2,16,16,rows/16};           // V5c: full-tensor 5D {col4,colGroup,laneHi,nt,w}
+        uint64_t gStr[4]={16ull,512ull,32ull,8192ull};// elem strides colGroup=4,laneHi=128,nt=8,w=16*128 (bytes)
         uint32_t box[5]={4,2,8,8,4}; uint32_t eStride[5]={1,1,1,1,1};
         CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,5,(void*)ptr,gS,gStr,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_NONE,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
