@@ -13829,33 +13829,33 @@ void launch_gqa_backward_v43(
 // ── Swizzled fp32 store: dQ D-fragment -> 128B-swizzled smem (2 atoms of 64x32).  Mirrors store_acc_smem_v6's
 //    fragment mapping (r0/r1 rows, c cols) but routes each element to its SW128B slot: atom=c>>5, col32=c&31,
 //    chunk=col32>>2, phys = atom*(64*32) + row*32 + ((chunk ^ (row&7))<<2) + (col32&3).
-// V4e = V44 + SEPARATE dQ REDUCE KERNEL (mirrors V21->V22 D-rowsum isolation + cuDNN's separate reduce kernel).
-// The main kernel's 27.6M-conflict swizzled dQ store + inline TMA-reduce are REMOVED. Each kv-tile block writes
-// its dQ contribution ONE-WRITER via plain STG into a per-k_tile partial slab (no smem stage, no bank conflict).
-// A separate bandwidth-bound reduce kernel then sums the causal k_tiles -> dQ. No memset: reduce reads only
-// kt<=q_tile, and block kt writes exactly the qc>=kt rows (one-writer per (b,hq,q)).
-__device__ __forceinline__ void store_dq_partial_stg(const float* d, float* pbase, int wtid, int wg, float scl) {
-    int w = wtid >> 5, lane = wtid & 31;
-    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
-    const int coff = wg * 64;
+// V4f: cuDNN's dQ store, decoded from SASS (R11=(tid&31)*16 coalesced STS.128, R9=(tid&3)*8 transpose read).
+// Intra-warp transpose (each warp owns 16 rows -> __syncwarp, no CTA barrier): mma-C fp32 fragment -> PADDED
+// scratch (stride 65: 8*65 mod 32 = 8 != 0 so r0/r1=r0+8 land on DIFFERENT banks -> conflict-free, unlike
+// V4c's swizzle which kept the r0/r1 alias) -> read back row-contiguous -> COALESCED STS.128 (lane*4 fp32 =
+// lane*16 bytes, exactly cuDNN's R11) into the packed stage that SWIZZLE_NONE box{64,64} TMA-reduce reads.
+__device__ __forceinline__ void store_acc_transpose_pad(const float* d, float* stage, float* scr, int wtid, float scl) {
+    constexpr int SC = 65;
+    const int w = wtid >> 5, lane = wtid & 31;
+    float* sw = scr   + w * (16 * SC);
+    float* st = stage + w * (16 * 64);
+    const int lr0 = lane >> 2, lr1 = lr0 + 8, cc = (lane & 3) * 2;   // LOCAL rows 0..15
 #pragma unroll
     for (int nt = 0; nt < 8; nt++) {
         const int c = nt * 8 + cc;
-        pbase[r0 * 128 + coff + c    ] = d[nt*4+0]*scl;
-        pbase[r0 * 128 + coff + c + 1] = d[nt*4+1]*scl;
-        pbase[r1 * 128 + coff + c    ] = d[nt*4+2]*scl;
-        pbase[r1 * 128 + coff + c + 1] = d[nt*4+3]*scl;
+        sw[lr0 * SC + c    ] = d[nt*4+0]*scl;
+        sw[lr0 * SC + c + 1] = d[nt*4+1]*scl;
+        sw[lr1 * SC + c    ] = d[nt*4+2]*scl;
+        sw[lr1 * SC + c + 1] = d[nt*4+3]*scl;
     }
-}
-__global__ void reduce_dq_partials_v4e(const float* __restrict__ part, bf16* __restrict__ dQ,
-                                       long N, int S, int Br) {
-    const long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N) return;
-    const int q  = (int)((idx / 128) % S);     // query row within its (b,hq)
-    const int qt = q / Br;
-    float acc = 0.f;
-    for (int kt = 0; kt <= qt; kt++) acc += part[(long)kt * N + idx];
-    dQ[idx] = __float2bfloat16(acc);
+    __syncwarp();
+#pragma unroll
+    for (int rnd = 0; rnd < 8; rnd++) {
+        const int f = rnd * 128 + lane * 4;        // coalesced: lane*4 fp32 = lane*16 bytes (cuDNN R11)
+        const int row = f >> 6, col = f & 63;
+        *reinterpret_cast<float4*>(&st[f]) =
+            make_float4(sw[row*SC+col], sw[row*SC+col+1], sw[row*SC+col+2], sw[row*SC+col+3]);
+    }
 }
 __device__ __forceinline__ void store_acc_sw128_f32(const float* d, float* base, int tid, float scl) {
     int w = tid >> 5, lane = tid & 31;
@@ -14156,23 +14156,23 @@ void launch_gqa_backward_v44(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
-// ===== V4e = V44 with dQ moved to a SEPARATE REDUCE KERNEL (one-writer STG partials, V22-style isolation) =====
+// ===== V4f = V44 + cuDNN repack store (padded transpose -> coalesced STS.128, SWIZZLE_NONE reduce) =====
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
-gqa_backward_v4e_kv(
+gqa_backward_v4f_kv(
     const __grid_constant__ CUtensorMap tma_K_sw,
     const __grid_constant__ CUtensorMap tma_V_sw,
     const __grid_constant__ CUtensorMap tma_Q_sw,
     const __grid_constant__ CUtensorMap tma_dO_sw,
     const __grid_constant__ CUtensorMap tma_dV_st,
     const __grid_constant__ CUtensorMap tma_dK_st,
+    const __grid_constant__ CUtensorMap tma_dq_red,   // fp32 dq_accum (SWIZZLE_128B, box 32x64) — swizzled TMA-reduce add target
     const float * __restrict__ d_Drow,
     const float * __restrict__ d_LSE,
     bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV,
-    float * __restrict__ d_dq_part, long partN,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "V4e requires Br=Bc=64, D=128");
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V4f requires Br=Bc=64, D=128");
     constexpr int CONS = 256;
     constexpr int PD   = 3;
 
@@ -14180,6 +14180,9 @@ gqa_backward_v4e_kv(
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
+    __shared__ __align__(1024) float sS  [1][Br * 64];       // V4f: single-buffered PACKED dQ stage (wg0)
+    __shared__ __align__(1024) float sdP [1][Br * 64];       // V4f: single-buffered PACKED dQ stage (wg1)
+    __shared__ __align__(128)  float sScr[2][4 * 16 * 65];   // V4f: per-warpgroup padded transpose scratch (4 warps x 16 rows x 65)
     __shared__ __align__(1024) bf16  sP [Br * 64];
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
@@ -14300,8 +14303,15 @@ gqa_backward_v4e_kv(
         float dq[32]; zeroN<32>(dq);
         run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-        float* pbase = d_dq_part + (long)k_tile * partN + lBaseOf(gC, qcC) * (long)D;
-        store_dq_partial_stg(dq, pbase, wtid, wg, scale);            // V4e: one-writer STG -> per-k_tile partial (NO smem stage/conflict)
+        float* stageDQ = (wg == 0) ? sS[0] : sdP[0];
+        store_acc_transpose_pad(dq, stageDQ, sScr[wg], wtid, scale);  // V4f: transpose -> COALESCED STS.128 (cuDNN repack)
+        if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
+        fence_proxy_async_shared();
+        if (wtid == 0) {                            // SWIZZLE_NONE box{64,64} TMA-reduce (packed stage), 1 call per wg
+            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ, (uint32_t)(wg * 64), (uint32_t)lBaseOf(gC, qcC));
+            tma_store_commit_v34();
+            tma_bulk_wait0_v43();                   // SINGLE-BUFFER: drain reduce before next store reuses stage
+        }
         consumer_sync();
         if (tid == 0) mbar_arrive_v11(&empty[s]);
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
@@ -14325,13 +14335,13 @@ gqa_backward_v4e_kv(
 }
 
 template<int Br, int Bc, int D>
-void launch_gqa_backward_v4e(
+void launch_gqa_backward_v4f(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
     const bf16 *d_dO, const float *d_LSE,
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "V4e requires Br=Bc=64, D=128");
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V4f requires Br=Bc=64, D=128");
     auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
         CUtensorMap desc{};
         uint64_t gSize[2]   = {(uint64_t)D, total_rows};
@@ -14362,6 +14372,15 @@ void launch_gqa_backward_v4e(
         if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out v42: %s\n",e);exit(1);} return desc; };
     CUtensorMap tma_dV_st = make_tma_out(d_dV, Rkv);
     CUtensorMap tma_dK_st = make_tma_out(d_dK, Rkv);
+    // fp32 dq_accum swizzled TMA-reduce descriptor. SW128B needs box inner = 32 fp32 (=128B atom); the 64-wide
+    // dQ D-half is reduced as TWO 32-wide atoms. Probe-confirmed: FP32 SW128B box{64,64} is rejected, box{32,64} OK.
+    auto make_tma_red = [&](const float* ptr, uint64_t rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]={(uint64_t)D, rows}; uint64_t gStride[1]={(uint64_t)D*sizeof(float)};
+        uint32_t box[2]={64u,64u}; uint32_t eStride[2]={1,1};   // V4f: PACKED stage -> SWIZZLE_NONE box{64,64}
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gSize,gStride,box,eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red v4f: %s\n",e);exit(1);} return desc; };
 
     const long drowN = (long)B * Hq * S;
     static float* d_Drow  = nullptr;
@@ -14371,15 +14390,16 @@ void launch_gqa_backward_v4e(
         CUDA_CHECK(cudaMalloc(&d_Drow, drowN * sizeof(float)));
         drow_cap = drowN;
     }
-    const long partN = (long)B * Hq * S * D;
-    const long nKt   = S / Bc;
-    static float* d_dq_part = nullptr;
-    static long   part_cap  = 0;
-    if (nKt * partN > part_cap) {
-        if (d_dq_part) CUDA_CHECK(cudaFree(d_dq_part));
-        CUDA_CHECK(cudaMalloc(&d_dq_part, nKt * partN * sizeof(float)));   // per-k_tile dQ partials (no memset: one-writer, causal-covered)
-        part_cap = nKt * partN;
+    const long dqN = (long)B * Hq * S * D;
+    static float* d_dq_accum = nullptr;
+    static long   dq_cap     = 0;
+    if (dqN > dq_cap) {
+        if (d_dq_accum) CUDA_CHECK(cudaFree(d_dq_accum));
+        CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
+        dq_cap = dqN;
     }
+    CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
+    CUtensorMap tma_dq_red = make_tma_red(d_dq_accum, (uint64_t)B * Hq * S);
 
     const int  dBlock = 256;
     const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
@@ -14387,12 +14407,15 @@ void launch_gqa_backward_v4e(
 
     constexpr dim3 BLOCK(384);
     dim3 GRID(B, Hkv, S / Bc);
-    gqa_backward_v4e_kv<Br,Bc,D><<<GRID, BLOCK>>>(
-        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st,
-        d_Drow, d_LSE, d_dK, d_dV, d_dq_part, partN, B, Hq, Hkv, G, S, scale);
+    gqa_backward_v4f_kv<Br,Bc,D><<<GRID, BLOCK>>>(
+        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
+        d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
 
-    reduce_dq_partials_v4e<<<(unsigned)((partN + 255) / 256), 256>>>(d_dq_part, d_dQ, partN, S, Br);
+    const int convBlock = 256;
+    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
+
 
 
 
@@ -14943,9 +14966,9 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_v4e<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    launch_gqa_backward_v4f<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V4e Br=64 Bc=64 dQ via SEPARATE reduce kernel (one-writer STG partials) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V4f Br=64 Bc=64 cuDNN repack: transpose->coalesced STS.128 dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_v45<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -15279,10 +15302,10 @@ int main(){
     }
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_v4e<Br2,Bc2,D>(
+            [&](){ launch_gqa_backward_v4f<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V4e Br=64, Bc=64  dQ via SEPARATE reduce kernel (STG partials)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V4f Br=64, Bc=64  cuDNN repack (transpose->coalesced STS.128 dQ)  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
