@@ -13820,6 +13820,34 @@ void launch_gqa_backward_v43(
 // ── Swizzled fp32 store: dQ D-fragment -> 128B-swizzled smem (2 atoms of 64x32).  Mirrors store_acc_smem_v6's
 //    fragment mapping (r0/r1 rows, c cols) but routes each element to its SW128B slot: atom=c>>5, col32=c&31,
 //    chunk=col32>>2, phys = atom*(64*32) + row*32 + ((chunk ^ (row&7))<<2) + (col32&3).
+// V4b: cuDNN's dQ store = STS.128 into the SAME SW128B slots as store_acc_sw128_f32, not scalars.
+// Each SW128B chunk is exactly 4 contiguous fp32 (16B = one STS.128). The mma-C fragment gives a
+// thread only 2 of a chunk's 4 fp32 (cols c,c+1); its lane^1 neighbor holds cols c+2,c+3 (cc+2).
+// Gather the neighbor's pair via shfl_xor(.,1) so the EVEN lane owns the full chunk, then one
+// float4 store per (r0,r1). Result: 16 STS.128/thread (matches cuDNN), 2-way vs scalar 5.3-way.
+// Physical slot identical to store_acc_sw128_f32 -> the box{32,64} SW128B TMA-reduce reads it unchanged.
+__device__ __forceinline__ void store_acc_sts128_sw128(const float* d, float* base, int tid, float scl) {
+    int w = tid >> 5, lane = tid & 31;
+    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+    const int ph0 = r0 & 7, ph1 = r1 & 7;
+    const bool even = !(lane & 1);
+#pragma unroll
+    for (int nt = 0; nt < 8; nt++) {
+        const int c = nt * 8 + cc;                 // even lane: c%4==0 -> chunk-aligned
+        float a0 = d[nt*4+0]*scl, a1 = d[nt*4+1]*scl, a2 = d[nt*4+2]*scl, a3 = d[nt*4+3]*scl;
+        // neighbor (lane^1) holds the SAME rows, cols c±2 -> its a0,a1 = our chunk's cols c+2,c+3
+        float n0 = __shfl_xor_sync(0xffffffffu, a0, 1);
+        float n1 = __shfl_xor_sync(0xffffffffu, a1, 1);
+        float n2 = __shfl_xor_sync(0xffffffffu, a2, 1);
+        float n3 = __shfl_xor_sync(0xffffffffu, a3, 1);
+        if (even) {
+            const int atom = c >> 5, col32 = c & 31, chunk = col32 >> 2;
+            const int abase = atom * (64 * 32);
+            *reinterpret_cast<float4*>(&base[abase + r0 * 32 + ((chunk ^ ph0) << 2)]) = make_float4(a0, a1, n0, n1);
+            *reinterpret_cast<float4*>(&base[abase + r1 * 32 + ((chunk ^ ph1) << 2)]) = make_float4(a2, a3, n2, n3);
+        }
+    }
+}
 __device__ __forceinline__ void store_acc_sw128_f32(const float* d, float* base, int tid, float scl) {
     int w = tid >> 5, lane = tid & 31;
     int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
@@ -14099,9 +14127,10 @@ void launch_gqa_backward_v44(
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
 
+// ===== V4b = V44 + cuDNN-style STS.128 gather dQ store (2-way vs 5.3-way) =====
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
-gqa_backward_v4a_kv(
+gqa_backward_v4b_kv(
     const __grid_constant__ CUtensorMap tma_K_sw,
     const __grid_constant__ CUtensorMap tma_V_sw,
     const __grid_constant__ CUtensorMap tma_Q_sw,
@@ -14114,7 +14143,7 @@ gqa_backward_v4a_kv(
     bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "V4a requires Br=Bc=64, D=128");
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V4b requires Br=Bc=64, D=128");
     constexpr int CONS = 256;
     constexpr int PD   = 3;
 
@@ -14122,6 +14151,8 @@ gqa_backward_v4a_kv(
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
+    __shared__ __align__(1024) float sS [2][Br * 64];   // V44: DOUBLE-BUFFERED SWIZZLED dQ stage (wg0); each buf = 2 SW128B atoms of [Br*32]
+    __shared__ __align__(1024) float sdP[2][Br * 64];   // V44: DOUBLE-BUFFERED SWIZZLED dQ stage (wg1); atom a at [a*Br*32], SW128B chunk^ (row&7)
     __shared__ __align__(1024) bf16  sP [Br * 64];
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
@@ -14239,8 +14270,22 @@ gqa_backward_v4a_kv(
         if (wg == 1) fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
         consumer_sync();
 
-        run_gemm_dK_te_issue(dk, descDSmn, sQ_sw[s] + wg * 4096);   // V4b1: dK only (no dQ scatter)
-        run_gemm_dVdK_te_wait(dv, dk);
+        float dq[32]; zeroN<32>(dq);
+        run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
+        run_gemm_dVdKdQ_te_wait(dv, dk, dq);
+        const int db = it & 1;                                        // V44: ping-pong dQ-stage buffer
+        float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
+        store_acc_sts128_sw128(dq, stageDQ, wtid, scale);               // CONFLICT-FREE swizzled store -> buf[it&1] (2 SW128B atoms)
+        if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
+        fence_proxy_async_shared();                 // generic STS staging -> async-proxy (TMA) read
+        if (wtid == 0) {                            // swizzled TMA-reduce: 2 atoms (cols [wg*64,+32),[+32,+64)) -> dq_accum, off L1TEX
+            const uint32_t crow = (uint32_t)lBaseOf(gC, qcC);
+            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,             (uint32_t)(wg * 64),      crow);   // atom 0
+            tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32,   (uint32_t)(wg * 64 + 32), crow);   // atom 1
+            tma_store_commit_v34();
+            tma_bulk_wait1_v43();                   // DOUBLE-BUFFER: keep <=1 reduce pending -> reduce(it) overlaps compute(it+1);
+                                                    // reduce(it-1) is done here, so store(it+1) into buf[(it+1)&1]==buf[(it-1)&1] is safe.
+        }
         consumer_sync();
         if (tid == 0) mbar_arrive_v11(&empty[s]);
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
@@ -14264,13 +14309,13 @@ gqa_backward_v4a_kv(
 }
 
 template<int Br, int Bc, int D>
-void launch_gqa_backward_v4a(
+void launch_gqa_backward_v4b(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
     const bf16 *d_dO, const float *d_LSE,
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "V4a requires Br=Bc=64, D=128");
+    static_assert(Br == 64 && Bc == 64 && D == 128, "V4b requires Br=Bc=64, D=128");
     auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
         CUtensorMap desc{};
         uint64_t gSize[2]   = {(uint64_t)D, total_rows};
@@ -14309,7 +14354,7 @@ void launch_gqa_backward_v4a(
         uint32_t box[2]={32u,64u}; uint32_t eStride[2]={1,1};
         CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gSize,gStride,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red v4a: %s\n",e);exit(1);} return desc; };
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red v44: %s\n",e);exit(1);} return desc; };
 
     const long drowN = (long)B * Hq * S;
     static float* d_Drow  = nullptr;
@@ -14336,7 +14381,7 @@ void launch_gqa_backward_v4a(
 
     constexpr dim3 BLOCK(384);
     dim3 GRID(B, Hkv, S / Bc);
-    gqa_backward_v4a_kv<Br,Bc,D><<<GRID, BLOCK>>>(
+    gqa_backward_v4b_kv<Br,Bc,D><<<GRID, BLOCK>>>(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
 
@@ -14344,6 +14389,7 @@ void launch_gqa_backward_v4a(
     const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
     convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
 }
+
 
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
@@ -14892,9 +14938,9 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_v4a<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    launch_gqa_backward_v4b<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V4a Br=64 Bc=64 dK/dV-only, NO dQ scatter (dQ expected FAIL) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V4b Br=64 Bc=64 STS.128 gather dQ store (2-way, cuDNN-style) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Latency benchmark — full backward (dQ + dKdV kernels), median over 100
@@ -15231,10 +15277,10 @@ int main(){
     }
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_v4a<Br2,Bc2,D>(
+            [&](){ launch_gqa_backward_v4b<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V4a Br=64, Bc=64  dK/dV-only (NO dQ scatter store)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V4b Br=64, Bc=64  STS.128 gather dQ store (2-way, cuDNN-style)  (Hopper SM_90)", s);
     }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
