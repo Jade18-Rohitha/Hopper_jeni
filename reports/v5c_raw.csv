@@ -1,0 +1,90 @@
+==PROF== Connected to process 862901 (/root/jeni/Hopper_jeni/build/bin/gqa_bwd)
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.188e-05  max_rel=3.332e+01
+  dK  max_abs=3.906e-03  mean_abs=1.849e-05  max_rel=2.125e+01
+  dV  max_abs=3.125e-02  mean_abs=5.476e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.188e-05  max_rel=3.332e+01
+  dK  max_abs=3.906e-03  mean_abs=1.849e-05  max_rel=2.125e+01
+  dV  max_abs=3.125e-02  mean_abs=5.476e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V5c Br=64 Bc=64 cuDNN COALESCED store (shfl+5D reduce) dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.188e-05  max_rel=3.332e+01
+  dK  max_abs=3.906e-03  mean_abs=1.849e-05  max_rel=2.125e+01
+  dV  max_abs=3.125e-02  mean_abs=5.476e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.188e-05  max_rel=3.332e+01
+  dK  max_abs=3.906e-03  mean_abs=1.849e-05  max_rel=2.125e+01
+  dV  max_abs=3.125e-02  mean_abs=5.476e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=4 Hq=12 Hkv=4 S=4096 D=128, GQA G=3, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.8053 ms
+Median Time:       1.8048 ms
+Std Dev:           0.0077 ms
+Min Time:          1.7902 ms
+Max Time:          1.8295 ms
+Performance:     913.5673 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.6083 ms
+Median Time:       1.6073 ms
+Std Dev:           0.0063 ms
+Min Time:          1.5931 ms
+Max Time:          1.6284 ms
+Performance:    1025.4759 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V5c Br=64, Bc=64  cuDNN COALESCED store (shfl + 5D reduce)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.7719 ms
+Median Time:       2.7707 ms
+Std Dev:           0.0185 ms
+Min Time:          2.7390 ms
+Max Time:          2.8139 ms
+Performance:     595.0001 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.6048 ms
+Median Time:       1.6061 ms
+Std Dev:           0.0100 ms
+Min Time:          1.5828 ms
+Max Time:          1.6324 ms
+Performance:    1027.7193 TFLOPS
+----------------------------------------------------------
+==PROF== Disconnected from process 862901
+"ID","Process ID","Process Name","Host Name","Kernel Name","Context","Stream","Block Size","Grid Size","Device","CC","Section Name","Metric Name","Metric Unit","Metric Value"
+"0","862901","gqa_bwd","127.0.0.1","void gqa_backward_v5c_kv<64, 64, 128>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const float *, const float *, __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, int, float)","1","7","(384, 1, 1)","(4, 4, 64)","0","9.0","Command line profiler metrics","dram__bytes_write.sum","byte","757764864"
+"0","862901","gqa_bwd","127.0.0.1","void gqa_backward_v5c_kv<64, 64, 128>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const float *, const float *, __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, int, float)","1","7","(384, 1, 1)","(4, 4, 64)","0","9.0","Command line profiler metrics","l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum","","53335744"
+"0","862901","gqa_bwd","127.0.0.1","void gqa_backward_v5c_kv<64, 64, 128>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const float *, const float *, __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, int, float)","1","7","(384, 1, 1)","(4, 4, 64)","0","9.0","Command line profiler metrics","l1tex__m_l1tex2xbar_write_bytes.sum","byte","6838550528"
+"0","862901","gqa_bwd","127.0.0.1","void gqa_backward_v5c_kv<64, 64, 128>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const float *, const float *, __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, int, float)","1","7","(384, 1, 1)","(4, 4, 64)","0","9.0","Command line profiler metrics","lts__t_bytes.sum","byte","14796271232"
+"0","862901","gqa_bwd","127.0.0.1","void gqa_backward_v5c_kv<64, 64, 128>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const float *, const float *, __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, int, float)","1","7","(384, 1, 1)","(4, 4, 64)","0","9.0","Command line profiler metrics","sm__inst_executed_pipe_lsu.sum","inst","56420352"
