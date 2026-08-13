@@ -14188,9 +14188,8 @@ gqa_backward_vr1_kv(
     const int tid   = threadIdx.x;
     const int wg    = tid >> 7;
     const int wtid  = tid & 127;
-    const int g = blockIdx.x, k_tile = blockIdx.z;               // Vr1: g fastest -> same-(b,hkv,ktile) blocks co-schedule
-    const int hkv = blockIdx.y % Hkv, b = blockIdx.y / Hkv;
-    const int hq = hkv * G + g;
+    const int k_tile = blockIdx.x, hq = blockIdx.y, b = blockIdx.z;   // Vr1 raster: k_tile fastest -> same-(b,hq) cluster -> Q/dO L2-resident
+    const int hkv = hq / G;
     const int k_row0 = k_tile * Bc;
     const int nQTiles = S / Br;
 
@@ -14412,7 +14411,7 @@ void launch_gqa_backward_vr1(
     compute_drowsum_v22<<<(unsigned)dGrid, dBlock>>>(d_dO, d_O, d_Drow, drowN);
 
     constexpr dim3 BLOCK(384);
-    dim3 GRID(G, B * Hkv, S / Bc);   // Vr1: g fastest -> G blocks of same (b,hkv,ktile) co-schedule -> K/V L2-reuse
+    dim3 GRID(S / Bc, Hq, B);   // Vr1 raster: k_tile fastest -> same-(b,hq) blocks cluster -> Q/dO L2-resident
     gqa_backward_vr1_kv<Br,Bc,D><<<GRID, BLOCK>>>(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
