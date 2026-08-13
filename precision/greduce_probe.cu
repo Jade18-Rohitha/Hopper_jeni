@@ -13,21 +13,27 @@ typedef __nv_bfloat16 bf16;
 
 constexpr int RPB = 8;   // s-rows per block (cuDNN grid = S/8 x Hkv x B)
 
-// grid (S/RPB, Hkv, B), block (D=128). thread d sums G heads for RPB rows.
+// VECTORIZED: block 128 = RPB rows x 16 d-groups(uint4=8 bf16). Each thread does a 128-bit load per head.
+// grid (S/RPB, Hkv, B). D=128 = 16 uint4.
 __global__ void greduce(const bf16* __restrict__ partial, bf16* __restrict__ out,
                         int Hq, int Hkv, int G, int S, int D) {
-    int b = blockIdx.z, hkv = blockIdx.y, s0 = blockIdx.x * RPB, d = threadIdx.x;
-#pragma unroll
-    for (int r = 0; r < RPB; r++) {
-        int s = s0 + r;
-        float acc = 0.f;
+    int b = blockIdx.z, hkv = blockIdx.y, s0 = blockIdx.x * RPB;
+    int t = threadIdx.x, row = t >> 4, dg = t & 15;   // 128 thr = 8 rows x 16 groups
+    int s = s0 + row;
+    float acc[8] = {0,0,0,0,0,0,0,0};
 #pragma unroll 1
-        for (int g = 0; g < G; g++) {
-            int hq = hkv * G + g;
-            acc += __bfloat162float(partial[((long)(b * Hq + hq) * S + s) * D + d]);
-        }
-        out[((long)(b * Hkv + hkv) * S + s) * D + d] = __float2bfloat16(acc);
+    for (int g = 0; g < G; g++) {
+        const bf16* p = partial + (((long)(b * Hq + hkv * G + g) * S + s) * D + dg * 8);
+        uint4 v = *reinterpret_cast<const uint4*>(p);      // 8 bf16 in one 128-bit load
+        const bf16* vb = reinterpret_cast<const bf16*>(&v);
+#pragma unroll
+        for (int k = 0; k < 8; k++) acc[k] += __bfloat162float(vb[k]);
     }
+    bf16 o[8];
+#pragma unroll
+    for (int k = 0; k < 8; k++) o[k] = __float2bfloat16(acc[k]);
+    long ob = (((long)(b * Hkv + hkv) * S + s) * D + dg * 8);
+    *reinterpret_cast<uint4*>(out + ob) = *reinterpret_cast<const uint4*>(o);
 }
 
 int main() {
