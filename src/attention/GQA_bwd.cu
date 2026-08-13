@@ -12937,7 +12937,7 @@ gqa_backward_v40_kv(
         run_gemm_dVdK_half_te_issue(dv, sP, sdO_sw[s] + wg * 4096);
 
         // V40: STSM sDS write (dual-orientation probe) — was fuse_dS_from_sP.
-        if (wg == 1) fuse_dS_stsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
+        if (wg == 1) fus    e_dS_stsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
         consumer_sync();
 
         float dq[32]; zeroN<32>(dq);
