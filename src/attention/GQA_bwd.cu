@@ -14171,13 +14171,13 @@ gqa_backward_v5e_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V5e requires Br=Bc=64, D=128");
     constexpr int CONS = 256;
-    constexpr int PD   = 3;
+    constexpr int PD   = 4;
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
-    __shared__ __align__(1024) float sDQ[2][8][1024];  // V5d: [db][block(8=2wg*4slab)][row64*col16] dQ stage
+    __shared__ __align__(1024) float sDQ[8][1024];     // V6 single-buffered dQ stage (compact reduce freed 32KB -> PD=4)
     __shared__ __align__(1024) bf16  sP [Br * 64];
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
@@ -14300,8 +14300,7 @@ gqa_backward_v5e_kv(
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
         consumer_sync();                            // slot s fully consumed (sQ/sdO last read = dK/dQ gemm)
         if (tid == 0) mbar_arrive_v11(&empty[s]);   // signal producer EARLY (before store/reduce) -> more load lead time
-        const int db = it & 1;                                        // ping-pong dQ-stage buffer
-        float* blk4 = sDQ[db][wg * 4];                                // wg's 4 D-slab blocks
+        float* blk4 = sDQ[wg * 4];                                    // wg's 4 D-slab blocks (single-buffered)
         store_dq_v5e(dq, blk4, wtid, scale);                          // V5e store: scalar row-major into D-slab blocks
         if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
         fence_proxy_async_shared();
@@ -14311,7 +14310,7 @@ gqa_backward_v5e_kv(
             for (int sl = 0; sl < 4; sl++)
                 red2(&tma_dq_red, blk4 + sl * 1024, (uint32_t)(wg * 64 + sl * 16), rowBase);
             tma_store_commit_v34();
-            tma_bulk_wait1_v43();                   // DOUBLE-BUFFER: keep <=1 reduce pending -> overlaps compute(it+1)
+            tma_bulk_wait0_v43();                   // single-buffer: drain reduce before next store
         }
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
