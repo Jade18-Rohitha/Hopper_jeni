@@ -13858,6 +13858,20 @@ __device__ __forceinline__ void store_dq_v5d(const float* d, float* blk4, int wt
         }
     }
 }
+// V5e: same row-major D-slab blocks + compact 2D reduce as V5d, but NO transpose — each lane scalar-stores
+// its own 2x2 fragment into [row][col16] directly. Trades V5d's 64-shfl transpose (LSU-bound) for ~4-way
+// store conflicts (cheap). Tests the conflicts-cheap / LSU-expensive lesson head-on vs V44.
+__device__ __forceinline__ void store_dq_v5e(const float* d, float* blk4, int wtid, float scl) {
+    int w = wtid >> 5, lane = wtid & 31, laneHi = lane >> 2, cc = lane & 3;
+    int r0 = w*16 + laneHi, r1 = r0 + 8;
+#pragma unroll
+    for (int nt = 0; nt < 8; nt++) {
+        int s = nt >> 1, col = (nt & 1) * 8 + cc * 2;
+        float* Bk = blk4 + s * 1024;
+        Bk[r0*16+col+0]=d[nt*4+0]*scl; Bk[r0*16+col+1]=d[nt*4+1]*scl;   // (r0,c),(r0,c+1)
+        Bk[r1*16+col+0]=d[nt*4+2]*scl; Bk[r1*16+col+1]=d[nt*4+3]*scl;   // (r1,c),(r1,c+1)
+    }
+}
 __device__ __forceinline__ void red2(const void* desc, const float* s, uint32_t c0, uint32_t c1) {
     uint32_t src = (uint32_t)__cvta_generic_to_shared(s);
     asm volatile("cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group [%0, {%1, %2}], [%3];\n"
@@ -14309,7 +14323,7 @@ gqa_backward_v5c_kv(
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
         const int db = it & 1;                                        // V5d: ping-pong dQ-stage buffer
         float* blk4 = sDQ[db][wg * 4];                                // wg's 4 D-slab blocks
-        store_dq_v5d(dq, blk4, wtid, scale);                          // cuDNN-geometry transpose store (row-major, no conflict)
+        store_dq_v5e(dq, blk4, wtid, scale);                          // V5e: NO-transpose scalar row-major store (~4-way, no shfl)
         if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
         fence_proxy_async_shared();
         if (wtid == 0) {                            // 4× compact 2D TMA-reduce, one per 16-D-col slab
