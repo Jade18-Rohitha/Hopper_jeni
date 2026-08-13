@@ -13921,14 +13921,14 @@ gqa_backward_v44_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V44 requires Br=Bc=64, D=128");
     constexpr int CONS = 256;
-    constexpr int PD   = 4;   // V44 stretch: deeper Q/dO prefetch (attacks long_scoreboard 2.82); dQ stage single-buffered to fit
+    constexpr int PD   = 3;
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
-    __shared__ __align__(1024) float sS [1][Br * 64];   // V44: DOUBLE-BUFFERED SWIZZLED dQ stage (wg0); each buf = 2 SW128B atoms of [Br*32]
-    __shared__ __align__(1024) float sdP[1][Br * 64];   // V44: DOUBLE-BUFFERED SWIZZLED dQ stage (wg1); atom a at [a*Br*32], SW128B chunk^ (row&7)
+    __shared__ __align__(1024) float sS [2][Br * 64];   // V44: DOUBLE-BUFFERED SWIZZLED dQ stage (wg0); each buf = 2 SW128B atoms of [Br*32]
+    __shared__ __align__(1024) float sdP[2][Br * 64];   // V44: DOUBLE-BUFFERED SWIZZLED dQ stage (wg1); atom a at [a*Br*32], SW128B chunk^ (row&7)
     __shared__ __align__(1024) bf16  sP [Br * 64];
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
@@ -14050,8 +14050,9 @@ gqa_backward_v44_kv(
         run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
         if (wtid == 0) mbar_arrive_v11(&empty[s]);   // EARLY signal (2-count): each wg leader after its te_wait -> producer lead time
-        float* stageDQ = (wg == 0) ? sS[0] : sdP[0];                 // V44 stretch: single-buffered dQ stage
-        store_acc_sw128_f32(dq, stageDQ, wtid, scale);               // CONFLICT-FREE swizzled store (2 SW128B atoms)
+        const int db = it & 1;                                        // V44: ping-pong dQ-stage buffer
+        float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
+        store_acc_sw128_f32(dq, stageDQ, wtid, scale);               // CONFLICT-FREE swizzled store -> buf[it&1] (2 SW128B atoms)
         if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
         fence_proxy_async_shared();                 // generic STS staging -> async-proxy (TMA) read
         if (wtid == 0) {                            // swizzled TMA-reduce: 2 atoms (cols [wg*64,+32),[+32,+64)) -> dq_accum, off L1TEX
@@ -14059,7 +14060,7 @@ gqa_backward_v44_kv(
             tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,             (uint32_t)(wg * 64),      crow);   // atom 0
             tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32,   (uint32_t)(wg * 64 + 32), crow);   // atom 1
             tma_store_commit_v34();
-            tma_bulk_wait0_v43();                   // single-buffer: drain reduce before next store
+            tma_bulk_wait1_v43();                   // double-buffer: keep <=1 reduce pending -> overlaps next store
         }
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
