@@ -14416,10 +14416,12 @@ void launch_gqa_backward_vr1(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
 
-    // G-head reduce (dK/dV) runs CONCURRENT with the dQ convert — both only consume main-kernel outputs, independent.
+    // G-reduce (dK/dV, ~37us @38-60% DRAM) runs CONCURRENT with dQ convert (~76us @38% DRAM) — neither saturates
+    // DRAM, so overlap saves. NONBLOCKING stream so it doesn't serialize with the legacy default stream (0).
     static cudaStream_t gr_stream = nullptr; static cudaEvent_t main_done = nullptr;
-    if (!gr_stream) { cudaStreamCreate(&gr_stream); cudaEventCreateWithFlags(&main_done, cudaEventDisableTiming); }
-    cudaEventRecord(main_done, 0);                      // main kernel done (default stream)
+    if (!gr_stream) { cudaStreamCreateWithFlags(&gr_stream, cudaStreamNonBlocking);
+                      cudaEventCreateWithFlags(&main_done, cudaEventDisableTiming); }
+    cudaEventRecord(main_done, 0);                      // main kernel done (default stream 0)
     cudaStreamWaitEvent(gr_stream, main_done, 0);
     dim3 grGRID(S / 8, Hkv, B);
     gqa_dkdv_greduce<<<grGRID, 128, 0, gr_stream>>>(d_dK_partial, d_dK, Hq, Hkv, G, S);
@@ -14427,7 +14429,7 @@ void launch_gqa_backward_vr1(
 
     const int convBlock = 256;
     const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);   // default stream, overlaps greduce
+    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);   // stream 0, overlaps greduce
 }
 
 
