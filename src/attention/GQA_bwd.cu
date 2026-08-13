@@ -13849,6 +13849,19 @@ __device__ __forceinline__ void store_dq_v5e(const float* d, float* blk4, int wt
         Bk[r1*16+col+0]=d[nt*4+2]*scl; Bk[r1*16+col+1]=d[nt*4+3]*scl;   // (r1,c),(r1,c+1)
     }
 }
+// V6 finer-grained: store only 2 slabs (half the wg's D-range) so the dQ stage is 32KB (freed 32KB for PD=4).
+// half=0 -> nt 0-3 (slabs 0,1) ; half=1 -> nt 4-7 (slabs 2,3). blk2 -> 2 contiguous blocks.
+__device__ __forceinline__ void store_dq_v5e_half(const float* d, float* blk2, int wtid, float scl, int half) {
+    int w = wtid >> 5, lane = wtid & 31, laneHi = lane >> 2, cc = lane & 3;
+    int r0 = w*16 + laneHi, r1 = r0 + 8;
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+        int nt = half*4 + j, ls = (nt >> 1) - half*2, col = (nt & 1) * 8 + cc * 2;
+        float* Bk = blk2 + ls * 1024;
+        Bk[r0*16+col+0]=d[nt*4+0]*scl; Bk[r0*16+col+1]=d[nt*4+1]*scl;
+        Bk[r1*16+col+0]=d[nt*4+2]*scl; Bk[r1*16+col+1]=d[nt*4+3]*scl;
+    }
+}
 __device__ __forceinline__ void red2(const void* desc, const float* s, uint32_t c0, uint32_t c1) {
     uint32_t src = (uint32_t)__cvta_generic_to_shared(s);
     asm volatile("cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group [%0, {%1, %2}], [%3];\n"
@@ -14171,13 +14184,13 @@ gqa_backward_v5e_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V5e requires Br=Bc=64, D=128");
     constexpr int CONS = 256;
-    constexpr int PD   = 3;
+    constexpr int PD   = 4;   // V6: deeper Q/dO prefetch (attacks long_scoreboard); enabled by 32KB finer-grained reduce
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
-    __shared__ __align__(1024) float sDQ[2][8][1024];  // double-buffered dQ stage (row64*col16)
+    __shared__ __align__(1024) float sDQ[2][4][1024];  // V6 finer-grained dQ stage: 2 slabs/chunk x 2wg = 4 blocks, double-buffered (32KB)
     __shared__ __align__(1024) bf16  sP [Br * 64];
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
@@ -14299,18 +14312,20 @@ gqa_backward_v5e_kv(
         run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
         if (wtid == 0) mbar_arrive_v11(&empty[s]);  // EARLY signal: each wg leader arrives after its own te_wait (2-count, no cross-wg sync)
-        const int db = it & 1;                                        // ping-pong dQ-stage buffer
-        float* blk4 = sDQ[db][wg * 4];                                // wg's 4 D-slab blocks
-        store_dq_v5e(dq, blk4, wtid, scale);                          // V5e store: scalar row-major into D-slab blocks
-        if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-        fence_proxy_async_shared();
-        if (wtid == 0) {                            // 4× compact 2D TMA-reduce, one per 16-D-col slab
-            const uint32_t rowBase = (uint32_t)lBaseOf(gC, qcC);      // flat row base into [B*Hq*S][D]
+        const uint32_t rowBase = (uint32_t)lBaseOf(gC, qcC);          // flat row base into [B*Hq*S][D]
 #pragma unroll
-            for (int sl = 0; sl < 4; sl++)
-                red2(&tma_dq_red, blk4 + sl * 1024, (uint32_t)(wg * 64 + sl * 16), rowBase);
-            tma_store_commit_v34();
-            tma_bulk_wait1_v43();                   // double-buffer: keep <=1 reduce pending -> overlaps next store
+        for (int ch = 0; ch < 2; ch++) {            // 2 chunks of 2 slabs — 32KB stage, wait1 overlap kept
+            const int cdb = (it * 2 + ch) & 1;                        // ping-pong across chunks
+            float* blk2 = sDQ[cdb][wg * 2];                           // wg's 2 D-slab blocks for this chunk
+            store_dq_v5e_half(dq, blk2, wtid, scale, ch);
+            if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
+            fence_proxy_async_shared();
+            if (wtid == 0) {
+                red2(&tma_dq_red, blk2,        (uint32_t)(wg * 64 + ch * 32 + 0),  rowBase);
+                red2(&tma_dq_red, blk2 + 1024, (uint32_t)(wg * 64 + ch * 32 + 16), rowBase);
+                tma_store_commit_v34();
+                tma_bulk_wait1_v43();               // <=1 reduce pending -> chunk ch+1 store overlaps chunk ch reduce
+            }
         }
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
