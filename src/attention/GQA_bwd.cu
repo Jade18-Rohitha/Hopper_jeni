@@ -13833,25 +13833,35 @@ void launch_gqa_backward_v43(
 // mma-C fp32 fragment -> shfl col-extend (even lane gathers lane^1's pair -> 4 contiguous cols, TMA's
 // 16B min inner) -> COALESCED store into two 5D-layout stages (r0-half s0, r1-half s1). No scratch, no
 // bank conflict. Reduced by a 5D descriptor {col4,ccBit,nt,laneHi,w}; r0/r1 = two reduces (laneHi coord 0/8).
-__device__ __forceinline__ void store_dq_coalesced(const float* d, float* s0, float* s1, int wtid, float scl) {
-    int w = wtid >> 5, lane = wtid & 31;
-    int laneHi = lane >> 2, colGroup = (lane & 3) >> 1;
-    const bool r0lane = !(lane & 1);            // even lane -> r0 float4 -> s0 ; odd -> r1 -> s1 (ALL 32 active)
-    const int pk = laneHi * 2 + colGroup;       // 0..15 packs the 16 active lanes contiguous per (w,nt)
+// V5d: cuDNN's reduce geometry. Transpose the mma-C fragment into 4 D-slab blocks laid out dense
+// [row64][col16], stored 32-lane-coalesced (conflict-free) so each block reduces via a COMPACT 2D
+// descriptor (inner run = 16 contiguous D-cols = 64B) instead of V5c's 5D-strided 16B scatter.
+// Target lane l=laneHi*4+q writes block[s] at [row=w*16+h*8+laneHi][col16=q*4]; its float4 gathers 4
+// slab-cols from fragment lanes (laneHi,cc_lo=(q&1)*2) and (laneHi,cc_lo+1), r-half via h.
+// blk4 -> the wg's 4 contiguous blocks (each 1024 fp32). d = dq[32] fragment (r0c,r0c+1,r1c,r1c+1 per nt).
+__device__ __forceinline__ void store_dq_v5d(const float* d, float* blk4, int wtid, float scl) {
+    int w = wtid >> 5, lane = wtid & 31, laneHi = lane >> 2, q = lane & 3;
+    int srcA = laneHi * 4 + (q & 1) * 2, srcB = srcA + 1;
+    const bool hi = (q >= 2);                    // q<2 -> nt=2s (r_lo) ; q>=2 -> nt=2s+1 (r_hi)
 #pragma unroll
-    for (int nt = 0; nt < 8; nt++) {
-        float v0=d[nt*4+0]*scl, v1=d[nt*4+1]*scl, v2=d[nt*4+2]*scl, v3=d[nt*4+3]*scl; // r0c0,r0c1,r1c0,r1c1
-        float p0=__shfl_xor_sync(~0u,v0,1), p1=__shfl_xor_sync(~0u,v1,1);              // partner r0c2,r0c3
-        float p2=__shfl_xor_sync(~0u,v2,1), p3=__shfl_xor_sync(~0u,v3,1);              // partner r1c2,r1c3
-        int base = ((w*8+nt)*16+pk)*4;          // == col4 + colGroup*4 + laneHi*8 + nt*64 + w*512
-        if (r0lane) { s0[base+0]=v0; s0[base+1]=v1; s0[base+2]=p0; s0[base+3]=p1; }    // r0: 4 contig cols
-        else        { s1[base+0]=p2; s1[base+1]=p3; s1[base+2]=v2; s1[base+3]=v3; }    // r1: 4 contig cols
+    for (int h = 0; h < 2; h++) {
+#pragma unroll
+        for (int s = 0; s < 4; s++) {
+            int r_lo = 8*s + h*2, r_hi = 8*s + 4 + h*2;      // reg bases (uniform -> shfl-legal)
+            float al0=__shfl_sync(~0u,d[r_lo],srcA),   al1=__shfl_sync(~0u,d[r_lo+1],srcA);
+            float ah0=__shfl_sync(~0u,d[r_hi],srcA),   ah1=__shfl_sync(~0u,d[r_hi+1],srcA);
+            float bl0=__shfl_sync(~0u,d[r_lo],srcB),   bl1=__shfl_sync(~0u,d[r_lo+1],srcB);
+            float bh0=__shfl_sync(~0u,d[r_hi],srcB),   bh1=__shfl_sync(~0u,d[r_hi+1],srcB);
+            float a0=hi?ah0:al0, a1=hi?ah1:al1, b0=hi?bh0:bl0, b1=hi?bh1:bl1;
+            int row = w*16 + h*8 + laneHi, base = s*1024 + row*16 + q*4;
+            blk4[base+0]=a0*scl; blk4[base+1]=a1*scl; blk4[base+2]=b0*scl; blk4[base+3]=b1*scl;
+        }
     }
 }
-__device__ __forceinline__ void red5(const void* desc, const float* s, uint32_t c0, uint32_t c1, uint32_t c2, uint32_t c3, uint32_t c4) {
+__device__ __forceinline__ void red2(const void* desc, const float* s, uint32_t c0, uint32_t c1) {
     uint32_t src = (uint32_t)__cvta_generic_to_shared(s);
-    asm volatile("cp.reduce.async.bulk.tensor.5d.global.shared::cta.add.tile.bulk_group [%0, {%1, %2, %3, %4, %5}], [%6];\n"
-        :: "l"((uint64_t)desc), "r"(c0), "r"(c1), "r"(c2), "r"(c3), "r"(c4), "r"(src) : "memory");
+    asm volatile("cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group [%0, {%1, %2}], [%3];\n"
+        :: "l"((uint64_t)desc), "r"(c0), "r"(c1), "r"(src) : "memory");
 }
 __device__ __forceinline__ void store_acc_sw128_f32(const float* d, float* base, int tid, float scl) {
     int w = tid >> 5, lane = tid & 31;
@@ -14176,8 +14186,7 @@ gqa_backward_v5c_kv(
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
-    __shared__ __align__(1024) float sA[2][2][2048];   // V5: r0-half coalesced dQ stage [wg][buf][5D-layout]
-    __shared__ __align__(1024) float sB[2][2][2048];   // V5: r1-half coalesced dQ stage [wg][buf]
+    __shared__ __align__(1024) float sDQ[2][8][1024];  // V5d: [db][block(8=2wg*4slab)][row64*col16] dQ stage
     __shared__ __align__(1024) bf16  sP [Br * 64];
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
@@ -14298,16 +14307,16 @@ gqa_backward_v5c_kv(
         float dq[32]; zeroN<32>(dq);
         run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-        const int db = it & 1;                                        // V5: ping-pong dQ-stage buffer
-        float* sa = sA[wg][db]; float* sb = sB[wg][db];
-        store_dq_coalesced(dq, sa, sb, wtid, scale);                 // cuDNN-style COALESCED store (shfl col-extend, no conflict)
+        const int db = it & 1;                                        // V5d: ping-pong dQ-stage buffer
+        float* blk4 = sDQ[db][wg * 4];                                // wg's 4 D-slab blocks
+        store_dq_v5d(dq, blk4, wtid, scale);                          // cuDNN-geometry transpose store (row-major, no conflict)
         if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
         fence_proxy_async_shared();
-        if (wtid == 0) {                            // 5D TMA-reduce: r0 half (laneHi=0) + r1 half (laneHi=8) -> dq_accum
-            const uint32_t wrow = (uint32_t)(lBaseOf(gC, qcC) >> 4);  // rowbase/16 = w-dim coord
-            const uint32_t nt0  = (uint32_t)(wg * 8);                 // nt-dim coord selects wg col-half
-            red5(&tma_dq_red, sa, 0, 0, 0, nt0, wrow);               // s0=r0 rows (laneHi coord 0)
-            red5(&tma_dq_red, sb, 0, 0, 8, nt0, wrow);               // s1=r1 rows (laneHi coord 8)
+        if (wtid == 0) {                            // 4× compact 2D TMA-reduce, one per 16-D-col slab
+            const uint32_t rowBase = (uint32_t)lBaseOf(gC, qcC);      // flat row base into [B*Hq*S][D]
+#pragma unroll
+            for (int s = 0; s < 4; s++)
+                red2(&tma_dq_red, blk4 + s * 1024, (uint32_t)(wg * 64 + s * 16), rowBase);
             tma_store_commit_v34();
             tma_bulk_wait1_v43();                   // DOUBLE-BUFFER: keep <=1 reduce pending -> overlaps compute(it+1)
         }
@@ -14375,12 +14384,12 @@ void launch_gqa_backward_v5c(
     // dQ D-half is reduced as TWO 32-wide atoms. Probe-confirmed: FP32 SW128B box{64,64} is rejected, box{32,64} OK.
     auto make_tma_red = [&](const float* ptr, uint64_t rows) {
         CUtensorMap desc{};
-        uint64_t gS[5]={4,2,16,16,rows/16};           // V5c: full-tensor 5D {col4,colGroup,laneHi,nt,w}
-        uint64_t gStr[4]={16ull,512ull,32ull,8192ull};// elem strides colGroup=4,laneHi=128,nt=8,w=16*128 (bytes)
-        uint32_t box[5]={4,2,8,8,4}; uint32_t eStride[5]={1,1,1,1,1};
-        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,5,(void*)ptr,gS,gStr,box,eStride,
+        uint64_t gS[2]={128, rows};                   // V5d: [D=128 (fast)][totalRows], compact 2D
+        uint64_t gStr[1]={128*4ull};                  // row stride = D*4 bytes
+        uint32_t box[2]={16,64}; uint32_t eStride[2]={1,1};  // 16 D-cols x 64 rows -> 64B inner run
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gS,gStr,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_NONE,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red v5: %s\n",e);exit(1);} return desc; };
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red v5d: %s\n",e);exit(1);} return desc; };
 
     const long drowN = (long)B * Hq * S;
     static float* d_Drow  = nullptr;
@@ -14969,7 +14978,7 @@ int main(){
 
     launch_gqa_backward_v5c<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V5c Br=64 Bc=64 cuDNN COALESCED store (shfl+5D reduce) dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V5d Br=64 Bc=64 cuDNN 4D-reduce geometry (row-major blocks + 2D reduce) dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_v45<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -15306,7 +15315,7 @@ int main(){
             [&](){ launch_gqa_backward_v5c<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V5c Br=64, Bc=64  cuDNN COALESCED store (shfl + 5D reduce)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V5d Br=64, Bc=64  cuDNN 4D-reduce geometry (row-major blocks + 2D reduce)  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
