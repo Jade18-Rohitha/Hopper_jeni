@@ -13955,7 +13955,7 @@ gqa_backward_v44_kv(
         #pragma unroll
         for (int i = 0; i < PD; i++) {
             mbar_init_v4(&full[i], 1);
-            mbar_init_v4(&empty[i], 1);
+            mbar_init_v4(&empty[i], 2);   // early-empty: 2-count, each consumer wg signals independently
             mbar_init_v4(&d_ready[i], 1);
         }
     }
@@ -14049,6 +14049,7 @@ gqa_backward_v44_kv(
         float dq[32]; zeroN<32>(dq);
         run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
+        if (wtid == 0) mbar_arrive_v11(&empty[s]);   // EARLY signal (2-count): each wg leader after its te_wait -> producer lead time
         const int db = it & 1;                                        // V44: ping-pong dQ-stage buffer
         float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
         store_acc_sw128_f32(dq, stageDQ, wtid, scale);               // CONFLICT-FREE swizzled store -> buf[it&1] (2 SW128B atoms)
@@ -14062,8 +14063,6 @@ gqa_backward_v44_kv(
             tma_bulk_wait1_v43();                   // DOUBLE-BUFFER: keep <=1 reduce pending -> reduce(it) overlaps compute(it+1);
                                                     // reduce(it-1) is done here, so store(it+1) into buf[(it+1)&1]==buf[(it-1)&1] is safe.
         }
-        consumer_sync();
-        if (tid == 0) mbar_arrive_v11(&empty[s]);
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
 
@@ -14184,13 +14183,13 @@ gqa_backward_v5e_kv(
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "V5e requires Br=Bc=64, D=128");
     constexpr int CONS = 256;
-    constexpr int PD   = 4;   // V6: deeper Q/dO prefetch (attacks long_scoreboard); enabled by 32KB finer-grained reduce
+    constexpr int PD   = 3;
 
     __shared__ __align__(128)  bf16 sK_sw[Bc * D];
     __shared__ __align__(128)  bf16 sV_sw[Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
-    __shared__ __align__(1024) float sDQ[2][4][1024];  // V6 finer-grained dQ stage: 2 slabs/chunk x 2wg = 4 blocks, double-buffered (32KB)
+    __shared__ __align__(1024) float sDQ[2][8][1024];  // double-buffered dQ stage
     __shared__ __align__(1024) bf16  sP [Br * 64];
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
@@ -14312,20 +14311,18 @@ gqa_backward_v5e_kv(
         run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);
         if (wtid == 0) mbar_arrive_v11(&empty[s]);  // EARLY signal: each wg leader arrives after its own te_wait (2-count, no cross-wg sync)
-        const uint32_t rowBase = (uint32_t)lBaseOf(gC, qcC);          // flat row base into [B*Hq*S][D]
+        const int db = it & 1;                                        // ping-pong dQ-stage buffer
+        float* blk4 = sDQ[db][wg * 4];                                // wg's 4 D-slab blocks
+        store_dq_v5e(dq, blk4, wtid, scale);
+        if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
+        fence_proxy_async_shared();
+        if (wtid == 0) {
+            const uint32_t rowBase = (uint32_t)lBaseOf(gC, qcC);
 #pragma unroll
-        for (int ch = 0; ch < 2; ch++) {            // 2 chunks of 2 slabs — 32KB stage, wait1 overlap kept
-            const int cdb = (it * 2 + ch) & 1;                        // ping-pong across chunks
-            float* blk2 = sDQ[cdb][wg * 2];                           // wg's 2 D-slab blocks for this chunk
-            store_dq_v5e_half(dq, blk2, wtid, scale, ch);
-            if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-            fence_proxy_async_shared();
-            if (wtid == 0) {
-                red2(&tma_dq_red, blk2,        (uint32_t)(wg * 64 + ch * 32 + 0),  rowBase);
-                red2(&tma_dq_red, blk2 + 1024, (uint32_t)(wg * 64 + ch * 32 + 16), rowBase);
-                tma_store_commit_v34();
-                tma_bulk_wait1_v43();               // <=1 reduce pending -> chunk ch+1 store overlaps chunk ch reduce
-            }
+            for (int sl = 0; sl < 4; sl++)
+                red2(&tma_dq_red, blk4 + sl * 1024, (uint32_t)(wg * 64 + sl * 16), rowBase);
+            tma_store_commit_v34();
+            tma_bulk_wait1_v43();
         }
         if (++qcC == nQTiles) { qcC = qc0; ++gC; }
     }
