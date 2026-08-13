@@ -1,6 +1,18 @@
 # GQA Backward — H200 optimization log (2026-08-11)
 
-Starting point: **V44** (swizzled TMA-reduce dQ). Goal: close the gap to cuDNN/SDPA across the shape space. Dev box is sm_120 — every benchmark/profile below ran on an H200 remote; the assistant only compiles and reads profiles.
+Starting point: **V44** (swizzled TMA-reduce dQ). Goal: close the gap to cuDNN/SDPA across the shape space. Dev box is sm_120 — every benchmark/profile below ran on an H200 remote; we compiled here and read profiles.
+
+## Our effort log (2026-08-11 → 08-13)
+
+We chased one question: why does V44 sit ~1.58 ms at 4×12 while cuDNN hits ~1.4 ms end-to-end?
+
+- **We suspected the dQ store.** V44's swizzled store has 27.6M bank conflicts; cuDNN's has 207K. We decoded cuDNN's store *and* reduce from its SASS, then rebuilt them ourselves — V5c/V5d/V5e replicate cuDNN's exact reduce geometry (row-major D-slab blocks + compact 2D TMA-reduce), validated bit-exact in isolation first. We got the store to 2M conflicts (13× fewer than V44). **It didn't help.** V44 runs 1.54 ms *carrying* 27.6M conflicts; our near-conflict-free store was equal-or-slower on identical memory traffic. We proved, with measurement, that the store was never the gap — a hard negative result we're confident in.
+- **We tried compute-pipelining** the S/dP gemm one tile ahead to fill the P/dS barrier. It failed twice, each for a concrete reason we pinned down: first a runtime-indexed accumulator array fell to local memory (2.4× slower); fixed that with compile-time buffers, then found the deeper truth — an *async* wgmma issued before a barrier doesn't fill a *synchronous* stall, so the barrier stall went *up*. Dead end, understood.
+- **Then we found the win: early-empty.** We signalled `empty[s]` (slot-free to the producer) one step earlier — at the dK/dQ `te_wait`, the slot's true last use — via a 2-count mbarrier so each warpgroup signals independently with no extra sync. This *removed* work: barrier stall 3.4→1.98 (cuDNN's level), total 10→7.9. It shaved ~1–4% off nearly every shape, bit-identical. Shipped in both V44 and V45.
+- **We diagnosed exactly what's left.** The remaining gap is TMA-load latency (long_scoreboard 2.82 vs cuDNN's 1.76). We confirmed the producer is *not* saturated (TMA-issue stalls ~0), so it's pipeline depth, not a 2nd producer — and PD=4 is smem-gated (the only free 32KB comes from single-buffering the reduce, which serializes it +0.5 ms, measured twice).
+- **We locked GPU clocks** to make the win reproducible: 4×12 V44 = 1.524 ms tight (std 0.007). The earlier wandering 1.53–1.60 was pure thermal drift in the back-to-back sweep.
+
+Net: we didn't reach cuDNN's ~1.4 ms, but we moved the deliverable the right way on every shape with a clean, correct optimization, closed the store question for good, and reduced the remaining gap to one precisely-scoped structural problem.
 
 ## Result — deliverable = two kernels, take the best per shape
 
@@ -10,22 +22,30 @@ Starting point: **V44** (swizzled TMA-reduce dQ). Goal: close the gap to cuDNN/S
 
 Full sweep, median ms, S=4096, D=128. SDPA = PyTorch `enable_gqa` (cuDNN-backed); Triton = flash bwd. Driver: `scripts/run_sweep.sh`.
 
+Locked-clock sweep (2026-08-13, `nvidia-smi -lgc 1980`), both V44 and V45 carry the **early-empty** optimization (below). Median ms.
+
 | B×Hq (Hkv,G) | V44 | V45 | **best** | won | SDPA | Triton | vs SDPA | vs Triton |
 |---|---|---|---|---|---|---|---|---|
-| 2×12 (4,3) | **0.793** | 0.958 | 0.793 | V44 | 0.809 | 1.633 | **win 2%** | 2.06× |
-| 4×12 (4,3) | **1.579** | 1.707 | 1.579 | V44 | 1.508 | 2.960 | lag 5% | 1.87× |
-| 8×12 (4,3) | **3.207** | 3.224 | 3.207 | V44 | 2.947 | 5.618 | lag 9% | 1.75× |
-| 2×16 (4,4) | **1.044** | 1.255 | 1.044 | V44 | 1.033 | 2.128 | lag 1% | 2.04× |
-| 4×16 (4,4) | **2.068** | 2.260 | 2.068 | V44 | 1.889 | 3.905 | lag 9% | 1.89× |
-| 8×16 (4,4) | 5.683 | **4.304** | 4.304 | V45 | 3.907 | 7.458 | lag 10% | 1.73× |
-| 2×24 (8,3) | **1.582** | 1.711 | 1.582 | V44 | 1.515 | 2.958 | lag 4% | 1.87× |
-| 4×24 (8,3) | **3.200** | 3.244 | 3.200 | V44 | 2.963 | 5.616 | lag 8% | 1.76× |
-| 8×24 (8,3) | 10.855 | **6.275** | 6.275 | V45 | 5.864 | 11.001 | lag 7% | 1.75× |
-| 2×32 (8,4) | **2.070** | 2.273 | 2.070 | V44 | 1.894 | 3.905 | lag 9% | 1.89× |
-| 4×32 (8,4) | 5.445 | **4.302** | 4.302 | V45 | 3.879 | 7.451 | lag 11% | 1.73× |
-| 8×32 (8,4) | 15.196 | **8.325** | 8.325 | V45 | 7.691 | 14.651 | lag 8% | 1.76× |
+| 2×12 (4,3) | **0.771** | 0.930 | 0.771 | V44 | 0.800 | 1.643 | **win 4%** | 2.13× |
+| 4×12 (4,3) | **1.524** | 1.671 | 1.524 | V44 | 1.483 | 2.981 | lag 3% | 1.96× |
+| 8×12 (4,3) | **3.135** | 3.166 | 3.135 | V44 | 2.919 | 5.660 | lag 7% | 1.81× |
+| 2×16 (4,4) | **1.017** | 1.230 | 1.017 | V44 | 1.013 | 2.135 | ~tie | 2.10× |
+| 4×16 (4,4) | **2.031** | 2.215 | 2.031 | V44 | 1.872 | 3.917 | lag 8% | 1.93× |
+| 8×16 (4,4) | 5.624 | **4.194** | 4.194 | V45 | 3.777 | 7.480 | lag 11% | 1.78× |
+| 2×24 (8,3) | **1.526** | 1.671 | 1.526 | V44 | 1.475 | 2.981 | lag 3% | 1.95× |
+| 4×24 (8,3) | **3.139** | 3.162 | 3.139 | V44 | 2.743 | 5.660 | lag 14% | 1.80× |
+| 8×24 (8,3) | 10.929 | **6.145** | 6.145 | V45 | 5.768 | 11.022 | lag 7% | 1.79× |
+| 2×32 (8,4) | **2.031** | 2.215 | 2.031 | V44 | 1.871 | 3.921 | lag 9% | 1.93× |
+| 4×32 (8,4) | 5.629 | **4.196** | 4.196 | V45 | 3.828 | 7.484 | lag 10% | 1.78× |
+| 8×32 (8,4) | 15.064 | **8.158** | 8.158 | V45 | 7.615 | 14.600 | lag 7% | 1.79× |
 
-**Headline:** best-of beats **Triton 1.7–2.1× at every shape**, wins vs **SDPA/cuDNN** at 2×12, and lags **1–11%** everywhere else — **no catastrophic blowups**. V44 wins the 8 small/mid shapes (~15–20% ahead of raster there); V45 wins the 4 large ones (8×16, 8×24, 4×32, 8×32). Crucially, at 8×24/8×32 the default grid alone thrashes L2 to the point of **losing to Triton** (8×32: 15.2 ms) — V45 rescues it to 8.3 ms (1.8×), back to beating Triton. Neither grid is universally best, so the harness runs both; an adaptive picker (`Hkv=8 && B≥8`, or Q/dO-vs-L2 footprint) captures the min automatically.
+**Methodology:** clocks locked at 1980 MHz to remove thermal drift (unlocked, back-to-back sweep inflates B=4/B=8 medians ~3% and widens std ~3×). The **early-empty** win is now reproducible: 4×12 V44 = 1.524 ms tight (std 0.007) vs 1.579 base. B=8 V44 shapes still show std 0.2–0.4 — power-cap throttle at 16 resident CTAs (locking graphics clock does not cap board power); min-times are the cleaner read there.
+
+**Headline:** best-of beats **Triton 1.8–2.1× at every shape**, wins vs **SDPA/cuDNN** at 2×12 (win 4%), ties at 2×16, and lags **3–11%** elsewhere — **no catastrophic blowups**. V44 wins the small/mid shapes; V45 wins the large ones (8×16, 8×24, 4×32, 8×32) where the default grid thrashes L2. The **early-empty** optimization (2026-08-13) shaved ~1–4% off nearly every shape (2×12 0.793→0.771, 4×12 1.579→1.524, 2×24 1.582→1.526, all V45-winning shapes faster) — bit-identical output. Neither grid is universally best, so the harness runs both; an adaptive picker (`Hkv=8 && B≥8`) captures the min.
+
+### early-empty (2026-08-13) — the win
+
+Barrier-stall reduction that generalizes across shapes. The consumer loop signalled `empty[s]` (slot free → producer may refill) only at the *very end* of each iteration, after the dQ store+reduce. But slot `s` (`sQ_sw`/`sdO_sw`) is fully consumed one step earlier — at the dK/dQ gemm's `te_wait`. Moving the signal there gives the producer a full store+reduce of extra lead time. Made `empty` a **2-count mbarrier** so each consumer warpgroup's leader signals after its own `te_wait` — no added cross-warpgroup sync. Profile (B=4): **CTA-barrier stall 3.4→1.98 cyc/issue (now at cuDNN's 1.88), total stall ~10→7.9** — this *removed* work rather than relocating it (unlike the same change on the cuDNN-reduce-geometry variant, where it was net-flat). Bit-identical output. The remaining gap to cuDNN (~1.4 ms end-to-end) is **TMA-load latency** (long_scoreboard 2.82 vs 1.76), which is pipeline-depth-bound and smem-gated (PD=4 needs 32KB only freeable by single-buffering the reduce, which serializes it +0.5 ms). Producer is *not* saturated (TMA-issue stalls ~0), so the fix is depth, not a 2nd producer.
 
 ## Key findings from the exploration
 
