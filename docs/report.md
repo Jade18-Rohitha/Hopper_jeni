@@ -47,6 +47,29 @@ Locked-clock sweep (2026-08-13, `nvidia-smi -lgc 1980`), both V44 and V45 carry 
 
 Barrier-stall reduction that generalizes across shapes. The consumer loop signalled `empty[s]` (slot free → producer may refill) only at the *very end* of each iteration, after the dQ store+reduce. But slot `s` (`sQ_sw`/`sdO_sw`) is fully consumed one step earlier — at the dK/dQ gemm's `te_wait`. Moving the signal there gives the producer a full store+reduce of extra lead time. Made `empty` a **2-count mbarrier** so each consumer warpgroup's leader signals after its own `te_wait` — no added cross-warpgroup sync. Profile (B=4): **CTA-barrier stall 3.4→1.98 cyc/issue (now at cuDNN's 1.88), total stall ~10→7.9** — this *removed* work rather than relocating it (unlike the same change on the cuDNN-reduce-geometry variant, where it was net-flat). Bit-identical output. The remaining gap to cuDNN (~1.4 ms end-to-end) is **TMA-load latency** (long_scoreboard 2.82 vs 1.76), which is pipeline-depth-bound and smem-gated (PD=4 needs 32KB only freeable by single-buffering the reduce, which serializes it +0.5 ms). Producer is *not* saturated (TMA-issue stalls ~0), so the fix is depth, not a 2nd producer.
 
+## Second half of the day (2026-08-13) — Vr1: cuDNN's reduce-kernel structure
+
+We built cuDNN's actual arrangement: **KV-parallel *per-hq*** (each block owns one query head, streams its q-tiles) + a **separate G-head reduce kernel** (`fmha_reduce_head` equivalent). The main kernel writes per-hq partial dK/dV `[B,Hq,S,D]`; a tiny reduce kernel sums the G heads → `[B,Hkv,S,D]`. dQ stays inline TMA-reduce. We first validated the reduce standalone: **18.78 µs — identical to cuDNN's `fmha_reduce_head`** (vectorized 128-bit loads; the naive 16-bit version was 50 µs). The main kernel needed the V45-style **raster** to keep Q/dO L2-resident (without it, Vr1 was DRAM-bound at 2.4 GB / 2.10 ms; with it, **0.24 GB — 4× *lower* than V44 — and 1.61 ms**).
+
+Best-of-3 sweep, median ms, locked clocks (`-lgc 1980`), all bit-correct:
+
+| B×Hq (Hkv,G) | V44 | Vr1 | V45 | best | won | SDPA | Triton | vs SDPA | vs Triton |
+|---|---|---|---|---|---|---|---|---|---|
+| 2×12 (4,3) | **0.768** | 0.847 | 0.925 | 0.768 | V44 | 0.802 | 1.645 | **win 4%** | 2.14× |
+| 4×12 (4,3) | **1.513** | 1.613 | 1.658 | 1.513 | V44 | 1.461 | 2.979 | lag 4% | 1.97× |
+| 8×12 (4,3) | 3.083\* | 3.141 | 3.134 | 3.083 | V44 | 2.758 | 5.661 | lag 12% | 1.84× |
+| 2×16 (4,4) | **1.011** | 1.098 | 1.219 | 1.011 | V44 | 1.018 | 2.134 | **win 1%** | 2.11× |
+| 4×16 (4,4) | **2.001** | 2.116 | 2.195 | 2.001 | V44 | 1.898 | 3.915 | lag 5% | 1.96× |
+| **8×16 (4,4)** | 5.811\* | **4.150** | 4.156 | **4.150** | **Vr1** | 3.812 | 7.467 | lag 9% | 1.80× |
+| 2×24 (8,3) | **1.514** | 1.613 | 1.659 | 1.514 | V44 | 1.487 | 2.981 | lag 2% | 1.97× |
+| 4×24 (8,3) | 3.088\* | 3.145 | **3.134** | 3.134 | V45 | 2.751 | 5.655 | lag 14% | 1.80× |
+| 8×24 (8,3) | 10.84\* | 6.200 | **6.090** | 6.090 | V45 | 5.729 | 11.02 | lag 6% | 1.81× |
+| 2×32 (8,4) | **2.005** | 2.115 | 2.194 | 2.005 | V44 | 1.885 | 3.913 | lag 6% | 1.95× |
+| **4×32 (8,4)** | 5.796\* | **4.147** | 4.157 | **4.147** | **Vr1** | 3.828 | 7.475 | lag 8% | 1.80× |
+| 8×32 (8,4) | 15.09\* | 8.225 | **8.078** | 8.078 | V45 | 7.503 | 14.59 | lag 8% | 1.81× |
+
+`*` = V44 thrashing (std 0.3–0.5 ms, unstable). SDPA = PyTorch `enable_gqa` bwd (cuDNN-backed); vs-SDPA/vs-Triton are best-of-3 vs each. Best-of beats **Triton 1.8–2.1× everywhere**, wins/ties **SDPA at 2×12 & 2×16**, lags **2–14%** elsewhere (all measured in this same locked-clock sweep). **Takeaways:** on small/mid shapes **V44 wins** — the reduce's ~37 µs floor can't be beaten when the inline G-reduce is free. On the large memory-bound shapes **Vr1 and V45 both crush the collapsing V44 (~2×)** and trade the crown (Vr1 wins 8×16 & 4×32; V45 wins 4×24, 8×24, 8×32; within ~1–2%). So Vr1 is cuDNN's structure, correct and competitive exactly where predicted — its wins over V45 are marginal (noise-level) and its dV precision is softer (bf16 partials → G roundings vs V44's one; within tolerance, fixable with fp32 partials). Validated as a legitimate 3rd option; not a clear improvement over V44+V45 best-of.
+
 ## Key findings from the exploration
 
 **1. L2 residency was a red herring (proven).** The original thesis (B=8 gap = L2, from B=2 L2≈91% → B=8 75%) is disproven: the raster drove L2 hit **75%→96%** (beats cuDNN's 92%), DRAM 28.4%→3.8%, misses 7× fewer — yet at the Hq=12/B=8 training shape the **wall-clock barely moved** (3.31→3.23). The misses there were already hidden. *But* the sweep later showed L2 residency **does** matter enormously at **high Hkv/B** (8×24, 8×32), where default thrashes to ~2× SDPA — that's the raster's real payoff.
