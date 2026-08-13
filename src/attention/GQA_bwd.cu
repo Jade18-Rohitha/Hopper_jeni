@@ -2596,8 +2596,9 @@ __device__ __forceinline__ void run_gemm_n64_sw2_hoB(float acc[32], const bf16* 
     wgmma_wait0();
     fence_operandN<32>(acc);
 }
-// V6 pipeline: issue/wait split of run_gemm_n64_sw2_hoB so tile it+1's S/dP GEMM can be launched BEFORE
-// tile it's consumer_sync — the wgmma then runs async across the barrier (attacks the P/dS BAR.SYNC stall).
+// V6 pipeline: issue/wait split of run_gemm_n64_sw2_hoB so tile it+1's S/dP GEMM launches BEFORE tile it's
+// consumer_sync — its wgmma runs async across the P/dS barrier. Accumulators MUST be compile-time-named
+// (acc0/acc1, not a runtime-indexed array) or the wgmma accumulator falls to local memory (V6a bug).
 __device__ __forceinline__ void gemm_n64_sw2_hoB_issue(float acc[32], const bf16* A_sw, uint64_t descB_base) {
     fence_proxy_async_shared();
     fence_operandN<32>(acc);
@@ -14287,47 +14288,59 @@ gqa_backward_v6a_kv(
 
     uint32_t cpar[PD] = {0}, dpar[PD] = {0};
     int gC = 0, qcC = qc0;
-    // V6 compute-pipeline: software-pipeline Stage-A (S on wg0 / dP on wg1) one tile ahead, so tile it+1's
-    // gemm is issued BEFORE tile it's consumer_sync and runs async across the P/dS barrier (attacks BAR.SYNC).
-    float accA[2][32];                                   // double-buffered Stage-A accumulator
-    {   // prologue: loads + Stage-A gemm for tile 0
-        mbar_wait_v4(&full[0], cpar[0]); cpar[0] ^= 1;
+    // V6a compute-pipeline: Stage-A (S on wg0 / dP on wg1) issued one q-tile ahead so its wgmma overlaps the
+    // P/dS consumer_sync. Compile-time-named acc0/acc1 (NOT a runtime-indexed array — that fell to local mem)
+    // keep the accumulator in registers (consumers have 232 via setmaxnreg). Prologue issues tile 0.
+    float acc0[32], acc1[32];
+    {   mbar_wait_v4(&full[0], cpar[0]); cpar[0] ^= 1;
         mbar_wait_v4(&d_ready[0], dpar[0]); dpar[0] ^= 1;
-        zeroN<32>(accA[0]);
-        if (wg == 0) gemm_n64_sw2_hoB_issue(accA[0], sQ_sw [0], descGemmB);
-        else         gemm_n64_sw2_hoB_issue(accA[0], sdO_sw[0], descGemmB);
+        zeroN<32>(acc0);
+        if (wg == 0) gemm_n64_sw2_hoB_issue(acc0, sQ_sw [0], descGemmB);
+        else         gemm_n64_sw2_hoB_issue(acc0, sdO_sw[0], descGemmB);
     }
     for (int it = 0; it < nIter; it++) {
-        const int cur = it & 1, nxt = cur ^ 1;
+        const bool odd = it & 1;
         const int s = it % PD;
         const int q_row0 = qcC * Br;
-        gemm_n64_wait0(accA[cur]);                       // tile it's S/dP (usually already drained by prev te_wait)
-
-        if (wg == 0) {
-            if (qcC == qc0) fused_p_stsm<Bc, true >(accA[cur], sP, sLSE[s], wtid, q_row0, k_row0, scale2);
-            else            fused_p_stsm<Bc, false>(accA[cur], sP, sLSE[s], wtid, 0,       0,      scale2);
-        }
-        if (it + 1 < nIter) {                            // prefetch tile it+1's Stage-A gemm (overlaps barrier)
-            const int ns = (it + 1) % PD;
-            mbar_wait_v4(&full[ns], cpar[ns]); cpar[ns] ^= 1;
-            mbar_wait_v4(&d_ready[ns], dpar[ns]); dpar[ns] ^= 1;
-            zeroN<32>(accA[nxt]);
-            if (wg == 0) gemm_n64_sw2_hoB_issue(accA[nxt], sQ_sw [ns], descGemmB);
-            else         gemm_n64_sw2_hoB_issue(accA[nxt], sdO_sw[ns], descGemmB);
+        const int ns = (it + 1) % PD;
+        // Stage-A: wait current accumulator, softmax (wg0), prefetch tile it+1's gemm into the OTHER buffer
+        if (!odd) {
+            gemm_n64_wait0(acc0);
+            if (wg == 0) { if (qcC == qc0) fused_p_stsm<Bc, true >(acc0, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
+                           else            fused_p_stsm<Bc, false>(acc0, sP, sLSE[s], wtid, 0, 0, scale2); }
+            if (it + 1 < nIter) {
+                mbar_wait_v4(&full[ns], cpar[ns]); cpar[ns] ^= 1;
+                mbar_wait_v4(&d_ready[ns], dpar[ns]); dpar[ns] ^= 1;
+                zeroN<32>(acc1);
+                if (wg == 0) gemm_n64_sw2_hoB_issue(acc1, sQ_sw [ns], descGemmB);
+                else         gemm_n64_sw2_hoB_issue(acc1, sdO_sw[ns], descGemmB);
+            }
+        } else {
+            gemm_n64_wait0(acc1);
+            if (wg == 0) { if (qcC == qc0) fused_p_stsm<Bc, true >(acc1, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
+                           else            fused_p_stsm<Bc, false>(acc1, sP, sLSE[s], wtid, 0, 0, scale2); }
+            if (it + 1 < nIter) {
+                mbar_wait_v4(&full[ns], cpar[ns]); cpar[ns] ^= 1;
+                mbar_wait_v4(&d_ready[ns], dpar[ns]); dpar[ns] ^= 1;
+                zeroN<32>(acc0);
+                if (wg == 0) gemm_n64_sw2_hoB_issue(acc0, sQ_sw [ns], descGemmB);
+                else         gemm_n64_sw2_hoB_issue(acc0, sdO_sw[ns], descGemmB);
+            }
         }
         consumer_sync();                                 // BARRIER1 — Stage-A[it+1] wgmma runs async here
 
         run_gemm_dVdK_half_te_issue_hoA(dv, descP, sdO_sw[s] + wg * 4096);
 
-        if (wg == 1) fuse_dS_ldstsm<Bc>(sP, accA[cur], sD[s], sDS, wtid);
+        if (wg == 1) { if (!odd) fuse_dS_ldstsm<Bc>(sP, acc0, sD[s], sDS, wtid);
+                       else       fuse_dS_ldstsm<Bc>(sP, acc1, sD[s], sDS, wtid); }
         consumer_sync();
 
         float dq[32]; zeroN<32>(dq);
         run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
         run_gemm_dVdKdQ_te_wait(dv, dk, dq);             // wait0 drains dV/dK/dQ AND prefetched Stage-A[it+1]
-        const int db = it & 1;                                        // V5d: ping-pong dQ-stage buffer
+        const int db = it & 1;                                        // ping-pong dQ-stage buffer
         float* blk4 = sDQ[db][wg * 4];                                // wg's 4 D-slab blocks
-        store_dq_v6a(dq, blk4, wtid, scale);                          // V6a store: scalar row-major into D-slab blocks (see store_dq_v6a)
+        store_dq_v6a(dq, blk4, wtid, scale);                          // V6a store: scalar row-major into D-slab blocks
         if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
         fence_proxy_async_shared();
         if (wtid == 0) {                            // 4× compact 2D TMA-reduce, one per 16-D-col slab
@@ -14996,7 +15009,7 @@ int main(){
 
     launch_gqa_backward_v6a<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V6a Br=64 Bc=64 compute-pipelined Stage-A (S/dP one tile ahead) dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── V6a Br=64 Bc=64 compute-pipelined Stage-A (S-dP one tile ahead) dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_v45<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -15333,7 +15346,7 @@ int main(){
             [&](){ launch_gqa_backward_v6a<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd V6a Br=64, Bc=64  compute-pipelined Stage-A (S/dP one tile ahead)  (Hopper SM_90)", s);
+        displayStats("GQA bwd V6a Br=64, Bc=64  compute-pipelined Stage-A (S-dP one tile ahead)  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
