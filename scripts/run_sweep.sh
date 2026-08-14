@@ -2,8 +2,8 @@
 # ============================================================================
 # GQA-bwd baseline sweep: for each (Hq,Hkv) x B, generate the FP64/SDPA/Triton
 # reference (precision/baseline_gqa.py) then run the baseline binary, which
-# benchmarks BOTH kernels — V44 (default grid) and V45 (k_tile-fastest raster)
-# — and checks each vs the reference. Take the min(V44,V45) per shape.
+# benchmarks the three kernels — V44 (default grid), Vr1 (per-hq + G-reduce),
+# Vp1 (persistent causal-paired) — and checks each. Take the min per shape.
 #
 # Reference data (data/gqa_*.bin) is per-shape and overwritten each run, so we
 # pair py+binary per (B,Hq,Hkv). Both take the shape from argv, so no rebuild

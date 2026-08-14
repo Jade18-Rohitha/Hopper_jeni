@@ -676,6 +676,331 @@ void launch_gqa_backward_v44(
 }
 
 
+// ===== Vp1 = PERSISTENT V44 via a DYNAMIC atomic work-counter (cuDNN's actual structure) =====
+// Confirmed 2026-08-14 by 3-way ncu (V44/Vp1/cuDNN @4x12): long_scoreboard is a monotonic function of
+// L2 HIT RATE — cuDNN 92% L2 -> long_sb 1.76 -> 1.28ms; V44 85% -> 2.82 -> 1.87; static-chunk Vp1 60%
+// -> 3.26 -> 2.13. cuDNN is persistent (grid 132, 1 wave) EXACTLY like this; its edge is 92% L2, from a
+// DYNAMIC tile scheduler: all 132 CTAs pull (b,hkv)-major work-items from ONE atomic counter, so at any
+// instant they cluster on ~2-3 (b,hkv) groups (~35MB, fits the 50MB L2) and march through together ->
+// Q/dO stays L2-hot, and it auto load-balances the causal work. (Static assignment spread 132 CTAs over
+// all 16 groups at once -> ~200MB -> L2 thrash -> 60%.) No cross-work-item bridge (worth only ~3%); each
+// work-item is SELF-CONTAINED = V44's body, rendezvous at the top+bottom __syncthreads. Ring/K/V/sQ reused
+// per work-item; `git`+parities persist (both wgs advance in lockstep, synced each boundary).
+template<int Br, int Bc, int D>
+__global__ void __launch_bounds__(384, 1)
+gqa_backward_vp1_kv(
+    const __grid_constant__ CUtensorMap tma_K_sw,
+    const __grid_constant__ CUtensorMap tma_V_sw,
+    const __grid_constant__ CUtensorMap tma_Q_sw,
+    const __grid_constant__ CUtensorMap tma_dO_sw,
+    const __grid_constant__ CUtensorMap tma_dV_st,
+    const __grid_constant__ CUtensorMap tma_dK_st,
+    const __grid_constant__ CUtensorMap tma_dq_red,
+    const float * __restrict__ d_Drow,
+    const float * __restrict__ d_LSE,
+    bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale,
+    int * __restrict__ gWork, int totalW
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "Vp1 requires Br=Bc=64, D=128");
+    constexpr int PD = 2;   // Q/dO ring 3->2 funds double-buffered K/V (net-neutral smem)
+
+    __shared__ __align__(128)  bf16 sK_sw[2][Bc * D];   // double-buffered for in-pair K/V prefetch
+    __shared__ __align__(128)  bf16 sV_sw[2][Bc * D];
+    __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
+    __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
+    __shared__ __align__(1024) float sS [2][Br * 64];
+    __shared__ __align__(1024) float sdP[2][Br * 64];
+    __shared__ __align__(1024) bf16  sP [Br * 64];
+    __shared__ __align__(1024) bf16  sDS[Br * 64];
+    __shared__                 float sLSE[PD][Br];
+    __shared__                 float sD  [PD][Br];
+    __shared__ __align__(8)    uint64_t mbar_kv[2];
+    __shared__ __align__(8)    uint64_t full   [PD];
+    __shared__ __align__(8)    uint64_t empty  [PD];
+    __shared__ __align__(8)    uint64_t d_ready[PD];
+    __shared__ int s_w;
+
+    const int tid  = threadIdx.x;
+    const int wg   = tid >> 7;
+    const int wtid = tid & 127;
+    const int nQTiles = S / Br;
+    const int WKV     = S / Bc;                 // k-tiles per (b,hkv)
+    const uint32_t bytesTile = (uint32_t)(Br * D * sizeof(bf16));
+    const uint32_t bytesAtom = (uint32_t)(Bc * 64 * sizeof(bf16));
+
+    if (tid == 0) {
+        mbar_init_v4(&mbar_kv[0], 1);
+        mbar_init_v4(&mbar_kv[1], 1);
+        #pragma unroll
+        for (int i = 0; i < PD; i++) {
+            mbar_init_v4(&full[i], 1);
+            mbar_init_v4(&empty[i], 2);          // early-empty: each consumer wg signals independently
+            mbar_init_v4(&d_ready[i], 1);
+        }
+    }
+    __syncthreads();
+
+    // reg budget + wgmma descriptors set ONCE — K/V double-buffered so one descriptor set per buffer.
+    if (wg == 2) reg_dec_producer_v30(); else reg_inc_consumer_v30();
+    const float scale2 = scale * LOG2E_V29;
+    const bool  leader = (tid == 256);
+    const int   pl     = tid - 256;
+    uint64_t descGemmB[2] = {0,0}, descKhalf[2] = {0,0};
+    uint64_t descP = 0, descDSmn = 0, descDSk = 0;
+    if (wg != 2) {
+        descGemmB[0] = make_desc_sw128_K((wg == 0) ? sK_sw[0] : sV_sw[0]);
+        descGemmB[1] = make_desc_sw128_K((wg == 0) ? sK_sw[1] : sV_sw[1]);
+        descKhalf[0] = make_desc_sw128_MN(sK_sw[0] + wg * 4096);
+        descKhalf[1] = make_desc_sw128_MN(sK_sw[1] + wg * 4096);
+        descP     = make_desc_sw128_MN(sP);
+        descDSmn  = make_desc_sw128_MN(sDS);
+        descDSk   = make_desc_sw128_K (sDS);
+    }
+
+    // CAUSAL-PAIRED CHUNKED scheduler: grab a PAIR of work-items {index i, i+1} per atomicAdd. Work-items
+    // are ordered so that within a (b,hkv) group the k_tiles are causal-paired [0,WKV-1,1,WKV-2,...], so a
+    // grabbed pair is {k_tile t, WKV-1-t} = CONSTANT work (causal pairs sum to a constant) -> no drift ->
+    // the 132-CTA lockstep (and thus 96% L2) is preserved, UNLIKE plain consecutive chunks. Both items are
+    // the SAME group, so the in-pair K/V prefetch is LOCAL (no far-group L2 pollution).
+    auto decodeKV = [&](int idx, int& b, int& hkv, int& k_tile, uint32_t& kvFlatRow, int& qc0, int& nIter) {
+        const int grp = idx / WKV, pos = idx % WKV;
+        k_tile = (pos & 1) ? (WKV - 1 - (pos >> 1)) : (pos >> 1);   // causal-paired within group
+        hkv = grp % Hkv; b = grp / Hkv;
+        const int k_row0 = k_tile * Bc;
+        kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
+        qc0 = k_row0 / Br; nIter = G * (nQTiles - qc0);
+    };
+    auto loadKV = [&](int idx, int buf) {
+        int b_,hkv_,kt_,qc_,ni_; uint32_t kfr; decodeKV(idx,b_,hkv_,kt_,kfr,qc_,ni_);
+        mbar_expect_tx_v4(&mbar_kv[buf], bytesAtom * 4);
+        tma_load_2d_v4(&tma_K_sw, sK_sw[buf],           &mbar_kv[buf], 0,  kfr);
+        tma_load_2d_v4(&tma_K_sw, sK_sw[buf] + 64 * 64, &mbar_kv[buf], 64, kfr);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[buf],           &mbar_kv[buf], 0,  kfr);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[buf] + 64 * 64, &mbar_kv[buf], 64, kfr);
+    };
+    uint32_t kvpar[2] = {0,0};
+    // CHUNK consecutive causal-paired work-items per grab: C-1 of C K/V boundaries are hidden by the
+    // in-chunk LOCAL prefetch; only the chunk boundary is exposed. Larger C hides more but widens the
+    // concurrent group span (132*C work-items) -> watch L2. Causal-pair order keeps each chunk balanced.
+    constexpr int CHUNK = 2;   // C=2 = L2 sweet spot (94.5%); C=4 thrashed to 84.5% for no SM-busy gain
+    // Prologue: grab first chunk, fresh-load its first item's K/V into buffer 0.
+    if (tid == 0) s_w = atomicAdd(gWork, CHUNK);
+    __syncthreads();
+    int base = s_w;
+    int w    = base;
+    int pend = (base + CHUNK < totalW) ? (base + CHUNK) : totalW;
+    if (wg == 2 && leader && w < totalW) loadKV(w, 0);
+
+    uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0};
+    int git = 0;
+    int curbuf = 0;
+
+    while (w < totalW) {
+        const bool local = (w + 1 < pend);          // next item still in this chunk (same group)?
+        int wn;
+        if (local) { wn = w + 1; }
+        else { if (tid == 0) s_w = atomicAdd(gWork, CHUNK); __syncthreads(); wn = s_w; }
+        int b, hkv, k_tile, qc0, nIter; uint32_t kvFlatRow;
+        decodeKV(w, b, hkv, k_tile, kvFlatRow, qc0, nIter);
+        const int k_row0 = k_tile * Bc;
+
+        if (wg == 2) {
+            // -------- PRODUCER (Q/dO ring; K/V for w already in buffer curbuf) --------
+            int gP = 0, qcP = qc0;
+            for (int it = 0; it < nIter; it++) {
+                const int s = git % PD;
+                if (git >= PD) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
+                const int  hqP   = hkv * G + gP;
+                const long dbase = (long)(b * Hq + hqP) * S + (long)qcP * Br;
+                if (leader) {
+                    const uint32_t r = (uint32_t)((b * Hq + hqP) * S + qcP * Br);
+                    mbar_expect_tx_v4(&full[s], bytesTile * 2);
+                    tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  r);
+                    tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, r);
+                    tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
+                    tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
+                }
+                if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }
+                producer_sync();
+                if (leader) mbar_arrive_v11(&d_ready[s]);
+                git++;
+                if (++qcP == nQTiles) { qcP = qc0; ++gP; }
+            }
+            // In-pair LOCAL prefetch of the partner's K/V (same group) into the alt buffer, hidden under
+            // w's compute. Skipped at pair boundary (next pair fresh-loaded below, exposed 1-of-2).
+            if (leader && local && wn < totalW) loadKV(wn, curbuf ^ 1);
+        } else {
+            // ---------------------- CONSUMER work-item (= V44 consumer + epilogue) ----------------------
+        mbar_wait_v4(&mbar_kv[curbuf], kvpar[curbuf]); kvpar[curbuf] ^= 1;   // K/V resident (prefetched)
+
+        float dv[32]; zeroN<32>(dv);
+        float dk[32]; zeroN<32>(dk);
+        int gC = 0, qcC = qc0;
+        for (int it = 0; it < nIter; it++) {
+            const int s = git % PD;
+            const int q_row0 = qcC * Br;
+            mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
+            mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
+
+            float dPacc[32];
+            if (wg == 0) {
+                float acc[32]; zeroN<32>(acc);
+                run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descGemmB[curbuf]);
+                if (qcC == qc0) fused_p_stsm<Bc, true >(acc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
+                else            fused_p_stsm<Bc, false>(acc, sP, sLSE[s], wtid, 0,       0,      scale2);
+            } else {
+                zeroN<32>(dPacc);
+                run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB[curbuf]);
+            }
+            consumer_sync();
+
+            run_gemm_dVdK_half_te_issue_hoA(dv, descP, sdO_sw[s] + wg * 4096);
+
+            if (wg == 1) fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
+            consumer_sync();
+
+            float dq[32]; zeroN<32>(dq);
+            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf[curbuf], sQ_sw[s] + wg * 4096);
+            run_gemm_dVdKdQ_te_wait(dv, dk, dq);
+            if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
+            const int db = it & 1;
+            float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
+            store_acc_sw128_f32(dq, stageDQ, wtid, scale);
+            if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
+            fence_proxy_async_shared();
+            if (wtid == 0) {
+                const int hqC = hkv * G + gC;
+                const uint32_t crow = (uint32_t)((b * Hq + hqC) * S + qcC * Br);
+                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           (uint32_t)(wg * 64),      crow);
+                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow);
+                tma_store_commit_v34();
+                tma_bulk_wait1_v43();
+            }
+            git++;
+            if (++qcC == nQTiles) { qcC = qc0; ++gC; }
+        }
+
+        // epilogue: producer is done with this work-item (rendezvous below) -> sQ ring is FREE; stage
+        // dV/dK into it exactly like V44 (no bridge, so no sS detour / no drain needed).
+        bf16 *qflat    = reinterpret_cast<bf16*>(&sQ_sw[0][0]);
+        bf16 *stage_dv = qflat + wg * 4096;
+        bf16 *stage_dk = qflat + 8192 + wg * 4096;
+        fence_operandN<32>(dv);
+        stage_acc_bf16_s<64, 64>(dv, stage_dv, wtid, 1.0f);
+        fence_operandN<32>(dk);
+        stage_acc_bf16_s<64, 64>(dk, stage_dk, wtid, scale);
+        consumer_sync();
+        fence_proxy_async_shared();
+        if (wtid == 0) {
+            tma_store_2d_v34(&tma_dV_st, stage_dv, (uint32_t)(wg * 64), kvFlatRow);
+            tma_store_2d_v34(&tma_dK_st, stage_dk, (uint32_t)(wg * 64), kvFlatRow);
+            tma_store_commit_v34();
+            tma_store_wait_v34();
+        }
+        }   // end CONSUMER branch
+        __syncthreads();   // work-item boundary rendezvous (orders the alt-buffer K/V write)
+        w = wn;
+        curbuf ^= 1;
+        if (!local && w < totalW) {   // new chunk: base K/V wasn't prefetched -> fresh-load (exposed 1/C)
+            pend = (w + CHUNK < totalW) ? (w + CHUNK) : totalW;
+            if (wg == 2 && leader) loadKV(w, curbuf);
+        }
+    }       // end persistent while
+}
+
+
+template<int Br, int Bc, int D>
+void launch_gqa_backward_vp1(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "Vp1 requires Br=Bc=64, D=128");
+    auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
+        uint32_t box[2]     = {64u, tile_rows};
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(
+            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) vp1: %s\n", e); exit(1); }
+        return desc;
+    };
+    const uint64_t Rq  = (uint64_t)B * Hq  * S;
+    const uint64_t Rkv = (uint64_t)B * Hkv * S;
+    CUtensorMap tma_K_sw  = make_tma_sw128(d_K,  Rkv, Bc);
+    CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
+    CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
+    CUtensorMap tma_dO_sw = make_tma_sw128(d_dO, Rq,  Br);
+    auto make_tma_out = [&](const bf16* ptr, uint64_t rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]={(uint64_t)D, rows}; uint64_t gStride[1]={(uint64_t)D*sizeof(bf16)};
+        uint32_t box[2]={64u,64u}; uint32_t eStride[2]={1,1};
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)ptr,gSize,gStride,box,eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out vp1: %s\n",e);exit(1);} return desc; };
+    CUtensorMap tma_dV_st = make_tma_out(d_dV, Rkv);
+    CUtensorMap tma_dK_st = make_tma_out(d_dK, Rkv);
+    auto make_tma_red = [&](const float* ptr, uint64_t rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]={(uint64_t)D, rows}; uint64_t gStride[1]={(uint64_t)D*sizeof(float)};
+        uint32_t box[2]={32u,64u}; uint32_t eStride[2]={1,1};
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gSize,gStride,box,eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red vp1: %s\n",e);exit(1);} return desc; };
+
+    const long drowN = (long)B * Hq * S;
+    static float* d_Drow  = nullptr;
+    static long   drow_cap = 0;
+    if (drowN > drow_cap) {
+        if (d_Drow) CUDA_CHECK(cudaFree(d_Drow));
+        CUDA_CHECK(cudaMalloc(&d_Drow, drowN * sizeof(float)));
+        drow_cap = drowN;
+    }
+    const long dqN = (long)B * Hq * S * D;
+    static float* d_dq_accum = nullptr;
+    static long   dq_cap     = 0;
+    if (dqN > dq_cap) {
+        if (d_dq_accum) CUDA_CHECK(cudaFree(d_dq_accum));
+        CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
+        dq_cap = dqN;
+    }
+    CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
+    CUtensorMap tma_dq_red = make_tma_red(d_dq_accum, (uint64_t)B * Hq * S);
+
+    const int  dBlock = 256;
+    const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
+    compute_drowsum_v22<<<(unsigned)dGrid, dBlock>>>(d_dO, d_O, d_Drow, drowN);
+
+    // Persistent: launch one wave = SM count; CTAs pull (b,hkv)-major work-items from a dynamic atomic
+    // counter (gWork) so the concurrent working set stays L2-resident (cuDNN's tile-scheduler pattern).
+    int dev = 0; CUDA_CHECK(cudaGetDevice(&dev));
+    int nSM = 0; CUDA_CHECK(cudaDeviceGetAttribute(&nSM, cudaDevAttrMultiProcessorCount, dev));
+    const int totalW = B * Hkv * (S / Bc);
+    static int* d_gWork = nullptr;
+    if (!d_gWork) CUDA_CHECK(cudaMalloc(&d_gWork, sizeof(int)));
+    CUDA_CHECK(cudaMemset(d_gWork, 0, sizeof(int)));
+    constexpr dim3 BLOCK(384);
+    gqa_backward_vp1_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
+        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
+        d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale, d_gWork, totalW);
+
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
+}
+
+
+
 // ===== Vr1 = KV-parallel per-hq main (raster) + cuDNN-style G-head reduce (fmha_reduce_head equiv, 18.78us) =====
 __global__ void gqa_dkdv_greduce(const bf16* __restrict__ partial, bf16* __restrict__ out, int Hq, int Hkv, int G, int S) {
     constexpr int Dd = 128, RPB = 8;
@@ -1368,8 +1693,8 @@ static void run_for_shape(int B, int Hq, int Hkv) {
         displayStats(label, s);
     }
 
-    // ---- V45: raster grid (k_tile fastest) — run alongside V44, take the best per shape ----
-    launch_gqa_backward_v45<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    // ---- Vp1: persistent causal-paired scheduler (1 wave, no B=8 throttle) — wins where V44 thrashes ----
+    launch_gqa_backward_vp1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     {
         std::vector<__nv_bfloat16> hQ_(Nq), hK_(Nkv), hV_(Nkv);
@@ -1380,7 +1705,7 @@ static void run_for_shape(int B, int Hq, int Hkv) {
         for (size_t i = 0; i < Nq;  ++i) qf[i] = __bfloat162float(hQ_[i]);
         for (size_t i = 0; i < Nkv; ++i) kf[i] = __bfloat162float(hK_[i]);
         for (size_t i = 0; i < Nkv; ++i) vf[i] = __bfloat162float(hV_[i]);
-        printf("── V45 (raster grid)  B=%d ──\n", B);
+        printf("── Vp1 (persistent causal-paired)  B=%d ──\n", B);
         reportPrecision("  dQ", h_dQ_ref.data(), qf.data(), Nq);
         reportPrecision("  dK", h_dK_ref.data(), kf.data(), Nkv);
         reportPrecision("  dV", h_dV_ref.data(), vf.data(), Nkv);
@@ -1391,13 +1716,16 @@ static void run_for_shape(int B, int Hq, int Hkv) {
     }
     {
         char label[128];
-        snprintf(label, sizeof(label), "V45 (raster grid)    B=%d  k_tile-fastest L2 raster  (Hopper SM_90)", B);
+        snprintf(label, sizeof(label), "Vp1 (persistent)     B=%d  causal-paired dynamic scheduler  (Hopper SM_90)", B);
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_v45<Br2,Bc2,D>(
+            [&](){ launch_gqa_backward_vp1<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats(label, s);
     }
+
+    // V45 (k_tile-fastest raster) removed from the best-of: it only beat Vr1 on the two biggest shapes
+    // (8x24, 8x32) by ~0.5%, and Vr1 covers those within rounding. Best-of is now V44 (low/mid) + Vr1 (big).
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
@@ -1409,7 +1737,7 @@ int main(int argc, char** argv){
     const int B   = argc > 1 ? atoi(argv[1]) : 8;
     const int Hq  = argc > 2 ? atoi(argv[2]) : 12;
     const int Hkv = argc > 3 ? atoi(argv[3]) : 4;
-    std::cout << "GQA Backward baseline — V44 (default) vs V45 (raster), take best per shape  [Hopper SM_90 / H200]\n";
+    std::cout << "GQA Backward baseline — V44 (default) + Vr1 (per-hq G-reduce) + Vp1 (persistent), take best per shape  [Hopper SM_90 / H200]\n";
     std::cout << "Shape: B=" << B << " Hq=" << Hq << " Hkv=" << Hkv << " S=4096 D=128  (G=" << Hq/Hkv << ")\n\n";
     run_for_shape(B, Hq, Hkv);
     return 0;
