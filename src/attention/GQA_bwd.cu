@@ -1836,6 +1836,17 @@ __global__ void convert_dq_accum_to_bf16_v5(const float * __restrict__ d_dq_accu
     long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) d_dQ[i] = __float2bfloat16(d_dq_accum[i]);
 }
+// Vectorized fp32->bf16: each thread converts a float4 (16B load) -> 4 bf16 (8B store). ~4x the memory
+// width of the scalar version -> near-peak bandwidth. n MUST be a multiple of 4 (D=128 -> always true).
+__global__ void convert_dq_accum_to_bf16_v6(const float4 * __restrict__ in, uint2 * __restrict__ out, long n4) {
+    long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n4) {
+        float4 v = in[i];
+        bf16 o[4] = { __float2bfloat16(v.x), __float2bfloat16(v.y),
+                      __float2bfloat16(v.z), __float2bfloat16(v.w) };
+        out[i] = *reinterpret_cast<const uint2*>(o);
+    }
+}
 
 // ── V5 — fused dQ + dK + dV ──  Grid (B,Hkv,S/Bc), 128 threads (one warpgroup).
 //   Persistent (per K-tile): K swizzled (S=Q·Kᵀ B), K plain (dQ=dS·K B), V swizzled.
@@ -2094,9 +2105,11 @@ void launch_gqa_backward_v5(
         tma_K_sw, tma_K_pl, tma_V_sw, tma_Q_pl, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
     // d_dq_accum is cached (static) — intentionally not freed; reclaimed at process exit.
 }
 
@@ -2460,9 +2473,11 @@ void launch_gqa_backward_v6(
         tma_K_sw, tma_K_pl, tma_V_sw, tma_Q_pl, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
     // d_dq_accum is cached (static) — intentionally not freed; reclaimed at process exit.
 }
 
@@ -2949,9 +2964,11 @@ void launch_gqa_backward_v7(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
     // d_dq_accum is cached (static) — intentionally not freed; reclaimed at process exit.
 }
 
@@ -3213,9 +3230,11 @@ void launch_gqa_backward_v8(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
     // d_dq_accum is cached (static) — intentionally not freed; reclaimed at process exit.
 }
 
@@ -3562,9 +3581,11 @@ void launch_gqa_backward_v9(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -3994,9 +4015,11 @@ void launch_gqa_backward_v10(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -4358,9 +4381,11 @@ void launch_gqa_backward_v11(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -4719,9 +4744,11 @@ void launch_gqa_backward_v12(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -5059,9 +5086,11 @@ void launch_gqa_backward_v13(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5346,9 +5375,11 @@ void launch_gqa_backward_v14(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5607,9 +5638,11 @@ void launch_gqa_backward_v15(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -6090,9 +6123,11 @@ void launch_gqa_backward_v16(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6381,9 +6416,11 @@ void launch_gqa_backward_v17(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6649,9 +6686,11 @@ void launch_gqa_backward_v18(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 
@@ -6946,9 +6985,11 @@ void launch_gqa_backward_v19(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dO_pl, tma_O_pl,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -7239,9 +7280,11 @@ void launch_gqa_backward_v20(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_O_sw,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7685,9 +7728,11 @@ void launch_gqa_backward_v21(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_O_sw,
         d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -8007,9 +8052,11 @@ void launch_gqa_backward_v22(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ============================================================================
@@ -8289,9 +8336,11 @@ void launch_gqa_backward_v23(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ============================================================================
@@ -8575,9 +8624,11 @@ void launch_gqa_backward_v24(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 template<int Br, int Bc, int D>
@@ -8844,9 +8895,11 @@ void launch_gqa_backward_v25(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 template<int Br, int Bc, int D>
@@ -9113,9 +9166,11 @@ void launch_gqa_backward_v26(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 template<int Br, int Bc, int D>
@@ -9383,9 +9438,11 @@ void launch_gqa_backward_v27(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 template<int Br, int Bc, int D>
@@ -9658,9 +9715,11 @@ void launch_gqa_backward_v28(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 template<int Br, int Bc, int D>
@@ -9934,9 +9993,11 @@ void launch_gqa_backward_v29(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 template<int Br, int Bc, int D>
@@ -10212,9 +10273,11 @@ void launch_gqa_backward_v30(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V31 = V30 minus the dedicated sA_t buffer.  After V23 killed sA_t's dQ-transpose
@@ -10492,9 +10555,11 @@ void launch_gqa_backward_v31(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V32 = V31, LSE load MOVED to producer (prefetched like D). Deletes the consumer LSE LDG/STS
@@ -10769,9 +10834,11 @@ void launch_gqa_backward_v32(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V33 = V32 + D/LSE prefetch lag-0 (PD-deep, with the TMA — was lag-1). Bit-identical.
@@ -11035,9 +11102,11 @@ void launch_gqa_backward_v33(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V34 = V33 + TMA-store epilogue (dV/dK writeback offloaded to the TMA engine). Bit-identical.
@@ -11317,9 +11386,11 @@ void launch_gqa_backward_v34(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V35 fused dP+dS helper: dS = P*(dP-D), dP in-register (fp32), P from swizzled sP, D from sD,
@@ -11688,9 +11759,11 @@ void launch_gqa_backward_v35(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V36 = V35 + barrier reduction (attacks the #2 stall, barrier=1.28 cyc/issue @ V35). Two moves:
@@ -11955,9 +12028,11 @@ void launch_gqa_backward_v36(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V37: dK + dQ fused into ONE 8-deep wgmma burst (one commit_group + one wait_group vs two full
@@ -12324,9 +12399,11 @@ void launch_gqa_backward_v37(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V38 = V37 + fold dV into the burst: dV+dK+dQ drain under ONE wait0 (was: dV wait BEFORE the
@@ -12586,9 +12663,11 @@ void launch_gqa_backward_v38(
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
     // (3) dQ fp32 accumulator → bf16.
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V39 = V38 + STSM sP write + branchless FSEL causal mask.  ONLY the fused_p call changes:
@@ -12827,9 +12906,11 @@ void launch_gqa_backward_v39(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st,
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V40 = V39 + STSM on fuse_dS's sDS write.  ONLY the dS-fuse call changes: fuse_dS_from_sP →
@@ -13067,9 +13148,11 @@ void launch_gqa_backward_v40(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st,
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V41 = V40 + LDMATRIX-read of sP in fuse_dS (inverse of STSM). Cuts the #2 load bucket. Bit-identical.
@@ -13303,9 +13386,11 @@ void launch_gqa_backward_v41(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st,
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V42 = V41 + DESCRIPTOR-HOIST.  The wgmma operand descriptors for the loop-INVARIANT shared buffers
@@ -13550,9 +13635,11 @@ void launch_gqa_backward_v42(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st,
         d_Drow, d_LSE, d_dK, d_dV, d_dq_accum, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // V43 = V42 + TMA-REDUCE dQ.  cuDNN's flash_bprop keeps dQ/dK/dV accumulation OFF the LSU/L1TEX path
@@ -13838,9 +13925,11 @@ void launch_gqa_backward_v43(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 
@@ -14153,9 +14242,11 @@ void launch_gqa_backward_v44(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 
@@ -14319,43 +14410,33 @@ gqa_backward_vp1_kv(
 
         float dv[32]; zeroN<32>(dv);
         float dk[32]; zeroN<32>(dk);
-        float sacc[32];                  // WGMMA SOFTWARE-PIPELINE: S/dP GEMM result — acc(wg0)/dPacc(wg1),
-                                         // issued a tile ahead, kept pending across the back-edge (te_wait1).
         int gC = 0, qcC = qc0;
-        {   // prologue: issue tile-0's S/dP GEMM (drained at the loop top)
-            const int s0 = git % PD;
-            mbar_wait_v4(&full[s0], cpar[s0]); cpar[s0] ^= 1;
-            mbar_wait_v4(&d_ready[s0], dpar[s0]); dpar[s0] ^= 1;
-            zeroN<32>(sacc);
-            run_gemm_n64_sw2_hoB_issue(sacc, (wg == 0) ? sQ_sw[s0] : sdO_sw[s0], descGemmB[curbuf]);
-        }
         for (int it = 0; it < nIter; it++) {
             const int s = git % PD;
             const int q_row0 = qcC * Br;
-            wgmma_wait0(); fence_operandN<32>(sacc);    // S/dP GEMM(it) ready
+            mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
+            mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
+
+            float dPacc[32];
             if (wg == 0) {
-                if (qcC == qc0) fused_p_stsm<Bc, true >(sacc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
-                else            fused_p_stsm<Bc, false>(sacc, sP, sLSE[s], wtid, 0,       0,      scale2);
+                float acc[32]; zeroN<32>(acc);
+                run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descGemmB[curbuf]);
+                if (qcC == qc0) fused_p_stsm<Bc, true >(acc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
+                else            fused_p_stsm<Bc, false>(acc, sP, sLSE[s], wtid, 0,       0,      scale2);
+            } else {
+                zeroN<32>(dPacc);
+                run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB[curbuf]);
             }
             consumer_sync();
 
             run_gemm_dVdK_half_te_issue_hoA(dv, descP, sdO_sw[s] + wg * 4096);
 
-            if (wg == 1) fuse_dS_ldstsm<Bc>(sP, sacc, sD[s], sDS, wtid);   // sacc = dPacc for wg1
+            if (wg == 1) fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
             consumer_sync();
 
             float dq[32]; zeroN<32>(dq);
             run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf[curbuf], sQ_sw[s] + wg * 4096);
-            if (it + 1 < nIter) {   // prefetch next tile's S/dP GEMM (reuse sacc, consumed above), keep pending
-                const int sn = (git + 1) % PD;
-                mbar_wait_v4(&full[sn], cpar[sn]); cpar[sn] ^= 1;
-                mbar_wait_v4(&d_ready[sn], dpar[sn]); dpar[sn] ^= 1;
-                zeroN<32>(sacc);
-                run_gemm_n64_sw2_hoB_issue(sacc, (wg == 0) ? sQ_sw[sn] : sdO_sw[sn], descGemmB[curbuf]);
-                run_gemm_dVdKdQ_te_wait1(dv, dk, dq);   // drain dV/dK/dQ, KEEP S-GEMM(it+1) pending
-            } else {
-                run_gemm_dVdKdQ_te_wait(dv, dk, dq);    // last tile: drain all
-            }
+            run_gemm_dVdKdQ_te_wait(dv, dk, dq);
             if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
             const int db = it & 1;
             float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
@@ -14485,9 +14566,11 @@ void launch_gqa_backward_vp1(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale, d_gWork, totalW);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 
@@ -14791,9 +14874,11 @@ void launch_gqa_backward_vr1(
     gqa_dkdv_greduce<<<grGRID, 128, 0, gr_stream>>>(d_dK_partial, d_dK, Hq, Hkv, G, S);
     gqa_dkdv_greduce<<<grGRID, 128, 0, gr_stream>>>(d_dV_partial, d_dV, Hq, Hkv, G, S);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);   // stream 0, overlaps greduce
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);   // stream 0, overlaps greduce
 }
 
 
@@ -15070,9 +15155,11 @@ void launch_gqa_backward_v45(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale, rasterize);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
