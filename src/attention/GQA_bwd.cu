@@ -1318,6 +1318,23 @@ __device__ __forceinline__ void mbar_wait_v4(uint64_t* mbar, uint32_t parity) {
         "@!_P bra _MBAR_LOOP_V4;\n }\n"
         :: "r"(p), "r"(parity) : "memory");
 }
+// Backoff try_wait (cuDNN idiom: PHASECHK.TRYWAIT + NANOSLEEP): a waiting warp yields the scheduler
+// to other warps between polls instead of hard-spinning. Exponential backoff, small start, capped.
+__device__ __forceinline__ void mbar_wait_bo(uint64_t* mbar, uint32_t parity) {
+    uint32_t p = (uint32_t)__cvta_generic_to_shared(mbar);
+    asm volatile(
+        "{\n .reg .pred _P;\n .reg .u32 _ns;\n"
+        "mov.u32 _ns, 4;\n"
+        "_MBAR_BO:\n"
+        "mbarrier.try_wait.parity.shared.b64 _P, [%0], %1;\n"
+        "@_P bra _MBAR_BO_DONE;\n"
+        "nanosleep.u32 _ns;\n"
+        "shl.b32 _ns, _ns, 1;\n"
+        "min.u32 _ns, _ns, 128;\n"
+        "bra _MBAR_BO;\n"
+        "_MBAR_BO_DONE:\n }\n"
+        :: "r"(p), "r"(parity) : "memory");
+}
 // 2-D TMA bulk async: global tile → swizzled/plain smem, tracked by `mbar`.
 __device__ __forceinline__ void tma_load_2d_v4(
     const void* tma_desc, void* smem_dst, uint64_t* mbar, uint32_t cx, uint32_t cy) {
@@ -14166,8 +14183,7 @@ gqa_backward_vp1_kv(
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
     __shared__                 float sD  [PD][Br];
-    __shared__ __align__(8)    uint64_t mbar_kv;    // K/V ready (producer prefetch -> consumer)
-    __shared__ __align__(8)    uint64_t kv_free;    // K/V free  (consumer done reading -> producer refill)
+    __shared__ __align__(8)    uint64_t mbar_kv;
     __shared__ __align__(8)    uint64_t full   [PD];
     __shared__ __align__(8)    uint64_t empty  [PD];
     __shared__ __align__(8)    uint64_t d_ready[PD];
@@ -14183,7 +14199,6 @@ gqa_backward_vp1_kv(
 
     if (tid == 0) {
         mbar_init_v4(&mbar_kv, 1);
-        mbar_init_v4(&kv_free, 1);
         #pragma unroll
         for (int i = 0; i < PD; i++) {
             mbar_init_v4(&full[i], 1);
@@ -14208,31 +14223,15 @@ gqa_backward_vp1_kv(
     }
 
     // persist across work-items (both wgs advance identically, rendezvous each boundary).
-    uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0};
-    uint32_t kvr_par = 0, kvf_par = 0;   // kv_ready (prod->cons) / kv_free (cons->prod) phases
+    uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0}, kv_cpar = 0;
     int git = 0;
 
-    // GRAB-AHEAD K/V PREFETCH: each work-item's K/V is a unique DRAM load (~500cyc, never L2-reused). Overlap
-    // it with the PREVIOUS item's epilogue so the consumer never stalls on K/V at a boundary (kills the SM
-    // idle that left us at 35% busy vs cuDNN's 57%). Prologue: grab w0 and kick off its K/V load.
-    if (tid == 0) s_w = atomicAdd(gWork, 1);
-    __syncthreads();
-    int w = s_w;
-    if (wg == 2 && leader && w < totalW) {
-        const uint32_t kfr = (uint32_t)(((w / (WKV * Hkv)) * Hkv + (w / WKV) % Hkv) * S + (w % WKV) * Bc);
-        mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
-        tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kfr);
-        tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kfr);
-        tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kfr);
-        tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kfr);
-    }
-
-    while (w < totalW) {
-        // grab the NEXT work-item now so the producer can prefetch its K/V during THIS item's epilogue.
-        if (tid == 0) s_w = atomicAdd(gWork, 1);
+    while (true) {
+        if (tid == 0) s_w = atomicAdd(gWork, 1);   // dynamic tile scheduler: (b,hkv)-major -> L2-hot cluster
         __syncthreads();
-        const int wn = s_w;
-        const int k_tile = w % WKV;                // decode CURRENT w  ((b,hkv) major)
+        const int w = s_w;
+        if (w >= totalW) break;
+        const int k_tile = w % WKV;                // (b,hkv) major, k_tile minor
         const int hkv    = (w / WKV) % Hkv;
         const int b      = w / (WKV * Hkv);
         const int k_row0 = k_tile * Bc;
@@ -14241,7 +14240,14 @@ gqa_backward_vp1_kv(
         const int nIter = G * (nQTiles - qc0);
 
         if (wg == 2) {
-            // ---------------- PRODUCER work-item (Q/dO ring; K/V already resident) ----------------
+            // ---------------------- PRODUCER work-item (= V44 producer) ----------------------
+            if (leader) {
+                mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
+                tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
+                tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+                tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kvFlatRow);
+                tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+            }
             int gP = 0, qcP = qc0;
             for (int it = 0; it < nIter; it++) {
                 const int s = git % PD;
@@ -14262,19 +14268,9 @@ gqa_backward_vp1_kv(
                 git++;
                 if (++qcP == nQTiles) { qcP = qc0; ++gP; }
             }
-            // PREFETCH K/V(wn) into the single K/V buffer, overlapping the consumer's epilogue of w.
-            if (leader && wn < totalW) {
-                mbar_wait_v4(&kv_free, kvf_par); kvf_par ^= 1;   // consumer finished reading K/V(w)
-                const uint32_t kfrn = (uint32_t)(((wn / (WKV * Hkv)) * Hkv + (wn / WKV) % Hkv) * S + (wn % WKV) * Bc);
-                mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
-                tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kfrn);
-                tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kfrn);
-                tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kfrn);
-                tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kfrn);
-            }
         } else {
             // ---------------------- CONSUMER work-item (= V44 consumer + epilogue) ----------------------
-        mbar_wait_v4(&mbar_kv, kvr_par); kvr_par ^= 1;   // this work-item's K/V is resident (prefetched)
+        mbar_wait_bo(&mbar_kv, kv_cpar); kv_cpar ^= 1;   // this work-item's K/V is resident (cuDNN nanosleep-backoff)
 
         float dv[32]; zeroN<32>(dv);
         float dk[32]; zeroN<32>(dk);
@@ -14282,8 +14278,8 @@ gqa_backward_vp1_kv(
         for (int it = 0; it < nIter; it++) {
             const int s = git % PD;
             const int q_row0 = qcC * Br;
-            mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
-            mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
+            mbar_wait_bo(&full[s], cpar[s]); cpar[s] ^= 1;
+            mbar_wait_bo(&d_ready[s], dpar[s]); dpar[s] ^= 1;
 
             float dPacc[32];
             if (wg == 0) {
@@ -14323,11 +14319,6 @@ gqa_backward_vp1_kv(
             if (++qcC == nQTiles) { qcC = qc0; ++gC; }
         }
 
-        // K/V(w) is no longer read after the tile loop -> release it so the producer can prefetch K/V(wn)
-        // (its DRAM load then overlaps the epilogue below).
-        consumer_sync();
-        if (tid == 0) mbar_arrive_v11(&kv_free);
-
         // epilogue: producer is done with this work-item (rendezvous below) -> sQ ring is FREE; stage
         // dV/dK into it exactly like V44 (no bridge, so no sS detour / no drain needed).
         bf16 *qflat    = reinterpret_cast<bf16*>(&sQ_sw[0][0]);
@@ -14346,8 +14337,7 @@ gqa_backward_vp1_kv(
             tma_store_wait_v34();
         }
         }   // end CONSUMER branch
-        __syncthreads();   // work-item boundary rendezvous
-        w = wn;            // advance to the work-item whose K/V is already prefetching
+        __syncthreads();   // work-item boundary: ring/K/V/sQ safe to reuse next work-item
     }       // end persistent while
 }
 
