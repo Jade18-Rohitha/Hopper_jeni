@@ -14231,30 +14231,37 @@ gqa_backward_vp1_kv(
     auto kvRowOf = [&](int wi) -> uint32_t {
         return (uint32_t)(((wi / (WKV * Hkv)) * Hkv + (wi / WKV) % Hkv) * S + (wi % WKV) * Bc);
     };
-    // Prologue: grab w0 and prefetch its K/V into buffer 0 so the first consumer never waits on DRAM.
+    // CHUNKED dynamic scheduler: grab CHUNK CONSECUTIVE work-items per atomicAdd. Within a chunk the next
+    // work-item is w+1 (same (b,hkv) group), so prefetching its K/V is LOCAL and does NOT evict the current
+    // group's Q/dO from L2 (the far-ahead round-robin prefetch caused 4x DRAM / L2 96->86). Only the chunk
+    // boundary (1 of CHUNK) exposes a fresh K/V load. Small CHUNK keeps the concurrent group span L2-sized.
+    constexpr int CHUNK = 2;
     uint32_t kvpar[2] = {0,0};   // per-buffer ready parity (producer completion count mod 2)
-    if (tid == 0) s_w = atomicAdd(gWork, 1);
+    auto loadKV = [&](int wi, int buf) {
+        const uint32_t kfr = kvRowOf(wi);
+        mbar_expect_tx_v4(&mbar_kv[buf], bytesAtom * 4);
+        tma_load_2d_v4(&tma_K_sw, sK_sw[buf],           &mbar_kv[buf], 0,  kfr);
+        tma_load_2d_v4(&tma_K_sw, sK_sw[buf] + 64 * 64, &mbar_kv[buf], 64, kfr);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[buf],           &mbar_kv[buf], 0,  kfr);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[buf] + 64 * 64, &mbar_kv[buf], 64, kfr);
+    };
+    // Prologue: grab first chunk, fresh-load its base K/V into buffer 0.
+    if (tid == 0) s_w = atomicAdd(gWork, CHUNK);
     __syncthreads();
-    int w = s_w;
-    if (wg == 2 && leader && w < totalW) {
-        const uint32_t kfr = kvRowOf(w);
-        mbar_expect_tx_v4(&mbar_kv[0], bytesAtom * 4);
-        tma_load_2d_v4(&tma_K_sw, sK_sw[0],           &mbar_kv[0], 0,  kfr);
-        tma_load_2d_v4(&tma_K_sw, sK_sw[0] + 64 * 64, &mbar_kv[0], 64, kfr);
-        tma_load_2d_v4(&tma_V_sw, sV_sw[0],           &mbar_kv[0], 0,  kfr);
-        tma_load_2d_v4(&tma_V_sw, sV_sw[0] + 64 * 64, &mbar_kv[0], 64, kfr);
-    }
+    int w    = s_w;
+    int cend = (w + CHUNK < totalW) ? (w + CHUNK) : totalW;
+    if (wg == 2 && leader && w < totalW) loadKV(w, 0);
 
     // persist across work-items (both wgs advance identically, rendezvous each boundary).
     uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0};
     int git = 0;
-    int curbuf = 0;   // K/V buffer for the CURRENT work-item — alternates by LOCAL iteration (dynamic w
-                      // grabs are non-consecutive, so w&1 could alias the buffer being prefetched).
+    int curbuf = 0;
 
     while (w < totalW) {
-        if (tid == 0) s_w = atomicAdd(gWork, 1);   // grab NEXT so producer can prefetch its K/V now
-        __syncthreads();
-        const int wn = s_w;
+        const bool local = (w + 1 < cend);         // next work-item in this chunk (same group)?
+        int wn;
+        if (local) { wn = w + 1; }
+        else { if (tid == 0) s_w = atomicAdd(gWork, CHUNK); __syncthreads(); wn = s_w; }
         const int k_tile = w % WKV;                // (b,hkv) major, k_tile minor
         const int hkv    = (w / WKV) % Hkv;
         const int b      = w / (WKV * Hkv);
@@ -14285,18 +14292,10 @@ gqa_backward_vp1_kv(
                 git++;
                 if (++qcP == nQTiles) { qcP = qc0; ++gP; }
             }
-            // PREFETCH K/V(wn) into the ALTERNATE buffer (wn&1) during w's compute. No handshake needed:
-            // buffer (wn&1) was last read by work-item w-1, and the boundary rendezvous already ordered
-            // that read before this write. Async TMA -> overlaps w's compute -> consumer never waits on K/V.
-            if (leader && wn < totalW) {
-                const int nb = curbuf ^ 1;
-                const uint32_t kfrn = kvRowOf(wn);
-                mbar_expect_tx_v4(&mbar_kv[nb], bytesAtom * 4);
-                tma_load_2d_v4(&tma_K_sw, sK_sw[nb],           &mbar_kv[nb], 0,  kfrn);
-                tma_load_2d_v4(&tma_K_sw, sK_sw[nb] + 64 * 64, &mbar_kv[nb], 64, kfrn);
-                tma_load_2d_v4(&tma_V_sw, sV_sw[nb],           &mbar_kv[nb], 0,  kfrn);
-                tma_load_2d_v4(&tma_V_sw, sV_sw[nb] + 64 * 64, &mbar_kv[nb], 64, kfrn);
-            }
+            // In-chunk LOCAL prefetch of wn's K/V into the alt buffer, overlapping w's compute (hidden).
+            // Ordering via the boundary rendezvous; the alt buffer was last read 1 work-item ago. Skipped
+            // at chunk boundaries (far -> would pollute L2); that base is fresh-loaded below instead.
+            if (leader && local && wn < totalW) loadKV(wn, curbuf ^ 1);
         } else {
             // ---------------------- CONSUMER work-item (= V44 consumer + epilogue) ----------------------
         mbar_wait_v4(&mbar_kv[curbuf], kvpar[curbuf]); kvpar[curbuf] ^= 1;   // K/V prefetched, resident
@@ -14366,9 +14365,13 @@ gqa_backward_vp1_kv(
             tma_store_wait_v34();
         }
         }   // end CONSUMER branch
-        __syncthreads();   // work-item boundary rendezvous (orders the prefetch write of the alt buffer)
-        w = wn;            // advance to the work-item whose K/V is already prefetched
-        curbuf ^= 1;       // its K/V is in the alternate buffer
+        __syncthreads();   // work-item boundary rendezvous (orders the alt-buffer K/V write)
+        w = wn;
+        curbuf ^= 1;
+        if (!local && w < totalW) {   // entered a NEW chunk: its base K/V wasn't prefetched -> fresh-load
+            cend = (w + CHUNK < totalW) ? (w + CHUNK) : totalW;
+            if (wg == 2 && leader) loadKV(w, curbuf);
+        }
     }       // end persistent while
 }
 
