@@ -14251,7 +14251,7 @@ gqa_backward_vp1_kv(
     // CHUNK consecutive causal-paired work-items per grab: C-1 of C K/V boundaries are hidden by the
     // in-chunk LOCAL prefetch; only the chunk boundary is exposed. Larger C hides more but widens the
     // concurrent group span (132*C work-items) -> watch L2. Causal-pair order keeps each chunk balanced.
-    constexpr int CHUNK = 4;
+    constexpr int CHUNK = 2;   // C=2 = L2 sweet spot (94.5%); C=4 thrashed to 84.5% for no SM-busy gain
     // Prologue: grab first chunk, fresh-load its first item's K/V into buffer 0.
     if (tid == 0) s_w = atomicAdd(gWork, CHUNK);
     __syncthreads();
