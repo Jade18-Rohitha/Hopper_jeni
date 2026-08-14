@@ -2613,6 +2613,21 @@ __device__ __forceinline__ void run_gemm_n64_sw2_hoB(float acc[32], const bf16* 
     wgmma_wait0();
     fence_operandN<32>(acc);
 }
+// Issue-only S/dP GEMM (no wait) — for the wgmma software-pipeline: issue tile it+1's S-GEMM at the end of
+// tile it, keep it pending across the back-edge (te_wait1), drain it at the top of it+1. Overlaps the
+// S-GEMM latency with the dq store/reduce. Caller must zeroN(acc) first and wgmma_wait0() before reading acc.
+__device__ __forceinline__ void run_gemm_n64_sw2_hoB_issue(float acc[32], const bf16* A_sw, uint64_t descB_base) {
+    fence_proxy_async_shared();
+    fence_operandN<32>(acc);
+    wgmma_fence();
+#pragma unroll
+    for (int k = 0; k < 8; k++) {
+        uint64_t dA = make_desc_sw128_K(A_sw + (k >> 2) * 4096 + (k & 3) * 16);
+        uint64_t dB = descB_base + (uint64_t)((k >> 2) * 512 + (k & 3) * 2);
+        wgmma_m64n64k16(acc, dA, dB);
+    }
+    wgmma_commit();
+}
 // V43: BOTH operands hoisted (S/dP GEMM).  descA_base = the PD-variant A (sQ_sw[s]/sdO_sw[s]) hoisted as
 // slot-0 base + s-advance in the caller; descB_base = invariant sK/sV.  K-major k-advance = (k>>2)·512+(k&3)·2.
 __device__ __forceinline__ void run_gemm_n64_sw2_hoAB(float acc[32], uint64_t descA_base, uint64_t descB_base) {
@@ -14304,33 +14319,43 @@ gqa_backward_vp1_kv(
 
         float dv[32]; zeroN<32>(dv);
         float dk[32]; zeroN<32>(dk);
+        float sacc[32];                  // WGMMA SOFTWARE-PIPELINE: S/dP GEMM result — acc(wg0)/dPacc(wg1),
+                                         // issued a tile ahead, kept pending across the back-edge (te_wait1).
         int gC = 0, qcC = qc0;
+        {   // prologue: issue tile-0's S/dP GEMM (drained at the loop top)
+            const int s0 = git % PD;
+            mbar_wait_v4(&full[s0], cpar[s0]); cpar[s0] ^= 1;
+            mbar_wait_v4(&d_ready[s0], dpar[s0]); dpar[s0] ^= 1;
+            zeroN<32>(sacc);
+            run_gemm_n64_sw2_hoB_issue(sacc, (wg == 0) ? sQ_sw[s0] : sdO_sw[s0], descGemmB[curbuf]);
+        }
         for (int it = 0; it < nIter; it++) {
             const int s = git % PD;
             const int q_row0 = qcC * Br;
-            mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
-            mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
-
-            float dPacc[32];
+            wgmma_wait0(); fence_operandN<32>(sacc);    // S/dP GEMM(it) ready
             if (wg == 0) {
-                float acc[32]; zeroN<32>(acc);
-                run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descGemmB[curbuf]);
-                if (qcC == qc0) fused_p_stsm<Bc, true >(acc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
-                else            fused_p_stsm<Bc, false>(acc, sP, sLSE[s], wtid, 0,       0,      scale2);
-            } else {
-                zeroN<32>(dPacc);
-                run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB[curbuf]);
+                if (qcC == qc0) fused_p_stsm<Bc, true >(sacc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
+                else            fused_p_stsm<Bc, false>(sacc, sP, sLSE[s], wtid, 0,       0,      scale2);
             }
             consumer_sync();
 
             run_gemm_dVdK_half_te_issue_hoA(dv, descP, sdO_sw[s] + wg * 4096);
 
-            if (wg == 1) fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
+            if (wg == 1) fuse_dS_ldstsm<Bc>(sP, sacc, sD[s], sDS, wtid);   // sacc = dPacc for wg1
             consumer_sync();
 
             float dq[32]; zeroN<32>(dq);
             run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf[curbuf], sQ_sw[s] + wg * 4096);
-            run_gemm_dVdKdQ_te_wait(dv, dk, dq);
+            if (it + 1 < nIter) {   // prefetch next tile's S/dP GEMM (reuse sacc, consumed above), keep pending
+                const int sn = (git + 1) % PD;
+                mbar_wait_v4(&full[sn], cpar[sn]); cpar[sn] ^= 1;
+                mbar_wait_v4(&d_ready[sn], dpar[sn]); dpar[sn] ^= 1;
+                zeroN<32>(sacc);
+                run_gemm_n64_sw2_hoB_issue(sacc, (wg == 0) ? sQ_sw[sn] : sdO_sw[sn], descGemmB[curbuf]);
+                run_gemm_dVdKdQ_te_wait1(dv, dk, dq);   // drain dV/dK/dQ, KEEP S-GEMM(it+1) pending
+            } else {
+                run_gemm_dVdKdQ_te_wait(dv, dk, dq);    // last tile: drain all
+            }
             if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
             const int db = it & 1;
             float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
