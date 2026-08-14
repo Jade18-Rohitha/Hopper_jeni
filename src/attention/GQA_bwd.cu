@@ -14127,6 +14127,317 @@ void launch_gqa_backward_v44(
 }
 
 
+// ===== Vp1 = PERSISTENT V44 (grid=SM count, grid-stride work-items) with a WARM-PIPELINE BRIDGE =====
+// cuDNN's main bprop kernel is persistent: grid=132 (1 CTA/SM, 1 wave), each CTA loops ~7.76 work-items
+// from a global work list; V44 launches 1024 short CTAs (7.76 waves). At 1 CTA/SM there is NO CTA-to-CTA
+// overlap, so each of V44's 1024 CTAs pays a COLD Q/dO pipeline fill -> exposed long_scoreboard (2.82 vs
+// cuDNN 1.76). Vp1 collapses 1024 cold fills to 132 by keeping the Q/dO PD ring CONTINUOUS across
+// work-item boundaries (global `git`, never reset): the producer prefetches work-item w+1's first tiles
+// while consumers finish w. Two hazards handled: (A) the dK/dV epilogue can't stage into the sQ ring
+// (the bridge is refilling it) -> stage into sS/sdP (idle at epilogue, 32KB = exactly dv+dk); (B) K/V is
+// single-buffer (no smem to double it) -> a DEDICATED K/V-loader warp (warp 11) runs the kv_free handshake
+// independently so its wait never stalls the Q/dO warps (8,9). Same smem/regs as V44 -> still 1 CTA/SM.
+template<int Br, int Bc, int D>
+__global__ void __launch_bounds__(384, 1)
+gqa_backward_vp1_kv(
+    const __grid_constant__ CUtensorMap tma_K_sw,
+    const __grid_constant__ CUtensorMap tma_V_sw,
+    const __grid_constant__ CUtensorMap tma_Q_sw,
+    const __grid_constant__ CUtensorMap tma_dO_sw,
+    const __grid_constant__ CUtensorMap tma_dV_st,
+    const __grid_constant__ CUtensorMap tma_dK_st,
+    const __grid_constant__ CUtensorMap tma_dq_red,
+    const float * __restrict__ d_Drow,
+    const float * __restrict__ d_LSE,
+    bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "Vp1 requires Br=Bc=64, D=128");
+    constexpr int PD = 3;
+
+    __shared__ __align__(128)  bf16 sK_sw[Bc * D];
+    __shared__ __align__(128)  bf16 sV_sw[Bc * D];
+    __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
+    __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
+    __shared__ __align__(1024) float sS [2][Br * 64];
+    __shared__ __align__(1024) float sdP[2][Br * 64];
+    __shared__ __align__(1024) bf16  sP [Br * 64];
+    __shared__ __align__(1024) bf16  sDS[Br * 64];
+    __shared__                 float sLSE[PD][Br];
+    __shared__                 float sD  [PD][Br];
+    __shared__ __align__(8)    uint64_t mbar_kv;
+    __shared__ __align__(8)    uint64_t kv_empty;   // consumer -> K/V loader: single-buffer K/V is free to refill
+    __shared__ __align__(8)    uint64_t full   [PD];
+    __shared__ __align__(8)    uint64_t empty  [PD];
+    __shared__ __align__(8)    uint64_t d_ready[PD];
+
+    const int tid  = threadIdx.x;
+    const int wg   = tid >> 7;
+    const int wtid = tid & 127;
+    const int nQTiles = S / Br;
+    const int WKV     = S / Bc;                 // k-tiles per (b,hkv)
+    const int totalW  = B * Hkv * WKV;          // total work-items (== V44's 1024 @4x12)
+
+    const uint32_t bytesTile = (uint32_t)(Br * D * sizeof(bf16));
+    const uint32_t bytesAtom = (uint32_t)(Bc * 64 * sizeof(bf16));
+
+    if (tid == 0) {
+        mbar_init_v4(&mbar_kv, 1);
+        mbar_init_v4(&kv_empty, 1);
+        #pragma unroll
+        for (int i = 0; i < PD; i++) {
+            mbar_init_v4(&full[i], 1);
+            mbar_init_v4(&empty[i], 2);          // early-empty: each consumer wg signals independently
+            mbar_init_v4(&d_ready[i], 1);
+        }
+    }
+    __syncthreads();
+
+    // ============================== PRODUCER (wg 2) ==============================
+    if (wg == 2) {
+        reg_dec_producer_v30();                  // .aligned: all 128 producer threads
+        const bool qdo_leader = (tid == 256);    // warp 8: Q/dO ring
+        const bool kv_leader  = (tid == 352);    // warp 11: independent K/V handshake
+        const int  pl         = tid - 256;
+
+        uint32_t epar[PD] = {0};
+        uint32_t kv_par = 0;
+        int  git = 0;
+        bool firstKV = true;
+
+        for (int w = blockIdx.x; w < totalW; w += gridDim.x) {
+            const int k_tile = w % WKV;
+            const int hkv    = (w / WKV) % Hkv;
+            const int b      = w / (WKV * Hkv);
+            const int k_row0 = k_tile * Bc;
+            const uint32_t kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
+            const int qc0   = k_row0 / Br;
+            const int nIter = G * (nQTiles - qc0);
+
+            // K/V loader warp — independent of the Q/dO warps so its kv_free wait never drains the ring.
+            if (kv_leader) {
+                if (!firstKV) { mbar_wait_v4(&kv_empty, kv_par); kv_par ^= 1; }
+                mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
+                tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
+                tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+                tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kvFlatRow);
+                tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
+            }
+            firstKV = false;
+
+            // Q/dO ring loop — warps 8,9 only (tids 256..319). Continuous `git` = the bridge.
+            if (tid < 320) {
+                int gP = 0, qcP = qc0;
+                for (int it = 0; it < nIter; it++) {
+                    const int s = git % PD;
+                    if (git >= PD) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
+                    const int  hqP   = hkv * G + gP;
+                    const long dbase = (long)(b * Hq + hqP) * S + (long)qcP * Br;
+                    if (qdo_leader) {
+                        const uint32_t r = (uint32_t)((b * Hq + hqP) * S + qcP * Br);
+                        mbar_expect_tx_v4(&full[s], bytesTile * 2);
+                        tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  r);
+                        tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, r);
+                        tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
+                        tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
+                    }
+                    if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }
+                    asm volatile("bar.sync 2, 64;\n" ::: "memory");   // D/LSE STS visibility (warps 8,9)
+                    if (qdo_leader) mbar_arrive_v11(&d_ready[s]);
+                    git++;
+                    if (++qcP == nQTiles) { qcP = qc0; ++gP; }
+                }
+            } else {
+                git += G * (nQTiles - qc0);        // warps 10,11 keep `git` in step (K/V par unaffected)
+            }
+        }
+        return;
+    }
+
+    // ============================== CONSUMER (wg 0,1) ==============================
+    reg_inc_consumer_v30();
+    const float scale2 = scale * LOG2E_V29;
+    // descriptors depend only on constant smem addresses (K/V single-buffer) -> hoist once.
+    const uint64_t descGemmB = make_desc_sw128_K((wg == 0) ? sK_sw : sV_sw);
+    const uint64_t descP     = make_desc_sw128_MN(sP);
+    const uint64_t descDSmn  = make_desc_sw128_MN(sDS);
+    const uint64_t descDSk   = make_desc_sw128_K (sDS);
+    const uint64_t descKhalf = make_desc_sw128_MN(sK_sw + wg * 4096);
+
+    uint32_t cpar[PD] = {0}, dpar[PD] = {0};
+    uint32_t kv_cpar = 0;
+    int git = 0;
+
+    for (int w = blockIdx.x; w < totalW; w += gridDim.x) {
+        const int k_tile = w % WKV;
+        const int hkv    = (w / WKV) % Hkv;
+        const int b      = w / (WKV * Hkv);
+        const int k_row0 = k_tile * Bc;
+        const uint32_t kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
+        const int qc0   = k_row0 / Br;
+        const int nIter = G * (nQTiles - qc0);
+
+        mbar_wait_v4(&mbar_kv, kv_cpar); kv_cpar ^= 1;   // this work-item's K/V is resident
+
+        float dv[32]; zeroN<32>(dv);
+        float dk[32]; zeroN<32>(dk);
+        int gC = 0, qcC = qc0;
+        for (int it = 0; it < nIter; it++) {
+            const int s = git % PD;
+            const int q_row0 = qcC * Br;
+            mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
+            mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
+
+            float dPacc[32];
+            if (wg == 0) {
+                float acc[32]; zeroN<32>(acc);
+                run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descGemmB);
+                if (qcC == qc0) fused_p_stsm<Bc, true >(acc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
+                else            fused_p_stsm<Bc, false>(acc, sP, sLSE[s], wtid, 0,       0,      scale2);
+            } else {
+                zeroN<32>(dPacc);
+                run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB);
+            }
+            consumer_sync();
+
+            run_gemm_dVdK_half_te_issue_hoA(dv, descP, sdO_sw[s] + wg * 4096);
+
+            if (wg == 1) fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
+            consumer_sync();
+
+            float dq[32]; zeroN<32>(dq);
+            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
+            run_gemm_dVdKdQ_te_wait(dv, dk, dq);
+            if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
+            const int db = it & 1;
+            float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
+            store_acc_sw128_f32(dq, stageDQ, wtid, scale);
+            if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
+            fence_proxy_async_shared();
+            if (wtid == 0) {
+                const int hqC = hkv * G + gC;
+                const uint32_t crow = (uint32_t)((b * Hq + hqC) * S + qcC * Br);
+                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           (uint32_t)(wg * 64),      crow);
+                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow);
+                tma_store_commit_v34();
+                tma_bulk_wait1_v43();
+            }
+            git++;
+            if (++qcC == nQTiles) { qcC = qc0; ++gC; }
+        }
+
+        // K/V no longer read this work-item -> free it for the producer's next reload.
+        consumer_sync();
+        if (tid == 0) mbar_arrive_v11(&kv_empty);
+
+        // Drain any pending dQ TMA-reduce before reusing sS/sdP as the dK/dV epilogue stage.
+        if (wtid == 0) { tma_store_commit_v34(); tma_bulk_wait0_v43(); }
+        consumer_sync();
+
+        bf16* ebase    = reinterpret_cast<bf16*>(&sS[0][0]);   // sS = 2*4096 f32 = 32KB = exactly dv(16KB)+dk(16KB)
+        bf16* stage_dv = ebase + wg * 4096;
+        bf16* stage_dk = ebase + 8192 + wg * 4096;
+        fence_operandN<32>(dv);
+        stage_acc_bf16_s<64, 64>(dv, stage_dv, wtid, 1.0f);
+        fence_operandN<32>(dk);
+        stage_acc_bf16_s<64, 64>(dk, stage_dk, wtid, scale);
+        consumer_sync();
+        fence_proxy_async_shared();
+        if (wtid == 0) {
+            tma_store_2d_v34(&tma_dV_st, stage_dv, (uint32_t)(wg * 64), kvFlatRow);
+            tma_store_2d_v34(&tma_dK_st, stage_dk, (uint32_t)(wg * 64), kvFlatRow);
+            tma_store_commit_v34();
+            tma_store_wait_v34();
+        }
+    }
+}
+
+
+template<int Br, int Bc, int D>
+void launch_gqa_backward_vp1(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale
+) {
+    static_assert(Br == 64 && Bc == 64 && D == 128, "Vp1 requires Br=Bc=64, D=128");
+    auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
+        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
+        uint32_t box[2]     = {64u, tile_rows};
+        uint32_t eStride[2] = {1, 1};
+        CUresult r = cuTensorMapEncodeTiled(
+            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
+            gSize, gStride, box, eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) vp1: %s\n", e); exit(1); }
+        return desc;
+    };
+    const uint64_t Rq  = (uint64_t)B * Hq  * S;
+    const uint64_t Rkv = (uint64_t)B * Hkv * S;
+    CUtensorMap tma_K_sw  = make_tma_sw128(d_K,  Rkv, Bc);
+    CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
+    CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
+    CUtensorMap tma_dO_sw = make_tma_sw128(d_dO, Rq,  Br);
+    auto make_tma_out = [&](const bf16* ptr, uint64_t rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]={(uint64_t)D, rows}; uint64_t gStride[1]={(uint64_t)D*sizeof(bf16)};
+        uint32_t box[2]={64u,64u}; uint32_t eStride[2]={1,1};
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)ptr,gSize,gStride,box,eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out vp1: %s\n",e);exit(1);} return desc; };
+    CUtensorMap tma_dV_st = make_tma_out(d_dV, Rkv);
+    CUtensorMap tma_dK_st = make_tma_out(d_dK, Rkv);
+    auto make_tma_red = [&](const float* ptr, uint64_t rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[2]={(uint64_t)D, rows}; uint64_t gStride[1]={(uint64_t)D*sizeof(float)};
+        uint32_t box[2]={32u,64u}; uint32_t eStride[2]={1,1};
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gSize,gStride,box,eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red vp1: %s\n",e);exit(1);} return desc; };
+
+    const long drowN = (long)B * Hq * S;
+    static float* d_Drow  = nullptr;
+    static long   drow_cap = 0;
+    if (drowN > drow_cap) {
+        if (d_Drow) CUDA_CHECK(cudaFree(d_Drow));
+        CUDA_CHECK(cudaMalloc(&d_Drow, drowN * sizeof(float)));
+        drow_cap = drowN;
+    }
+    const long dqN = (long)B * Hq * S * D;
+    static float* d_dq_accum = nullptr;
+    static long   dq_cap     = 0;
+    if (dqN > dq_cap) {
+        if (d_dq_accum) CUDA_CHECK(cudaFree(d_dq_accum));
+        CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
+        dq_cap = dqN;
+    }
+    CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
+    CUtensorMap tma_dq_red = make_tma_red(d_dq_accum, (uint64_t)B * Hq * S);
+
+    const int  dBlock = 256;
+    const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
+    compute_drowsum_v22<<<(unsigned)dGrid, dBlock>>>(d_dO, d_O, d_Drow, drowN);
+
+    // Persistent: launch exactly one wave = SM count, each CTA grid-strides the B*Hkv*(S/Bc) work-items.
+    int dev = 0; CUDA_CHECK(cudaGetDevice(&dev));
+    int nSM = 0; CUDA_CHECK(cudaDeviceGetAttribute(&nSM, cudaDevAttrMultiProcessorCount, dev));
+    const int totalW = B * Hkv * (S / Bc);
+    const int nCTA   = (totalW < nSM) ? totalW : nSM;
+    constexpr dim3 BLOCK(384);
+    gqa_backward_vp1_kv<Br,Bc,D><<<(unsigned)nCTA, BLOCK>>>(
+        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
+        d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
+
+    const int convBlock = 256;
+    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+}
+
+
 // ===== Vr1 = per-hq main kernel (writes partial dK/dV per head) + cuDNN-style G-head reduce =====
 // G-head reduce: partial[B,Hq,S,D]bf16 -> out[B,Hkv,S,D]bf16, sum over the G heads sharing a KV head.
 // Vectorized 128-bit loads; measured 18.78us = identical to cuDNN's fmha_reduce_head.
@@ -14984,6 +15295,10 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
+    launch_gqa_backward_vp1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── Vp1 Br=64 Bc=64 PERSISTENT V44 warm-bridge (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
     launch_gqa_backward_vr1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── Vr1 Br=64 Bc=64 per-hq main + cuDNN G-head reduce dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
@@ -15317,6 +15632,13 @@ int main(){
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats("GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)", s);
+    }
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_vp1<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd Vp1 Br=64, Bc=64  PERSISTENT V44 warm-bridge  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
