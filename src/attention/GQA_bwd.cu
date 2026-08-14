@@ -14171,10 +14171,10 @@ gqa_backward_vp1_kv(
     int * __restrict__ gWork, int totalW
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "Vp1 requires Br=Bc=64, D=128");
-    constexpr int PD = 3;
+    constexpr int PD = 2;   // Q/dO ring 3->2 funds double-buffered K/V (net-neutral smem)
 
-    __shared__ __align__(128)  bf16 sK_sw[Bc * D];
-    __shared__ __align__(128)  bf16 sV_sw[Bc * D];
+    __shared__ __align__(128)  bf16 sK_sw[2][Bc * D];   // double-buffered for in-pair K/V prefetch
+    __shared__ __align__(128)  bf16 sV_sw[2][Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
     __shared__ __align__(1024) float sS [2][Br * 64];
@@ -14183,7 +14183,7 @@ gqa_backward_vp1_kv(
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
     __shared__                 float sD  [PD][Br];
-    __shared__ __align__(8)    uint64_t mbar_kv;
+    __shared__ __align__(8)    uint64_t mbar_kv[2];
     __shared__ __align__(8)    uint64_t full   [PD];
     __shared__ __align__(8)    uint64_t empty  [PD];
     __shared__ __align__(8)    uint64_t d_ready[PD];
@@ -14198,7 +14198,8 @@ gqa_backward_vp1_kv(
     const uint32_t bytesAtom = (uint32_t)(Bc * 64 * sizeof(bf16));
 
     if (tid == 0) {
-        mbar_init_v4(&mbar_kv, 1);
+        mbar_init_v4(&mbar_kv[0], 1);
+        mbar_init_v4(&mbar_kv[1], 1);
         #pragma unroll
         for (int i = 0; i < PD; i++) {
             mbar_init_v4(&full[i], 1);
@@ -14208,46 +14209,68 @@ gqa_backward_vp1_kv(
     }
     __syncthreads();
 
-    // reg budget + wgmma descriptors set ONCE (persistent) — smem addresses are work-item-invariant.
+    // reg budget + wgmma descriptors set ONCE — K/V double-buffered so one descriptor set per buffer.
     if (wg == 2) reg_dec_producer_v30(); else reg_inc_consumer_v30();
     const float scale2 = scale * LOG2E_V29;
     const bool  leader = (tid == 256);
     const int   pl     = tid - 256;
-    uint64_t descGemmB = 0, descP = 0, descDSmn = 0, descDSk = 0, descKhalf = 0;
+    uint64_t descGemmB[2] = {0,0}, descKhalf[2] = {0,0};
+    uint64_t descP = 0, descDSmn = 0, descDSk = 0;
     if (wg != 2) {
-        descGemmB = make_desc_sw128_K((wg == 0) ? sK_sw : sV_sw);
+        descGemmB[0] = make_desc_sw128_K((wg == 0) ? sK_sw[0] : sV_sw[0]);
+        descGemmB[1] = make_desc_sw128_K((wg == 0) ? sK_sw[1] : sV_sw[1]);
+        descKhalf[0] = make_desc_sw128_MN(sK_sw[0] + wg * 4096);
+        descKhalf[1] = make_desc_sw128_MN(sK_sw[1] + wg * 4096);
         descP     = make_desc_sw128_MN(sP);
         descDSmn  = make_desc_sw128_MN(sDS);
         descDSk   = make_desc_sw128_K (sDS);
-        descKhalf = make_desc_sw128_MN(sK_sw + wg * 4096);
     }
 
-    // persist across work-items (both wgs advance identically, rendezvous each boundary).
-    uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0}, kv_cpar = 0;
-    int git = 0;
-
-    while (true) {
-        if (tid == 0) s_w = atomicAdd(gWork, 1);   // dynamic tile scheduler: (b,hkv)-major -> L2-hot cluster
-        __syncthreads();
-        const int w = s_w;
-        if (w >= totalW) break;
-        const int k_tile = w % WKV;                // (b,hkv) major, k_tile minor
-        const int hkv    = (w / WKV) % Hkv;
-        const int b      = w / (WKV * Hkv);
+    // CAUSAL-PAIRED CHUNKED scheduler: grab a PAIR of work-items {index i, i+1} per atomicAdd. Work-items
+    // are ordered so that within a (b,hkv) group the k_tiles are causal-paired [0,WKV-1,1,WKV-2,...], so a
+    // grabbed pair is {k_tile t, WKV-1-t} = CONSTANT work (causal pairs sum to a constant) -> no drift ->
+    // the 132-CTA lockstep (and thus 96% L2) is preserved, UNLIKE plain consecutive chunks. Both items are
+    // the SAME group, so the in-pair K/V prefetch is LOCAL (no far-group L2 pollution).
+    auto decodeKV = [&](int idx, int& b, int& hkv, int& k_tile, uint32_t& kvFlatRow, int& qc0, int& nIter) {
+        const int grp = idx / WKV, pos = idx % WKV;
+        k_tile = (pos & 1) ? (WKV - 1 - (pos >> 1)) : (pos >> 1);   // causal-paired within group
+        hkv = grp % Hkv; b = grp / Hkv;
         const int k_row0 = k_tile * Bc;
-        const uint32_t kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
-        const int qc0   = k_row0 / Br;
-        const int nIter = G * (nQTiles - qc0);
+        kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
+        qc0 = k_row0 / Br; nIter = G * (nQTiles - qc0);
+    };
+    auto loadKV = [&](int idx, int buf) {
+        int b_,hkv_,kt_,qc_,ni_; uint32_t kfr; decodeKV(idx,b_,hkv_,kt_,kfr,qc_,ni_);
+        mbar_expect_tx_v4(&mbar_kv[buf], bytesAtom * 4);
+        tma_load_2d_v4(&tma_K_sw, sK_sw[buf],           &mbar_kv[buf], 0,  kfr);
+        tma_load_2d_v4(&tma_K_sw, sK_sw[buf] + 64 * 64, &mbar_kv[buf], 64, kfr);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[buf],           &mbar_kv[buf], 0,  kfr);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[buf] + 64 * 64, &mbar_kv[buf], 64, kfr);
+    };
+    uint32_t kvpar[2] = {0,0};
+    // Prologue: grab first pair, fresh-load its first item's K/V into buffer 0.
+    if (tid == 0) s_w = atomicAdd(gWork, 2);
+    __syncthreads();
+    int base = s_w;
+    int w    = base;
+    int pend = (base + 2 < totalW) ? (base + 2) : totalW;   // end of this pair
+    if (wg == 2 && leader && w < totalW) loadKV(w, 0);
+
+    uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0};
+    int git = 0;
+    int curbuf = 0;
+
+    while (w < totalW) {
+        const bool local = (w + 1 < pend);          // partner in this pair (same group, prefetchable)?
+        int wn;
+        if (local) { wn = w + 1; }
+        else { if (tid == 0) s_w = atomicAdd(gWork, 2); __syncthreads(); wn = s_w; }
+        int b, hkv, k_tile, qc0, nIter; uint32_t kvFlatRow;
+        decodeKV(w, b, hkv, k_tile, kvFlatRow, qc0, nIter);
+        const int k_row0 = k_tile * Bc;
 
         if (wg == 2) {
-            // ---------------------- PRODUCER work-item (= V44 producer) ----------------------
-            if (leader) {
-                mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
-                tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
-                tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
-                tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kvFlatRow);
-                tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
-            }
+            // -------- PRODUCER (Q/dO ring; K/V for w already in buffer curbuf) --------
             int gP = 0, qcP = qc0;
             for (int it = 0; it < nIter; it++) {
                 const int s = git % PD;
@@ -14268,9 +14291,12 @@ gqa_backward_vp1_kv(
                 git++;
                 if (++qcP == nQTiles) { qcP = qc0; ++gP; }
             }
+            // In-pair LOCAL prefetch of the partner's K/V (same group) into the alt buffer, hidden under
+            // w's compute. Skipped at pair boundary (next pair fresh-loaded below, exposed 1-of-2).
+            if (leader && local && wn < totalW) loadKV(wn, curbuf ^ 1);
         } else {
             // ---------------------- CONSUMER work-item (= V44 consumer + epilogue) ----------------------
-        mbar_wait_v4(&mbar_kv, kv_cpar); kv_cpar ^= 1;   // this work-item's K/V is resident
+        mbar_wait_v4(&mbar_kv[curbuf], kvpar[curbuf]); kvpar[curbuf] ^= 1;   // K/V resident (prefetched)
 
         float dv[32]; zeroN<32>(dv);
         float dk[32]; zeroN<32>(dk);
@@ -14284,12 +14310,12 @@ gqa_backward_vp1_kv(
             float dPacc[32];
             if (wg == 0) {
                 float acc[32]; zeroN<32>(acc);
-                run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descGemmB);
+                run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descGemmB[curbuf]);
                 if (qcC == qc0) fused_p_stsm<Bc, true >(acc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
                 else            fused_p_stsm<Bc, false>(acc, sP, sLSE[s], wtid, 0,       0,      scale2);
             } else {
                 zeroN<32>(dPacc);
-                run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB);
+                run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB[curbuf]);
             }
             consumer_sync();
 
@@ -14299,7 +14325,7 @@ gqa_backward_vp1_kv(
             consumer_sync();
 
             float dq[32]; zeroN<32>(dq);
-            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
+            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf[curbuf], sQ_sw[s] + wg * 4096);
             run_gemm_dVdKdQ_te_wait(dv, dk, dq);
             if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
             const int db = it & 1;
@@ -14337,7 +14363,13 @@ gqa_backward_vp1_kv(
             tma_store_wait_v34();
         }
         }   // end CONSUMER branch
-        __syncthreads();   // work-item boundary: ring/K/V/sQ safe to reuse next work-item
+        __syncthreads();   // work-item boundary rendezvous (orders the alt-buffer K/V write)
+        w = wn;
+        curbuf ^= 1;
+        if (!local && w < totalW) {   // new pair: partner K/V wasn't prefetched -> fresh-load (exposed 1/2)
+            pend = (w + 2 < totalW) ? (w + 2) : totalW;
+            if (wg == 2 && leader) loadKV(w, curbuf);
+        }
     }       // end persistent while
 }
 
