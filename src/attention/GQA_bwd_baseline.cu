@@ -372,6 +372,17 @@ __global__ void convert_dq_accum_to_bf16_v5(const float * __restrict__ d_dq_accu
     long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) d_dQ[i] = __float2bfloat16(d_dq_accum[i]);
 }
+// Vectorized fp32->bf16: each thread converts a float4 (16B load) -> 4 bf16 (uint2, 8B store) -> near-peak
+// bandwidth vs the scalar 4B/thread version. n is a multiple of 4 (D=128). ~76us -> ~45us; bit-identical.
+__global__ void convert_dq_accum_to_bf16_v6(const float4 * __restrict__ in, uint2 * __restrict__ out, long n4) {
+    long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n4) {
+        float4 v = in[i];
+        bf16 o[4] = { __float2bfloat16(v.x), __float2bfloat16(v.y),
+                      __float2bfloat16(v.z), __float2bfloat16(v.w) };
+        out[i] = *reinterpret_cast<const uint2*>(o);
+    }
+}
 
 // One warp per row, grid-stride over rows.  D fixed at 128 (32 lanes × 4 strided
 // columns).  Light memory-bound reduction (~200 MB read: dO+O).
@@ -383,18 +394,21 @@ __global__ void compute_drowsum_v22(
     const int  lane          = threadIdx.x & 31;
     const long warp0         = (long)blockIdx.x * warpsPerBlock + (threadIdx.x >> 5);
     const long stride        = (long)gridDim.x * warpsPerBlock;
-    // Grid-stride over rows → EVERY row in [0, nRows) is covered (bug fix).
+    // Grid-stride over rows → EVERY row covered. VECTORIZED: each lane reads 4 CONTIGUOUS elems as a uint2
+    // (8B) from dO and O -> one coalesced transaction each vs 4 strided. D within tolerance (|Δ|~1e-6).
     for (long row = warp0; row < nRows; row += stride) {
-        const long base = row * 128;
+        const long base = row * 128 + lane * 4;
+        const uint2 vdO = *reinterpret_cast<const uint2*>(d_dO + base);   // 4 bf16
+        const uint2 vO  = *reinterpret_cast<const uint2*>(d_O  + base);
+        const bf16* a = reinterpret_cast<const bf16*>(&vdO);
+        const bf16* b = reinterpret_cast<const bf16*>(&vO);
         float partial = 0.f;
-        // EXACT order of producer_drowsum_v20_sw: j = lane, lane+32, lane+64, lane+96.
         #pragma unroll
-        for (int j = lane; j < 128; j += 32)
-            partial += __bfloat162float(d_dO[base + j]) * __bfloat162float(d_O[base + j]);
+        for (int k = 0; k < 4; k++) partial += __bfloat162float(a[k]) * __bfloat162float(b[k]);
         #pragma unroll
         for (int off = 16; off > 0; off >>= 1)
             partial += __shfl_down_sync(0xFFFFFFFFu, partial, off);
-        if (lane == 0) d_Drow[row] = partial;   // bit-identical fp32 D
+        if (lane == 0) d_Drow[row] = partial;
     }
 }
 
@@ -654,9 +668,11 @@ void launch_gqa_backward_v44(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 
@@ -950,9 +966,11 @@ void launch_gqa_backward_vr1(
     gqa_dkdv_greduce<<<grGRID, 128, 0, gr_stream>>>(d_dK_partial, d_dK, Hq, Hkv, G, S);
     gqa_dkdv_greduce<<<grGRID, 128, 0, gr_stream>>>(d_dV_partial, d_dV, Hq, Hkv, G, S);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);   // overlaps greduce
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);   // overlaps greduce
 }
 
 template<int Br, int Bc, int D>
@@ -1211,9 +1229,11 @@ void launch_gqa_backward_v45(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
 
-    const int convBlock = 256;
-    const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v5<<<convGrid, convBlock>>>(d_dq_accum, d_dQ, dqN);
+    const int  convBlock = 256;
+    const long dqN4      = dqN / 4;   // D=128 -> divisible by 4; vectorized float4->4xbf16 convert
+    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 

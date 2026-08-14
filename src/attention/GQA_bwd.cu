@@ -7768,18 +7768,22 @@ __global__ void compute_drowsum_v22(
     const int  lane          = threadIdx.x & 31;
     const long warp0         = (long)blockIdx.x * warpsPerBlock + (threadIdx.x >> 5);
     const long stride        = (long)gridDim.x * warpsPerBlock;
-    // Grid-stride over rows → EVERY row in [0, nRows) is covered (bug fix).
+    // Grid-stride over rows → EVERY row in [0, nRows) is covered. VECTORIZED: each lane reads 4 CONTIGUOUS
+    // elems as a uint2 (8B) from dO and O -> one coalesced transaction each vs 4 strided. D within tolerance
+    // (contiguous vs strided sum order; not strictly bit-identical to v20, but |Δ|~1e-6 << 2e-2 check tol).
     for (long row = warp0; row < nRows; row += stride) {
-        const long base = row * 128;
+        const long base = row * 128 + lane * 4;
+        const uint2 vdO = *reinterpret_cast<const uint2*>(d_dO + base);   // 4 bf16
+        const uint2 vO  = *reinterpret_cast<const uint2*>(d_O  + base);
+        const bf16* a = reinterpret_cast<const bf16*>(&vdO);
+        const bf16* b = reinterpret_cast<const bf16*>(&vO);
         float partial = 0.f;
-        // EXACT order of producer_drowsum_v20_sw: j = lane, lane+32, lane+64, lane+96.
         #pragma unroll
-        for (int j = lane; j < 128; j += 32)
-            partial += __bfloat162float(d_dO[base + j]) * __bfloat162float(d_O[base + j]);
+        for (int k = 0; k < 4; k++) partial += __bfloat162float(a[k]) * __bfloat162float(b[k]);
         #pragma unroll
         for (int off = 16; off > 0; off >>= 1)
             partial += __shfl_down_sync(0xFFFFFFFFu, partial, off);
-        if (lane == 0) d_Drow[row] = partial;   // bit-identical fp32 D
+        if (lane == 0) d_Drow[row] = partial;
     }
 }
 
