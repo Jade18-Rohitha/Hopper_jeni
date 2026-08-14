@@ -14127,16 +14127,16 @@ void launch_gqa_backward_v44(
 }
 
 
-// ===== Vp1 = PERSISTENT V44 (grid=SM count, grid-stride work-items) with a WARM-PIPELINE BRIDGE =====
-// cuDNN's main bprop kernel is persistent: grid=132 (1 CTA/SM, 1 wave), each CTA loops ~7.76 work-items
-// from a global work list; V44 launches 1024 short CTAs (7.76 waves). At 1 CTA/SM there is NO CTA-to-CTA
-// overlap, so each of V44's 1024 CTAs pays a COLD Q/dO pipeline fill -> exposed long_scoreboard (2.82 vs
-// cuDNN 1.76). Vp1 collapses 1024 cold fills to 132 by keeping the Q/dO PD ring CONTINUOUS across
-// work-item boundaries (global `git`, never reset): the producer prefetches work-item w+1's first tiles
-// while consumers finish w. Two hazards handled: (A) the dK/dV epilogue can't stage into the sQ ring
-// (the bridge is refilling it) -> stage into sS/sdP (idle at epilogue, 32KB = exactly dv+dk); (B) K/V is
-// single-buffer (no smem to double it) -> a DEDICATED K/V-loader warp (warp 11) runs the kv_free handshake
-// independently so its wait never stalls the Q/dO warps (8,9). Same smem/regs as V44 -> still 1 CTA/SM.
+// ===== Vp1 = PERSISTENT V44 via a DYNAMIC atomic work-counter (cuDNN's actual structure) =====
+// Confirmed 2026-08-14 by 3-way ncu (V44/Vp1/cuDNN @4x12): long_scoreboard is a monotonic function of
+// L2 HIT RATE — cuDNN 92% L2 -> long_sb 1.76 -> 1.28ms; V44 85% -> 2.82 -> 1.87; static-chunk Vp1 60%
+// -> 3.26 -> 2.13. cuDNN is persistent (grid 132, 1 wave) EXACTLY like this; its edge is 92% L2, from a
+// DYNAMIC tile scheduler: all 132 CTAs pull (b,hkv)-major work-items from ONE atomic counter, so at any
+// instant they cluster on ~2-3 (b,hkv) groups (~35MB, fits the 50MB L2) and march through together ->
+// Q/dO stays L2-hot, and it auto load-balances the causal work. (Static assignment spread 132 CTAs over
+// all 16 groups at once -> ~200MB -> L2 thrash -> 60%.) No cross-work-item bridge (worth only ~3%); each
+// work-item is SELF-CONTAINED = V44's body, rendezvous at the top+bottom __syncthreads. Ring/K/V/sQ reused
+// per work-item; `git`+parities persist (both wgs advance in lockstep, synced each boundary).
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
 gqa_backward_vp1_kv(
@@ -14150,7 +14150,8 @@ gqa_backward_vp1_kv(
     const float * __restrict__ d_Drow,
     const float * __restrict__ d_LSE,
     bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV,
-    int B, int Hq, int Hkv, int G, int S, float scale
+    int B, int Hq, int Hkv, int G, int S, float scale,
+    int * __restrict__ gWork, int totalW
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "Vp1 requires Br=Bc=64, D=128");
     constexpr int PD = 3;
@@ -14166,30 +14167,21 @@ gqa_backward_vp1_kv(
     __shared__                 float sLSE[PD][Br];
     __shared__                 float sD  [PD][Br];
     __shared__ __align__(8)    uint64_t mbar_kv;
-    __shared__ __align__(8)    uint64_t kv_empty;   // consumer -> K/V loader: single-buffer K/V is free to refill
     __shared__ __align__(8)    uint64_t full   [PD];
     __shared__ __align__(8)    uint64_t empty  [PD];
     __shared__ __align__(8)    uint64_t d_ready[PD];
+    __shared__ int s_w;
 
     const int tid  = threadIdx.x;
     const int wg   = tid >> 7;
     const int wtid = tid & 127;
     const int nQTiles = S / Br;
     const int WKV     = S / Bc;                 // k-tiles per (b,hkv)
-    const int totalW  = B * Hkv * WKV;          // total work-items (== V44's 1024 @4x12)
-    // Locality+balance: each CTA takes a CONTIGUOUS slice of the reordered work list. Reorder =
-    // (b,hkv) group-major, and within a group the k_tiles are CAUSAL-PAIRED [0,WKV-1,1,WKV-2,...]
-    // so a slice stays in one group (Q/dO L2-hot) AND each pair {t,WKV-1-t} is constant work (balanced).
-    const int chunk = (totalW + (int)gridDim.x - 1) / (int)gridDim.x;
-    const int w_beg = (int)blockIdx.x * chunk;
-    const int w_end = (w_beg + chunk < totalW) ? (w_beg + chunk) : totalW;
-
     const uint32_t bytesTile = (uint32_t)(Br * D * sizeof(bf16));
     const uint32_t bytesAtom = (uint32_t)(Bc * 64 * sizeof(bf16));
 
     if (tid == 0) {
         mbar_init_v4(&mbar_kv, 1);
-        mbar_init_v4(&kv_empty, 1);
         #pragma unroll
         for (int i = 0; i < PD; i++) {
             mbar_init_v4(&full[i], 1);
@@ -14199,94 +14191,68 @@ gqa_backward_vp1_kv(
     }
     __syncthreads();
 
-    // ============================== PRODUCER (wg 2) ==============================
-    if (wg == 2) {
-        reg_dec_producer_v30();                  // .aligned: all 128 producer threads
-        const bool qdo_leader = (tid == 256);    // warp 8: Q/dO ring
-        const bool kv_leader  = (tid == 352);    // warp 11: independent K/V handshake
-        const int  pl         = tid - 256;
+    // reg budget + wgmma descriptors set ONCE (persistent) — smem addresses are work-item-invariant.
+    if (wg == 2) reg_dec_producer_v30(); else reg_inc_consumer_v30();
+    const float scale2 = scale * LOG2E_V29;
+    const bool  leader = (tid == 256);
+    const int   pl     = tid - 256;
+    uint64_t descGemmB = 0, descP = 0, descDSmn = 0, descDSk = 0, descKhalf = 0;
+    if (wg != 2) {
+        descGemmB = make_desc_sw128_K((wg == 0) ? sK_sw : sV_sw);
+        descP     = make_desc_sw128_MN(sP);
+        descDSmn  = make_desc_sw128_MN(sDS);
+        descDSk   = make_desc_sw128_K (sDS);
+        descKhalf = make_desc_sw128_MN(sK_sw + wg * 4096);
+    }
 
-        uint32_t epar[PD] = {0};
-        uint32_t kv_par = 0;
-        int  git = 0;
-        bool firstKV = true;
+    // persist across work-items (both wgs advance identically, rendezvous each boundary).
+    uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0}, kv_cpar = 0;
+    int git = 0;
 
-        for (int ri = w_beg; ri < w_end; ri++) {
-            const int grp    = ri / WKV;
-            const int ii     = ri % WKV;
-            const int k_tile = (ii & 1) ? (WKV - 1 - (ii >> 1)) : (ii >> 1);
-            const int hkv    = grp % Hkv;
-            const int b      = grp / Hkv;
-            const int k_row0 = k_tile * Bc;
-            const uint32_t kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
-            const int qc0   = k_row0 / Br;
-            const int nIter = G * (nQTiles - qc0);
+    while (true) {
+        if (tid == 0) s_w = atomicAdd(gWork, 1);   // dynamic tile scheduler: (b,hkv)-major -> L2-hot cluster
+        __syncthreads();
+        const int w = s_w;
+        if (w >= totalW) break;
+        const int k_tile = w % WKV;                // (b,hkv) major, k_tile minor
+        const int hkv    = (w / WKV) % Hkv;
+        const int b      = w / (WKV * Hkv);
+        const int k_row0 = k_tile * Bc;
+        const uint32_t kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
+        const int qc0   = k_row0 / Br;
+        const int nIter = G * (nQTiles - qc0);
 
-            // K/V loader warp — independent of the Q/dO warps so its kv_free wait never drains the ring.
-            if (kv_leader) {
-                if (!firstKV) { mbar_wait_v4(&kv_empty, kv_par); kv_par ^= 1; }
+        if (wg == 2) {
+            // ---------------------- PRODUCER work-item (= V44 producer) ----------------------
+            if (leader) {
                 mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
                 tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
                 tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
                 tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kvFlatRow);
                 tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
             }
-            firstKV = false;
-
-            // Q/dO ring loop — warps 8,9 only (tids 256..319). Continuous `git` = the bridge.
-            if (tid < 320) {
-                int gP = 0, qcP = qc0;
-                for (int it = 0; it < nIter; it++) {
-                    const int s = git % PD;
-                    if (git >= PD) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
-                    const int  hqP   = hkv * G + gP;
-                    const long dbase = (long)(b * Hq + hqP) * S + (long)qcP * Br;
-                    if (qdo_leader) {
-                        const uint32_t r = (uint32_t)((b * Hq + hqP) * S + qcP * Br);
-                        mbar_expect_tx_v4(&full[s], bytesTile * 2);
-                        tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  r);
-                        tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, r);
-                        tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
-                        tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
-                    }
-                    if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }
-                    asm volatile("bar.sync 2, 64;\n" ::: "memory");   // D/LSE STS visibility (warps 8,9)
-                    if (qdo_leader) mbar_arrive_v11(&d_ready[s]);
-                    git++;
-                    if (++qcP == nQTiles) { qcP = qc0; ++gP; }
+            int gP = 0, qcP = qc0;
+            for (int it = 0; it < nIter; it++) {
+                const int s = git % PD;
+                if (git >= PD) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
+                const int  hqP   = hkv * G + gP;
+                const long dbase = (long)(b * Hq + hqP) * S + (long)qcP * Br;
+                if (leader) {
+                    const uint32_t r = (uint32_t)((b * Hq + hqP) * S + qcP * Br);
+                    mbar_expect_tx_v4(&full[s], bytesTile * 2);
+                    tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  r);
+                    tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, r);
+                    tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
+                    tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
                 }
-            } else {
-                git += G * (nQTiles - qc0);        // warps 10,11 keep `git` in step (K/V par unaffected)
+                if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }
+                producer_sync();
+                if (leader) mbar_arrive_v11(&d_ready[s]);
+                git++;
+                if (++qcP == nQTiles) { qcP = qc0; ++gP; }
             }
-        }
-        return;
-    }
-
-    // ============================== CONSUMER (wg 0,1) ==============================
-    reg_inc_consumer_v30();
-    const float scale2 = scale * LOG2E_V29;
-    // descriptors depend only on constant smem addresses (K/V single-buffer) -> hoist once.
-    const uint64_t descGemmB = make_desc_sw128_K((wg == 0) ? sK_sw : sV_sw);
-    const uint64_t descP     = make_desc_sw128_MN(sP);
-    const uint64_t descDSmn  = make_desc_sw128_MN(sDS);
-    const uint64_t descDSk   = make_desc_sw128_K (sDS);
-    const uint64_t descKhalf = make_desc_sw128_MN(sK_sw + wg * 4096);
-
-    uint32_t cpar[PD] = {0}, dpar[PD] = {0};
-    uint32_t kv_cpar = 0;
-    int git = 0;
-
-    for (int ri = w_beg; ri < w_end; ri++) {
-        const int grp    = ri / WKV;
-        const int ii     = ri % WKV;
-        const int k_tile = (ii & 1) ? (WKV - 1 - (ii >> 1)) : (ii >> 1);
-        const int hkv    = grp % Hkv;
-        const int b      = grp / Hkv;
-        const int k_row0 = k_tile * Bc;
-        const uint32_t kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
-        const int qc0   = k_row0 / Br;
-        const int nIter = G * (nQTiles - qc0);
-
+        } else {
+            // ---------------------- CONSUMER work-item (= V44 consumer + epilogue) ----------------------
         mbar_wait_v4(&mbar_kv, kv_cpar); kv_cpar ^= 1;   // this work-item's K/V is resident
 
         float dv[32]; zeroN<32>(dv);
@@ -14336,17 +14302,11 @@ gqa_backward_vp1_kv(
             if (++qcC == nQTiles) { qcC = qc0; ++gC; }
         }
 
-        // K/V no longer read this work-item -> free it for the producer's next reload.
-        consumer_sync();
-        if (tid == 0) mbar_arrive_v11(&kv_empty);
-
-        // Drain any pending dQ TMA-reduce before reusing sS/sdP as the dK/dV epilogue stage.
-        if (wtid == 0) { tma_store_commit_v34(); tma_bulk_wait0_v43(); }
-        consumer_sync();
-
-        bf16* ebase    = reinterpret_cast<bf16*>(&sS[0][0]);   // sS = 2*4096 f32 = 32KB = exactly dv(16KB)+dk(16KB)
-        bf16* stage_dv = ebase + wg * 4096;
-        bf16* stage_dk = ebase + 8192 + wg * 4096;
+        // epilogue: producer is done with this work-item (rendezvous below) -> sQ ring is FREE; stage
+        // dV/dK into it exactly like V44 (no bridge, so no sS detour / no drain needed).
+        bf16 *qflat    = reinterpret_cast<bf16*>(&sQ_sw[0][0]);
+        bf16 *stage_dv = qflat + wg * 4096;
+        bf16 *stage_dk = qflat + 8192 + wg * 4096;
         fence_operandN<32>(dv);
         stage_acc_bf16_s<64, 64>(dv, stage_dv, wtid, 1.0f);
         fence_operandN<32>(dk);
@@ -14359,7 +14319,9 @@ gqa_backward_vp1_kv(
             tma_store_commit_v34();
             tma_store_wait_v34();
         }
-    }
+        }   // end CONSUMER branch
+        __syncthreads();   // work-item boundary: ring/K/V/sQ safe to reuse next work-item
+    }       // end persistent while
 }
 
 
@@ -14432,15 +14394,18 @@ void launch_gqa_backward_vp1(
     const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
     compute_drowsum_v22<<<(unsigned)dGrid, dBlock>>>(d_dO, d_O, d_Drow, drowN);
 
-    // Persistent: launch exactly one wave = SM count, each CTA grid-strides the B*Hkv*(S/Bc) work-items.
+    // Persistent: launch one wave = SM count; CTAs pull (b,hkv)-major work-items from a dynamic atomic
+    // counter (gWork) so the concurrent working set stays L2-resident (cuDNN's tile-scheduler pattern).
     int dev = 0; CUDA_CHECK(cudaGetDevice(&dev));
     int nSM = 0; CUDA_CHECK(cudaDeviceGetAttribute(&nSM, cudaDevAttrMultiProcessorCount, dev));
     const int totalW = B * Hkv * (S / Bc);
-    const int nCTA   = (totalW < nSM) ? totalW : nSM;
+    static int* d_gWork = nullptr;
+    if (!d_gWork) CUDA_CHECK(cudaMalloc(&d_gWork, sizeof(int)));
+    CUDA_CHECK(cudaMemset(d_gWork, 0, sizeof(int)));
     constexpr dim3 BLOCK(384);
-    gqa_backward_vp1_kv<Br,Bc,D><<<(unsigned)nCTA, BLOCK>>>(
+    gqa_backward_vp1_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
-        d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
+        d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale, d_gWork, totalW);
 
     const int convBlock = 256;
     const int convGrid  = (int)((dqN + convBlock - 1) / convBlock);
