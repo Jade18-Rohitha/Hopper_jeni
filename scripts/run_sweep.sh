@@ -29,7 +29,7 @@ run_all() {
       echo "############################################################"
       echo "# SHAPE  B=${B}  Hq=${HQ}  Hkv=${HKV}  (G=$((HQ/HKV)))  S=4096 D=128"
       echo "############################################################"
-      python precision/baseline_gqa.py "$B" "$HQ" "$HKV"
+      python3 precision/baseline_gqa.py "$B" "$HQ" "$HKV"
       ./build/bin/gqa_bwd_baseline "$B" "$HQ" "$HKV"
     done
   done
