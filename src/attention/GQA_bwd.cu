@@ -14248,12 +14248,16 @@ gqa_backward_vp1_kv(
         tma_load_2d_v4(&tma_V_sw, sV_sw[buf] + 64 * 64, &mbar_kv[buf], 64, kfr);
     };
     uint32_t kvpar[2] = {0,0};
-    // Prologue: grab first pair, fresh-load its first item's K/V into buffer 0.
-    if (tid == 0) s_w = atomicAdd(gWork, 2);
+    // CHUNK consecutive causal-paired work-items per grab: C-1 of C K/V boundaries are hidden by the
+    // in-chunk LOCAL prefetch; only the chunk boundary is exposed. Larger C hides more but widens the
+    // concurrent group span (132*C work-items) -> watch L2. Causal-pair order keeps each chunk balanced.
+    constexpr int CHUNK = 4;
+    // Prologue: grab first chunk, fresh-load its first item's K/V into buffer 0.
+    if (tid == 0) s_w = atomicAdd(gWork, CHUNK);
     __syncthreads();
     int base = s_w;
     int w    = base;
-    int pend = (base + 2 < totalW) ? (base + 2) : totalW;   // end of this pair
+    int pend = (base + CHUNK < totalW) ? (base + CHUNK) : totalW;
     if (wg == 2 && leader && w < totalW) loadKV(w, 0);
 
     uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0};
@@ -14261,10 +14265,10 @@ gqa_backward_vp1_kv(
     int curbuf = 0;
 
     while (w < totalW) {
-        const bool local = (w + 1 < pend);          // partner in this pair (same group, prefetchable)?
+        const bool local = (w + 1 < pend);          // next item still in this chunk (same group)?
         int wn;
         if (local) { wn = w + 1; }
-        else { if (tid == 0) s_w = atomicAdd(gWork, 2); __syncthreads(); wn = s_w; }
+        else { if (tid == 0) s_w = atomicAdd(gWork, CHUNK); __syncthreads(); wn = s_w; }
         int b, hkv, k_tile, qc0, nIter; uint32_t kvFlatRow;
         decodeKV(w, b, hkv, k_tile, kvFlatRow, qc0, nIter);
         const int k_row0 = k_tile * Bc;
@@ -14366,8 +14370,8 @@ gqa_backward_vp1_kv(
         __syncthreads();   // work-item boundary rendezvous (orders the alt-buffer K/V write)
         w = wn;
         curbuf ^= 1;
-        if (!local && w < totalW) {   // new pair: partner K/V wasn't prefetched -> fresh-load (exposed 1/2)
-            pend = (w + 2 < totalW) ? (w + 2) : totalW;
+        if (!local && w < totalW) {   // new chunk: base K/V wasn't prefetched -> fresh-load (exposed 1/C)
+            pend = (w + CHUNK < totalW) ? (w + CHUNK) : totalW;
             if (wg == 2 && leader) loadKV(w, curbuf);
         }
     }       // end persistent while
