@@ -14171,10 +14171,10 @@ gqa_backward_vp1_kv(
     int * __restrict__ gWork, int totalW
 ) {
     static_assert(Br == 64 && Bc == 64 && D == 128, "Vp1 requires Br=Bc=64, D=128");
-    constexpr int PD = 3;
+    constexpr int PD = 2;   // Q/dO ring depth 3->2 to fund double-buffered K/V (net-neutral smem)
 
-    __shared__ __align__(128)  bf16 sK_sw[Bc * D];
-    __shared__ __align__(128)  bf16 sV_sw[Bc * D];
+    __shared__ __align__(128)  bf16 sK_sw[2][Bc * D];   // DOUBLE-BUFFERED: prefetch w+1 K/V into alt buffer
+    __shared__ __align__(128)  bf16 sV_sw[2][Bc * D];   // (no handshake -> no CTA desync -> L2 preserved)
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
     __shared__ __align__(1024) float sS [2][Br * 64];
@@ -14183,7 +14183,7 @@ gqa_backward_vp1_kv(
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
     __shared__                 float sD  [PD][Br];
-    __shared__ __align__(8)    uint64_t mbar_kv;
+    __shared__ __align__(8)    uint64_t mbar_kv[2];      // one per K/V buffer
     __shared__ __align__(8)    uint64_t full   [PD];
     __shared__ __align__(8)    uint64_t empty  [PD];
     __shared__ __align__(8)    uint64_t d_ready[PD];
@@ -14198,7 +14198,8 @@ gqa_backward_vp1_kv(
     const uint32_t bytesAtom = (uint32_t)(Bc * 64 * sizeof(bf16));
 
     if (tid == 0) {
-        mbar_init_v4(&mbar_kv, 1);
+        mbar_init_v4(&mbar_kv[0], 1);
+        mbar_init_v4(&mbar_kv[1], 1);
         #pragma unroll
         for (int i = 0; i < PD; i++) {
             mbar_init_v4(&full[i], 1);
@@ -14208,29 +14209,52 @@ gqa_backward_vp1_kv(
     }
     __syncthreads();
 
-    // reg budget + wgmma descriptors set ONCE (persistent) — smem addresses are work-item-invariant.
+    // reg budget + wgmma descriptors set ONCE (persistent). K/V is double-buffered, so ONE descriptor set
+    // per buffer (addresses are still work-item-invariant, just alternate by w&1).
     if (wg == 2) reg_dec_producer_v30(); else reg_inc_consumer_v30();
     const float scale2 = scale * LOG2E_V29;
     const bool  leader = (tid == 256);
     const int   pl     = tid - 256;
-    uint64_t descGemmB = 0, descP = 0, descDSmn = 0, descDSk = 0, descKhalf = 0;
+    uint64_t descGemmB[2] = {0,0}, descKhalf[2] = {0,0};
+    uint64_t descP = 0, descDSmn = 0, descDSk = 0;
     if (wg != 2) {
-        descGemmB = make_desc_sw128_K((wg == 0) ? sK_sw : sV_sw);
+        descGemmB[0] = make_desc_sw128_K((wg == 0) ? sK_sw[0] : sV_sw[0]);
+        descGemmB[1] = make_desc_sw128_K((wg == 0) ? sK_sw[1] : sV_sw[1]);
+        descKhalf[0] = make_desc_sw128_MN(sK_sw[0] + wg * 4096);
+        descKhalf[1] = make_desc_sw128_MN(sK_sw[1] + wg * 4096);
         descP     = make_desc_sw128_MN(sP);
         descDSmn  = make_desc_sw128_MN(sDS);
         descDSk   = make_desc_sw128_K (sDS);
-        descKhalf = make_desc_sw128_MN(sK_sw + wg * 4096);
+    }
+
+    // K/V flat-row for any work-item index (decode helper).
+    auto kvRowOf = [&](int wi) -> uint32_t {
+        return (uint32_t)(((wi / (WKV * Hkv)) * Hkv + (wi / WKV) % Hkv) * S + (wi % WKV) * Bc);
+    };
+    // Prologue: grab w0 and prefetch its K/V into buffer 0 so the first consumer never waits on DRAM.
+    uint32_t kvpar[2] = {0,0};   // per-buffer ready parity (producer completion count mod 2)
+    if (tid == 0) s_w = atomicAdd(gWork, 1);
+    __syncthreads();
+    int w = s_w;
+    if (wg == 2 && leader && w < totalW) {
+        const uint32_t kfr = kvRowOf(w);
+        mbar_expect_tx_v4(&mbar_kv[0], bytesAtom * 4);
+        tma_load_2d_v4(&tma_K_sw, sK_sw[0],           &mbar_kv[0], 0,  kfr);
+        tma_load_2d_v4(&tma_K_sw, sK_sw[0] + 64 * 64, &mbar_kv[0], 64, kfr);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[0],           &mbar_kv[0], 0,  kfr);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[0] + 64 * 64, &mbar_kv[0], 64, kfr);
     }
 
     // persist across work-items (both wgs advance identically, rendezvous each boundary).
-    uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0}, kv_cpar = 0;
+    uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0};
     int git = 0;
+    int curbuf = 0;   // K/V buffer for the CURRENT work-item — alternates by LOCAL iteration (dynamic w
+                      // grabs are non-consecutive, so w&1 could alias the buffer being prefetched).
 
-    while (true) {
-        if (tid == 0) s_w = atomicAdd(gWork, 1);   // dynamic tile scheduler: (b,hkv)-major -> L2-hot cluster
+    while (w < totalW) {
+        if (tid == 0) s_w = atomicAdd(gWork, 1);   // grab NEXT so producer can prefetch its K/V now
         __syncthreads();
-        const int w = s_w;
-        if (w >= totalW) break;
+        const int wn = s_w;
         const int k_tile = w % WKV;                // (b,hkv) major, k_tile minor
         const int hkv    = (w / WKV) % Hkv;
         const int b      = w / (WKV * Hkv);
@@ -14240,14 +14264,7 @@ gqa_backward_vp1_kv(
         const int nIter = G * (nQTiles - qc0);
 
         if (wg == 2) {
-            // ---------------------- PRODUCER work-item (= V44 producer) ----------------------
-            if (leader) {
-                mbar_expect_tx_v4(&mbar_kv, bytesAtom * 4);
-                tma_load_2d_v4(&tma_K_sw, sK_sw,           &mbar_kv, 0,  kvFlatRow);
-                tma_load_2d_v4(&tma_K_sw, sK_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
-                tma_load_2d_v4(&tma_V_sw, sV_sw,           &mbar_kv, 0,  kvFlatRow);
-                tma_load_2d_v4(&tma_V_sw, sV_sw + 64 * 64, &mbar_kv, 64, kvFlatRow);
-            }
+            // -------- PRODUCER (Q/dO ring; K/V for w already prefetched into buffer curbuf) --------
             int gP = 0, qcP = qc0;
             for (int it = 0; it < nIter; it++) {
                 const int s = git % PD;
@@ -14268,9 +14285,21 @@ gqa_backward_vp1_kv(
                 git++;
                 if (++qcP == nQTiles) { qcP = qc0; ++gP; }
             }
+            // PREFETCH K/V(wn) into the ALTERNATE buffer (wn&1) during w's compute. No handshake needed:
+            // buffer (wn&1) was last read by work-item w-1, and the boundary rendezvous already ordered
+            // that read before this write. Async TMA -> overlaps w's compute -> consumer never waits on K/V.
+            if (leader && wn < totalW) {
+                const int nb = curbuf ^ 1;
+                const uint32_t kfrn = kvRowOf(wn);
+                mbar_expect_tx_v4(&mbar_kv[nb], bytesAtom * 4);
+                tma_load_2d_v4(&tma_K_sw, sK_sw[nb],           &mbar_kv[nb], 0,  kfrn);
+                tma_load_2d_v4(&tma_K_sw, sK_sw[nb] + 64 * 64, &mbar_kv[nb], 64, kfrn);
+                tma_load_2d_v4(&tma_V_sw, sV_sw[nb],           &mbar_kv[nb], 0,  kfrn);
+                tma_load_2d_v4(&tma_V_sw, sV_sw[nb] + 64 * 64, &mbar_kv[nb], 64, kfrn);
+            }
         } else {
             // ---------------------- CONSUMER work-item (= V44 consumer + epilogue) ----------------------
-        mbar_wait_bo(&mbar_kv, kv_cpar); kv_cpar ^= 1;   // this work-item's K/V is resident (cuDNN nanosleep-backoff)
+        mbar_wait_v4(&mbar_kv[curbuf], kvpar[curbuf]); kvpar[curbuf] ^= 1;   // K/V prefetched, resident
 
         float dv[32]; zeroN<32>(dv);
         float dk[32]; zeroN<32>(dk);
@@ -14278,18 +14307,18 @@ gqa_backward_vp1_kv(
         for (int it = 0; it < nIter; it++) {
             const int s = git % PD;
             const int q_row0 = qcC * Br;
-            mbar_wait_bo(&full[s], cpar[s]); cpar[s] ^= 1;
-            mbar_wait_bo(&d_ready[s], dpar[s]); dpar[s] ^= 1;
+            mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
+            mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
 
             float dPacc[32];
             if (wg == 0) {
                 float acc[32]; zeroN<32>(acc);
-                run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descGemmB);
+                run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descGemmB[curbuf]);
                 if (qcC == qc0) fused_p_stsm<Bc, true >(acc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
                 else            fused_p_stsm<Bc, false>(acc, sP, sLSE[s], wtid, 0,       0,      scale2);
             } else {
                 zeroN<32>(dPacc);
-                run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB);
+                run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB[curbuf]);
             }
             consumer_sync();
 
@@ -14299,7 +14328,7 @@ gqa_backward_vp1_kv(
             consumer_sync();
 
             float dq[32]; zeroN<32>(dq);
-            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf, sQ_sw[s] + wg * 4096);
+            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf[curbuf], sQ_sw[s] + wg * 4096);
             run_gemm_dVdKdQ_te_wait(dv, dk, dq);
             if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
             const int db = it & 1;
@@ -14337,7 +14366,9 @@ gqa_backward_vp1_kv(
             tma_store_wait_v34();
         }
         }   // end CONSUMER branch
-        __syncthreads();   // work-item boundary: ring/K/V/sQ safe to reuse next work-item
+        __syncthreads();   // work-item boundary rendezvous (orders the prefetch write of the alt buffer)
+        w = wn;            // advance to the work-item whose K/V is already prefetched
+        curbuf ^= 1;       // its K/V is in the alternate buffer
     }       // end persistent while
 }
 
