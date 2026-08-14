@@ -14177,6 +14177,12 @@ gqa_backward_vp1_kv(
     const int nQTiles = S / Br;
     const int WKV     = S / Bc;                 // k-tiles per (b,hkv)
     const int totalW  = B * Hkv * WKV;          // total work-items (== V44's 1024 @4x12)
+    // Locality+balance: each CTA takes a CONTIGUOUS slice of the reordered work list. Reorder =
+    // (b,hkv) group-major, and within a group the k_tiles are CAUSAL-PAIRED [0,WKV-1,1,WKV-2,...]
+    // so a slice stays in one group (Q/dO L2-hot) AND each pair {t,WKV-1-t} is constant work (balanced).
+    const int chunk = (totalW + (int)gridDim.x - 1) / (int)gridDim.x;
+    const int w_beg = (int)blockIdx.x * chunk;
+    const int w_end = (w_beg + chunk < totalW) ? (w_beg + chunk) : totalW;
 
     const uint32_t bytesTile = (uint32_t)(Br * D * sizeof(bf16));
     const uint32_t bytesAtom = (uint32_t)(Bc * 64 * sizeof(bf16));
@@ -14205,10 +14211,12 @@ gqa_backward_vp1_kv(
         int  git = 0;
         bool firstKV = true;
 
-        for (int w = blockIdx.x; w < totalW; w += gridDim.x) {
-            const int k_tile = w % WKV;
-            const int hkv    = (w / WKV) % Hkv;
-            const int b      = w / (WKV * Hkv);
+        for (int ri = w_beg; ri < w_end; ri++) {
+            const int grp    = ri / WKV;
+            const int ii     = ri % WKV;
+            const int k_tile = (ii & 1) ? (WKV - 1 - (ii >> 1)) : (ii >> 1);
+            const int hkv    = grp % Hkv;
+            const int b      = grp / Hkv;
             const int k_row0 = k_tile * Bc;
             const uint32_t kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
             const int qc0   = k_row0 / Br;
@@ -14268,10 +14276,12 @@ gqa_backward_vp1_kv(
     uint32_t kv_cpar = 0;
     int git = 0;
 
-    for (int w = blockIdx.x; w < totalW; w += gridDim.x) {
-        const int k_tile = w % WKV;
-        const int hkv    = (w / WKV) % Hkv;
-        const int b      = w / (WKV * Hkv);
+    for (int ri = w_beg; ri < w_end; ri++) {
+        const int grp    = ri / WKV;
+        const int ii     = ri % WKV;
+        const int k_tile = (ii & 1) ? (WKV - 1 - (ii >> 1)) : (ii >> 1);
+        const int hkv    = grp % Hkv;
+        const int b      = grp / Hkv;
         const int k_row0 = k_tile * Bc;
         const uint32_t kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
         const int qc0   = k_row0 / Br;
