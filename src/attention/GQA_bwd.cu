@@ -1345,6 +1345,17 @@ __device__ __forceinline__ void tma_load_2d_v4(
         ".mbarrier::complete_tx::bytes [%0], [%1, {%2, %3}], [%4];\n"
         :: "r"(dst), "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(mb) : "memory");
 }
+// 4-D TMA load (cuDNN's UTMALDG.4D): loads into the true 4D tensor [B,Hq,S,D] — coords {cx=D-off, cy=S-row,
+// cz=hq, cw=b}. Same swizzled smem dest + same bytes as tma_load_2d_v4; only the addressing is 4D.
+__device__ __forceinline__ void tma_load_4d_v4(
+    const void* tma_desc, void* smem_dst, uint64_t* mbar, uint32_t cx, uint32_t cy, uint32_t cz, uint32_t cw) {
+    uint32_t dst = (uint32_t)__cvta_generic_to_shared(smem_dst);
+    uint32_t mb  = (uint32_t)__cvta_generic_to_shared(mbar);
+    asm volatile(
+        "cp.async.bulk.tensor.4d.shared::cta.global"
+        ".mbarrier::complete_tx::bytes [%0], [%1, {%2, %3, %4, %5}], [%6];\n"
+        :: "r"(dst), "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(cz), "r"(cw), "r"(mb) : "memory");
+}
 // V34: 2-D TMA bulk STORE (swizzle-none): smem tile -> global d_dV/d_dK. cx=D-col offset, cy=row.
 __device__ __forceinline__ void tma_store_2d_v34(const void* tma_desc, const bf16* smem, uint32_t cx, uint32_t cy) {
     uint32_t src = (uint32_t)__cvta_generic_to_shared(smem);
@@ -14578,7 +14589,7 @@ void launch_gqa_backward_vp1(
 }
 
 
-// ===== Vw1 = Vp1 + COMBO (uniform reg + nanosleep + [4D TMA todo]) — cuDNN-difference combo =====
+// ===== Vw1 = Vp1 + 4D TMA on Q/dO producer loads (cuDNN UTMALDG.4D) — producer-throughput test =====
 // ===== base Vp1 = PERSISTENT V44 via a DYNAMIC atomic work-counter (cuDNN's actual structure) =====
 // Confirmed 2026-08-14 by 3-way ncu (V44/Vp1/cuDNN @4x12): long_scoreboard is a monotonic function of
 // L2 HIT RATE — cuDNN 92% L2 -> long_sb 1.76 -> 1.28ms; V44 85% -> 2.82 -> 1.87; static-chunk Vp1 60%
@@ -14645,7 +14656,7 @@ gqa_backward_vw1_kv(
     __syncthreads();
 
     // reg budget + wgmma descriptors set ONCE — K/V double-buffered so one descriptor set per buffer.
-    /* combo(1) uniform regs: no setmaxnreg */
+    if (wg == 2) reg_dec_producer_v30(); else reg_inc_consumer_v30();
     const float scale2 = scale * LOG2E_V29;
     const bool  leader = (tid == 256);
     const int   pl     = tid - 256;
@@ -14717,12 +14728,12 @@ gqa_backward_vw1_kv(
                 const int  hqP   = hkv * G + gP;
                 const long dbase = (long)(b * Hq + hqP) * S + (long)qcP * Br;
                 if (leader) {
-                    const uint32_t r = (uint32_t)((b * Hq + hqP) * S + qcP * Br);
                     mbar_expect_tx_v4(&full[s], bytesTile * 2);
-                    tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  r);
-                    tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, r);
-                    tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
-                    tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
+                    const uint32_t sRow = (uint32_t)(qcP * Br);   // Vw1: 4D coords {D-off, S-row, hq, b}
+                    tma_load_4d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  sRow, (uint32_t)hqP, (uint32_t)b);
+                    tma_load_4d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, sRow, (uint32_t)hqP, (uint32_t)b);
+                    tma_load_4d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  sRow, (uint32_t)hqP, (uint32_t)b);
+                    tma_load_4d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, sRow, (uint32_t)hqP, (uint32_t)b);
                 }
                 if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }
                 producer_sync();
@@ -14735,7 +14746,7 @@ gqa_backward_vw1_kv(
             if (leader && local && wn < totalW) loadKV(wn, curbuf ^ 1);
         } else {
             // ---------------------- CONSUMER work-item (= V44 consumer + epilogue) ----------------------
-        mbar_wait_bo(&mbar_kv[curbuf], kvpar[curbuf]); kvpar[curbuf] ^= 1;   // combo(2) nanosleep backoff   // K/V resident (prefetched)
+        mbar_wait_v4(&mbar_kv[curbuf], kvpar[curbuf]); kvpar[curbuf] ^= 1;   // K/V resident (prefetched)
 
         float dv[32]; zeroN<32>(dv);
         float dk[32]; zeroN<32>(dk);
@@ -14743,8 +14754,8 @@ gqa_backward_vw1_kv(
         for (int it = 0; it < nIter; it++) {
             const int s = git % PD;
             const int q_row0 = qcC * Br;
-            mbar_wait_bo(&full[s], cpar[s]); cpar[s] ^= 1;      // combo(2) nanosleep backoff
-            mbar_wait_bo(&d_ready[s], dpar[s]); dpar[s] ^= 1;
+            mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
+            mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
 
             float dPacc[32];
             if (wg == 0) {
@@ -14840,8 +14851,22 @@ void launch_gqa_backward_vw1(
     const uint64_t Rkv = (uint64_t)B * Hkv * S;
     CUtensorMap tma_K_sw  = make_tma_sw128(d_K,  Rkv, Bc);
     CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
-    CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
-    CUtensorMap tma_dO_sw = make_tma_sw128(d_dO, Rq,  Br);
+    // 4D tensormap for Q/dO [B,Hq,S,D] — box {64(D-half), Br(S), 1, 1}, swizzle-128B (same smem layout as 2D).
+    auto make_tma_sw128_4d = [&](const bf16* ptr, uint32_t tile_rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[4]   = {(uint64_t)D, (uint64_t)S, (uint64_t)Hq, (uint64_t)B};
+        uint64_t gStride[3] = {(uint64_t)D*sizeof(bf16), (uint64_t)D*S*sizeof(bf16), (uint64_t)D*S*Hq*sizeof(bf16)};
+        uint32_t box[4]     = {64u, tile_rows, 1u, 1u};
+        uint32_t eStride[4] = {1,1,1,1};
+        CUresult r = cuTensorMapEncodeTiled(&desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 4, (void*)ptr,
+            gSize, gStride, box, eStride, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
+            fprintf(stderr, "cuTensorMapEncodeTiled(4d) vw1: %s\n", e); exit(1); }
+        return desc;
+    };
+    CUtensorMap tma_Q_sw  = make_tma_sw128_4d(d_Q,  Br);
+    CUtensorMap tma_dO_sw = make_tma_sw128_4d(d_dO, Br);
     auto make_tma_out = [&](const bf16* ptr, uint64_t rows) {
         CUtensorMap desc{};
         uint64_t gSize[2]={(uint64_t)D, rows}; uint64_t gStride[1]={(uint64_t)D*sizeof(bf16)};
@@ -15771,7 +15796,7 @@ int main(){
 
     launch_gqa_backward_vw1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── Vw1 Br=64 Bc=64 combo: uniform-reg + nanosleep (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── Vw1 Br=64 Bc=64 Vp1 + 4D TMA on Q/dO (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_vr1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -16119,7 +16144,7 @@ int main(){
             [&](){ launch_gqa_backward_vw1<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd Vw1 Br=64, Bc=64  combo: uniform-reg + nanosleep  (Hopper SM_90)", s);
+        displayStats("GQA bwd Vw1 Br=64, Bc=64  Vp1 + 4D TMA on Q/dO  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
