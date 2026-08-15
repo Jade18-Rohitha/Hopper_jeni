@@ -14578,7 +14578,7 @@ void launch_gqa_backward_vp1(
 }
 
 
-// ===== Vw1 = Vp1(persistent) + PD=3 + single-buffer dQ (depth test) =====
+// ===== Vw1 = Vp1 + UNIFORM registers (drop setmaxnreg, like cuDNN) — register-starvation test =====
 // ===== base Vp1 = PERSISTENT V44 via a DYNAMIC atomic work-counter (cuDNN's actual structure) =====
 // Confirmed 2026-08-14 by 3-way ncu (V44/Vp1/cuDNN @4x12): long_scoreboard is a monotonic function of
 // L2 HIT RATE — cuDNN 92% L2 -> long_sb 1.76 -> 1.28ms; V44 85% -> 2.82 -> 1.87; static-chunk Vp1 60%
@@ -14605,15 +14605,15 @@ gqa_backward_vw1_kv(
     int B, int Hq, int Hkv, int G, int S, float scale,
     int * __restrict__ gWork, int totalW
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "Vw1 requires Br=Bc=64, D=128");
-    constexpr int PD = 3;   // Vw1: PD=3 (deeper, funded by single-buf dQ below)
+    static_assert(Br == 64 && Bc == 64 && D == 128, "Vp1 requires Br=Bc=64, D=128");
+    constexpr int PD = 2;   // Q/dO ring 3->2 funds double-buffered K/V (net-neutral smem)
 
     __shared__ __align__(128)  bf16 sK_sw[2][Bc * D];   // double-buffered for in-pair K/V prefetch
     __shared__ __align__(128)  bf16 sV_sw[2][Bc * D];
     __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
     __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
-    __shared__ __align__(1024) float sS [1][Br * 64];   // Vw1 single-buf dQ
-    __shared__ __align__(1024) float sdP[1][Br * 64];   // Vw1 single-buf dQ
+    __shared__ __align__(1024) float sS [2][Br * 64];
+    __shared__ __align__(1024) float sdP[2][Br * 64];
     __shared__ __align__(1024) bf16  sP [Br * 64];
     __shared__ __align__(1024) bf16  sDS[Br * 64];
     __shared__                 float sLSE[PD][Br];
@@ -14645,7 +14645,7 @@ gqa_backward_vw1_kv(
     __syncthreads();
 
     // reg budget + wgmma descriptors set ONCE — K/V double-buffered so one descriptor set per buffer.
-    if (wg == 2) reg_dec_producer_v30(); else reg_inc_consumer_v30();
+    /* Vw1: NO setmaxnreg -> uniform 168 regs all threads (producer gets full regs, like cuDNN) */
     const float scale2 = scale * LOG2E_V29;
     const bool  leader = (tid == 256);
     const int   pl     = tid - 256;
@@ -14767,7 +14767,7 @@ gqa_backward_vw1_kv(
             run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf[curbuf], sQ_sw[s] + wg * 4096);
             run_gemm_dVdKdQ_te_wait(dv, dk, dq);
             if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
-            const int db = 0;   // Vw1: single dQ buffer
+            const int db = it & 1;
             float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
             store_acc_sw128_f32(dq, stageDQ, wtid, scale);
             if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
@@ -14778,7 +14778,7 @@ gqa_backward_vw1_kv(
                 tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           (uint32_t)(wg * 64),      crow);
                 tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow);
                 tma_store_commit_v34();
-                tma_bulk_wait0_v43();   // Vw1 single-buf: drain reduce before next store
+                tma_bulk_wait1_v43();
             }
             git++;
             if (++qcC == nQTiles) { qcC = qc0; ++gC; }
@@ -14820,7 +14820,7 @@ void launch_gqa_backward_vw1(
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
     int B, int Hq, int Hkv, int G, int S, float scale
 ) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "Vw1 requires Br=Bc=64, D=128");
+    static_assert(Br == 64 && Bc == 64 && D == 128, "Vp1 requires Br=Bc=64, D=128");
     auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
         CUtensorMap desc{};
         uint64_t gSize[2]   = {(uint64_t)D, total_rows};
@@ -15771,7 +15771,7 @@ int main(){
 
     launch_gqa_backward_vw1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── Vw1 Br=64 Bc=64 Vp1 + PD=3 + single-buffer dQ (deeper pipe) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── Vw1 Br=64 Bc=64 Vp1 + UNIFORM regs (no setmaxnreg) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_vr1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -16119,7 +16119,7 @@ int main(){
             [&](){ launch_gqa_backward_vw1<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd Vw1 Br=64, Bc=64  Vp1 + PD=3 + single-buffer dQ (deeper pipe)  (Hopper SM_90)", s);
+        displayStats("GQA bwd Vw1 Br=64, Bc=64  Vp1 + UNIFORM regs (no setmaxnreg)  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
