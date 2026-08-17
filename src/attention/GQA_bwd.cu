@@ -14635,6 +14635,7 @@ gqa_backward_vj1_kv(
             mbar_init_v4(&d_ready[i], 1);
             mbar_init_v4(&dq_ready[i], 2);
             mbar_init_v4(&dq_done[i], 1);
+            mbar_arrive_v11(&dq_done[i]);   // Vj1: pre-arm (pipeline fill) -> buffer starts "free"
         }
     }
     __syncthreads();
@@ -14779,7 +14780,7 @@ gqa_backward_vj1_kv(
             run_gemm_dVdKdQ_te_wait(dv, dk, dq);
             if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
             const int db = it & 1;
-            if (it >= PD) { mbar_wait_v4(&dq_done[db], qdpar[db]); qdpar[db] ^= 1; }
+            mbar_wait_v4(&dq_done[db], qdpar[db]); qdpar[db] ^= 1;   // Vj1: buffer free (pre-armed)
             float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
             store_acc_sw128_f32(dq, stageDQ, wtid, scale);
             if (wg == 0 && wtid == 0) { const int hqC = hkv * G + gC; crow_s[db] = (int)((b * Hq + hqC) * S + qcC * Br); }
