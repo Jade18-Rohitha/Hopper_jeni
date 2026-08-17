@@ -15299,10 +15299,6 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V6  Br=64, Bc=64  FUSED KV-centric, BANK-CONFLICT-FREE (padded smem) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_v5<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
-    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── V5  Br=64, Bc=64  m64n128 full-width dV/dK/dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
-
     launch_gqa_backward_v7<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V7  Br=64, Bc=64  SWIZZLED-TMA + wgmma Major::MN (transpose-buffer-free) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
@@ -15462,6 +15458,10 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── Vp1 Br=64 Bc=64 PERSISTENT V44 warm-bridge (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
+    launch_gqa_backward_v5<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── V5  Br=64, Bc=64  m64n128 full-width dV/dK/dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
     launch_gqa_backward_vr1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── Vr1 Br=64 Bc=64 per-hq main + cuDNN G-head reduce dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
@@ -15525,13 +15525,6 @@ int main(){
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats("GQA bwd V6  Br=64, Bc=64  BANK-CONFLICT-FREE  (Hopper SM_90)", s);
-    }
-    {
-        KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_v5<Br2,Bc2,D>(
-                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
-            100, 10, bwd_flops);
-        displayStats("GQA bwd V5  Br=64, Bc=64  m64n128 full-width dV/dK/dQ  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
@@ -15809,6 +15802,13 @@ int main(){
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats("GQA bwd Vp1 Br=64, Bc=64  PERSISTENT V44 warm-bridge  (Hopper SM_90)", s);
+    }
+    {
+        KernelStats s = benchmarkKernel(
+            [&](){ launch_gqa_backward_v5<Br2,Bc2,D>(
+                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
+            100, 10, bwd_flops);
+        displayStats("GQA bwd V5  Br=64, Bc=64  m64n128 full-width dV/dK/dQ  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
