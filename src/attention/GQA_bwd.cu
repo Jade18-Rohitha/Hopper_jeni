@@ -14733,6 +14733,7 @@ gqa_backward_vj1_kv(
                 for (int it = 0; it < nIter; it++) {
                     const int rb = it & 1;
                     mbar_wait_v4(&dq_ready[rb], qrpar[rb]); qrpar[rb] ^= 1;
+                    fence_proxy_async_shared();   // Vj1: cross-warp — see consumer's STS in async proxy
                     const uint32_t crow = (uint32_t)crow_s[rb];
                     tma_reduce_add_2d_v43(&tma_dq_red, sS [rb],           0u,  crow);
                     tma_reduce_add_2d_v43(&tma_dq_red, sS [rb] + 64 * 32, 32u, crow);
