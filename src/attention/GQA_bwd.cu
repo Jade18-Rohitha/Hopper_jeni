@@ -14581,7 +14581,7 @@ void launch_gqa_backward_vp1(
 
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
-gqa_backward_vh1_kv(
+gqa_backward_vi1_kv(
     const __grid_constant__ CUtensorMap tma_K_sw,
     const __grid_constant__ CUtensorMap tma_V_sw,
     const __grid_constant__ CUtensorMap tma_Q_sw,
@@ -14612,6 +14612,9 @@ gqa_backward_vh1_kv(
     __shared__ __align__(8)    uint64_t full   [PD];
     __shared__ __align__(8)    uint64_t empty  [PD];
     __shared__ __align__(8)    uint64_t d_ready[PD];
+    __shared__ __align__(8)    uint64_t dq_ready[PD];   // Vi1: consumer->reducer (dQ staged, 2-count)
+    __shared__ __align__(8)    uint64_t dq_done [PD];   // Vi1: reducer->consumer (buffer free, 1-count)
+    __shared__ int crow_s[PD];                          // Vi1: staged reduce row
     __shared__ int s_w;
 
     const int tid  = threadIdx.x;
@@ -14630,6 +14633,8 @@ gqa_backward_vh1_kv(
             mbar_init_v4(&full[i], 1);
             mbar_init_v4(&empty[i], 2);          // early-empty: each consumer wg signals independently
             mbar_init_v4(&d_ready[i], 1);
+            mbar_init_v4(&dq_ready[i], 2);
+            mbar_init_v4(&dq_done[i], 1);
         }
     }
     __syncthreads();
@@ -14701,6 +14706,7 @@ gqa_backward_vh1_kv(
         if (wg == 2) {
             // -------- PRODUCER (Q/dO ring; K/V for w already in buffer curbuf) --------
             int gP = 0, qcP = qc0;
+            uint32_t qrpar[PD] = {0};   // Vi1 reducer parity
             for (int it = 0; it < nIter; it++) {
                 const int s = git % PD;
                 if (git >= PD) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
@@ -14717,8 +14723,34 @@ gqa_backward_vh1_kv(
                 if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }
                 producer_sync();
                 if (leader) mbar_arrive_v11(&d_ready[s]);
+                // Vi1: DEDICATED REDUCER — reduce tile (it-1)'s dQ from sS/sdP (RLAG=1, opposite buffer)
+                if (leader && it >= 1) {
+                    const int rb = (it - 1) & 1;
+                    mbar_wait_v4(&dq_ready[rb], qrpar[rb]); qrpar[rb] ^= 1;
+                    const uint32_t crow = (uint32_t)crow_s[rb];
+                    tma_reduce_add_2d_v43(&tma_dq_red, sS [rb],            0u,  crow);
+                    tma_reduce_add_2d_v43(&tma_dq_red, sS [rb] + 64 * 32,  32u, crow);
+                    tma_reduce_add_2d_v43(&tma_dq_red, sdP[rb],            64u, crow);
+                    tma_reduce_add_2d_v43(&tma_dq_red, sdP[rb] + 64 * 32,  96u, crow);
+                    tma_store_commit_v34();
+                    tma_bulk_wait1_v43();
+                    mbar_arrive_v11(&dq_done[rb]);
+                }
                 git++;
                 if (++qcP == nQTiles) { qcP = qc0; ++gP; }
+            }
+            // Vi1: reduce the final tile (RLAG tail)
+            if (leader && nIter >= 1) {
+                const int rb = (nIter - 1) & 1;
+                mbar_wait_v4(&dq_ready[rb], qrpar[rb]); qrpar[rb] ^= 1;
+                const uint32_t crow = (uint32_t)crow_s[rb];
+                tma_reduce_add_2d_v43(&tma_dq_red, sS [rb],            0u,  crow);
+                tma_reduce_add_2d_v43(&tma_dq_red, sS [rb] + 64 * 32,  32u, crow);
+                tma_reduce_add_2d_v43(&tma_dq_red, sdP[rb],            64u, crow);
+                tma_reduce_add_2d_v43(&tma_dq_red, sdP[rb] + 64 * 32,  96u, crow);
+                tma_store_commit_v34();
+                tma_bulk_wait1_v43();
+                mbar_arrive_v11(&dq_done[rb]);
             }
             // In-pair LOCAL prefetch of the partner's K/V (same group) into the alt buffer, hidden under
             // w's compute. Skipped at pair boundary (next pair fresh-loaded below, exposed 1-of-2).
@@ -14727,10 +14759,11 @@ gqa_backward_vh1_kv(
             // ---------------------- CONSUMER work-item (= V44 consumer + epilogue) ----------------------
         mbar_wait_v4(&mbar_kv[curbuf], kvpar[curbuf]); kvpar[curbuf] ^= 1;   // K/V resident (prefetched)
 
+        float dv[32]; zeroN<32>(dv);
+        float dk[32]; zeroN<32>(dk);
+        uint32_t qdpar[PD] = {0};   // Vi1 consumer dq_done parity
         int gC = 0, qcC = qc0;
         for (int it = 0; it < nIter; it++) {
-            float dv[32]; zeroN<32>(dv);   // Vh1: per-q-tile contribution, TMA-reduced (not reg-accumulated)
-            float dk[32]; zeroN<32>(dk);
             const int s = git % PD;
             const int q_row0 = qcC * Br;
             mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
@@ -14758,46 +14791,34 @@ gqa_backward_vh1_kv(
             run_gemm_dVdKdQ_te_wait(dv, dk, dq);
             if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
             const int db = it & 1;
+            if (it >= PD) { mbar_wait_v4(&dq_done[db], qdpar[db]); qdpar[db] ^= 1; }  // Vi1: buffer free
             float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
-            const uint32_t crow_kv = (uint32_t)((b * Hkv + hkv) * S + k_row0);   // Vh1: dV/dK reduce row
-            // dQ reduce (unchanged)
             store_acc_sw128_f32(dq, stageDQ, wtid, scale);
+            if (wg == 0 && wtid == 0) { const int hqC = hkv * G + gC; crow_s[db] = (int)((b * Hq + hqC) * S + qcC * Br); }
             if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
             fence_proxy_async_shared();
-            if (wtid == 0) {
-                const int hqC = hkv * G + gC;
-                const uint32_t crow = (uint32_t)((b * Hq + hqC) * S + qcC * Br);
-                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           (uint32_t)(wg * 64),      crow);
-                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow);
-                tma_store_commit_v34();
-                tma_bulk_wait0_v43();
-            }
-            if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // Vh1: all threads wait leader drain
-            // Vh1: dV reduce (scale 1.0) -> reuse stageDQ, then dK reduce (scale)
-            store_acc_sw128_f32(dv, stageDQ, wtid, 1.0f);
-            if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-            fence_proxy_async_shared();
-            if (wtid == 0) {
-                tma_reduce_add_2d_v43(&tma_dV_st, stageDQ,           (uint32_t)(wg * 64),      crow_kv);
-                tma_reduce_add_2d_v43(&tma_dV_st, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow_kv);
-                tma_store_commit_v34();
-                tma_bulk_wait0_v43();
-            }
-            if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // Vh1: all threads wait leader drain
-            store_acc_sw128_f32(dk, stageDQ, wtid, scale);
-            if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-            fence_proxy_async_shared();
-            if (wtid == 0) {
-                tma_reduce_add_2d_v43(&tma_dK_st, stageDQ,           (uint32_t)(wg * 64),      crow_kv);
-                tma_reduce_add_2d_v43(&tma_dK_st, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow_kv);
-                tma_store_commit_v34();
-                tma_bulk_wait0_v43();
-            }
+            if (wtid == 0) mbar_arrive_v11(&dq_ready[db]);   // Vi1: signal reducer (2-count: wg0+wg1)
             git++;
             if (++qcC == nQTiles) { qcC = qc0; ++gC; }
         }
 
-        // Vh1: dV/dK already TMA-reduced per q-tile -> no epilogue store.
+        // epilogue: producer is done with this work-item (rendezvous below) -> sQ ring is FREE; stage
+        // dV/dK into it exactly like V44 (no bridge, so no sS detour / no drain needed).
+        bf16 *qflat    = reinterpret_cast<bf16*>(&sQ_sw[0][0]);
+        bf16 *stage_dv = qflat + wg * 4096;
+        bf16 *stage_dk = qflat + 8192 + wg * 4096;
+        fence_operandN<32>(dv);
+        stage_acc_bf16_s<64, 64>(dv, stage_dv, wtid, 1.0f);
+        fence_operandN<32>(dk);
+        stage_acc_bf16_s<64, 64>(dk, stage_dk, wtid, scale);
+        consumer_sync();
+        fence_proxy_async_shared();
+        if (wtid == 0) {
+            tma_store_2d_v34(&tma_dV_st, stage_dv, (uint32_t)(wg * 64), kvFlatRow);
+            tma_store_2d_v34(&tma_dK_st, stage_dk, (uint32_t)(wg * 64), kvFlatRow);
+            tma_store_commit_v34();
+            tma_store_wait_v34();
+        }
         }   // end CONSUMER branch
         __syncthreads();   // work-item boundary rendezvous (orders the alt-buffer K/V write)
         w = wn;
@@ -14811,7 +14832,7 @@ gqa_backward_vh1_kv(
 
 
 template<int Br, int Bc, int D>
-void launch_gqa_backward_vh1(
+void launch_gqa_backward_vi1(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
     const bf16 *d_dO, const float *d_LSE,
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
@@ -14830,7 +14851,7 @@ void launch_gqa_backward_vh1(
             CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
             CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
         if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
-            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) vh1: %s\n", e); exit(1); }
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) vi1: %s\n", e); exit(1); }
         return desc;
     };
     const uint64_t Rq  = (uint64_t)B * Hq  * S;
@@ -14845,8 +14866,8 @@ void launch_gqa_backward_vh1(
         uint32_t box[2]={64u,64u}; uint32_t eStride[2]={1,1};
         CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)ptr,gSize,gStride,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out vh1: %s\n",e);exit(1);} return desc; };
-    CUtensorMap tma_dV_st = make_tma_out(d_dV, Rkv);   // (unused in Vh1 reduce path; kept for signature)
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out vi1: %s\n",e);exit(1);} return desc; };
+    CUtensorMap tma_dV_st = make_tma_out(d_dV, Rkv);
     CUtensorMap tma_dK_st = make_tma_out(d_dK, Rkv);
     auto make_tma_red = [&](const float* ptr, uint64_t rows) {
         CUtensorMap desc{};
@@ -14854,7 +14875,7 @@ void launch_gqa_backward_vh1(
         uint32_t box[2]={32u,64u}; uint32_t eStride[2]={1,1};
         CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gSize,gStride,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red vh1: %s\n",e);exit(1);} return desc; };
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red vi1: %s\n",e);exit(1);} return desc; };
 
     const long drowN = (long)B * Hq * S;
     static float* d_Drow  = nullptr;
@@ -14875,21 +14896,6 @@ void launch_gqa_backward_vh1(
     CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
     CUtensorMap tma_dq_red = make_tma_red(d_dq_accum, (uint64_t)B * Hq * S);
 
-    // Vh1 STEP1: TMA-reduce dV/dK into fp32 accumulators (Hkv heads), mirroring the dQ reduce path.
-    const long dkvN = (long)B * Hkv * S * D;
-    static float* d_dv_accum = nullptr; static float* d_dk_accum = nullptr; static long dkv_cap = 0;
-    if (dkvN > dkv_cap) {
-        if (d_dv_accum) CUDA_CHECK(cudaFree(d_dv_accum));
-        if (d_dk_accum) CUDA_CHECK(cudaFree(d_dk_accum));
-        CUDA_CHECK(cudaMalloc(&d_dv_accum, dkvN * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&d_dk_accum, dkvN * sizeof(float)));
-        dkv_cap = dkvN;
-    }
-    CUDA_CHECK(cudaMemset(d_dv_accum, 0, dkvN * sizeof(float)));
-    CUDA_CHECK(cudaMemset(d_dk_accum, 0, dkvN * sizeof(float)));
-    CUtensorMap tma_dv_red = make_tma_red(d_dv_accum, (uint64_t)B * Hkv * S);
-    CUtensorMap tma_dk_red = make_tma_red(d_dk_accum, (uint64_t)B * Hkv * S);
-
     const int  dBlock = 256;
     const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
     compute_drowsum_v22<<<(unsigned)dGrid, dBlock>>>(d_dO, d_O, d_Drow, drowN);
@@ -14903,8 +14909,8 @@ void launch_gqa_backward_vh1(
     if (!d_gWork) CUDA_CHECK(cudaMalloc(&d_gWork, sizeof(int)));
     CUDA_CHECK(cudaMemset(d_gWork, 0, sizeof(int)));
     constexpr dim3 BLOCK(384);
-    gqa_backward_vh1_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
-        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dv_red, tma_dk_red, tma_dq_red,
+    gqa_backward_vi1_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
+        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale, d_gWork, totalW);
 
     const int  convBlock = 256;
@@ -14912,12 +14918,6 @@ void launch_gqa_backward_vh1(
     const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
     convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
         reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
-    const long dkvN4 = dkvN / 4;
-    const int  cGridKV = (int)((dkvN4 + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v6<<<cGridKV, convBlock>>>(
-        reinterpret_cast<const float4*>(d_dv_accum), reinterpret_cast<uint2*>(d_dV), dkvN4);
-    convert_dq_accum_to_bf16_v6<<<cGridKV, convBlock>>>(
-        reinterpret_cast<const float4*>(d_dk_accum), reinterpret_cast<uint2*>(d_dK), dkvN4);
 }
 
 
@@ -15799,9 +15799,9 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── Vp1 Br=64 Bc=64 PERSISTENT V44 warm-bridge (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_vh1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    launch_gqa_backward_vi1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── Vh1 Br=64 Bc=64  TMA-reduce dV/dK (step1) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── Vi1 Br=64 Bc=64  dedicated reducer warp (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_vr1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -16146,10 +16146,10 @@ int main(){
     }
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_vh1<Br2,Bc2,D>(
+            [&](){ launch_gqa_backward_vi1<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd Vh1 Br=64, Bc=64  TMA-reduce dV/dK (step1)  (Hopper SM_90)", s);
+        displayStats("GQA bwd Vi1 Br=64, Bc=64  dedicated reducer warp  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
