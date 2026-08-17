@@ -13973,6 +13973,23 @@ __device__ __forceinline__ void store_acc_sw128_f32(const float* d, float* base,
         base[abase + r1 * 32 + ((chunk ^ ph1) << 2) + lo + 1] = d[nt * 4 + 3] * scl;
     }
 }
+
+// Vn2: vectorized (STS.64) fp32 dQ store — same swizzled layout as store_acc_sw128_f32,
+// but the adjacent (lo,lo+1) pair (8B-aligned) is one float2 store -> half the STS insts.
+__device__ __forceinline__ void store_acc_sw128_f32_vec(const float* d, float* base, int tid, float scl) {
+    int w = tid >> 5, lane = tid & 31;
+    int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
+    const int ph0 = r0 & 7, ph1 = r1 & 7;
+#pragma unroll
+    for (int nt = 0; nt < 8; nt++) {
+        const int c = nt * 8 + cc, atom = c >> 5, col32 = c & 31;
+        const int chunk = col32 >> 2, lo = col32 & 3, abase = atom * (64 * 32);
+        *reinterpret_cast<float2*>(&base[abase + r0 * 32 + ((chunk ^ ph0) << 2) + lo]) =
+            make_float2(d[nt * 4 + 0] * scl, d[nt * 4 + 1] * scl);
+        *reinterpret_cast<float2*>(&base[abase + r1 * 32 + ((chunk ^ ph1) << 2) + lo]) =
+            make_float2(d[nt * 4 + 2] * scl, d[nt * 4 + 3] * scl);
+    }
+}
 // V4d: DE-ALIASED swizzled fp32 store. Same SW128B chunk swizzle as store_acc_sw128_f32, but the smem row
 // index is REORDERED smem_row = (row&7)*8 + (row>>3) so the swizzle phase (smem_row&7) = row>>3 (=bg) —
 // which DIFFERS for r0 and r1=r0+8 (they share row&7 but differ in row>>3). That breaks V44's r0/r1 phase
@@ -14581,7 +14598,7 @@ void launch_gqa_backward_vp1(
 
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
-gqa_backward_vn1_kv(
+gqa_backward_vn2_kv(
     const __grid_constant__ CUtensorMap tma_K_sw,
     const __grid_constant__ CUtensorMap tma_V_sw,
     const __grid_constant__ CUtensorMap tma_Q_sw,
@@ -14759,15 +14776,14 @@ gqa_backward_vn1_kv(
             if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
             const int db = it & 1;
             float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
-            store_acc_dealias(dq, stageDQ, wtid, scale);
+            store_acc_sw128_f32_vec(dq, stageDQ, wtid, scale);
             if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
             fence_proxy_async_shared();
             if (wtid == 0) {
                 const int hqC = hkv * G + gC;
                 const uint32_t crow = (uint32_t)((b * Hq + hqC) * S + qcC * Br);
-                const uint32_t bg = crow >> 3;
-                tma_reduce_add_3d_v4d(&tma_dq_red, stageDQ,           (uint32_t)(wg * 64),      bg, 0u);
-                tma_reduce_add_3d_v4d(&tma_dq_red, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), bg, 0u);
+                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           (uint32_t)(wg * 64),      crow);
+                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow);
                 tma_store_commit_v34();
                 tma_bulk_wait1_v43();
             }
@@ -14805,7 +14821,7 @@ gqa_backward_vn1_kv(
 
 
 template<int Br, int Bc, int D>
-void launch_gqa_backward_vn1(
+void launch_gqa_backward_vn2(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
     const bf16 *d_dO, const float *d_LSE,
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
@@ -14824,7 +14840,7 @@ void launch_gqa_backward_vn1(
             CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
             CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
         if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
-            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) vn1: %s\n", e); exit(1); }
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) vn2: %s\n", e); exit(1); }
         return desc;
     };
     const uint64_t Rq  = (uint64_t)B * Hq  * S;
@@ -14839,7 +14855,7 @@ void launch_gqa_backward_vn1(
         uint32_t box[2]={64u,64u}; uint32_t eStride[2]={1,1};
         CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)ptr,gSize,gStride,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out vn1: %s\n",e);exit(1);} return desc; };
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out vn2: %s\n",e);exit(1);} return desc; };
     CUtensorMap tma_dV_st = make_tma_out(d_dV, Rkv);
     CUtensorMap tma_dK_st = make_tma_out(d_dK, Rkv);
     auto make_tma_red = [&](const float* ptr, uint64_t rows) {
@@ -14848,15 +14864,7 @@ void launch_gqa_backward_vn1(
         uint32_t box[2]={32u,64u}; uint32_t eStride[2]={1,1};
         CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gSize,gStride,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red vn1: %s\n",e);exit(1);} return desc; };
-    auto make_tma_red_3d = [&](const float* ptr, uint64_t rows) {
-        CUtensorMap desc{};
-        uint64_t gSize[3]={(uint64_t)D, rows/8, 8};
-        uint64_t gStride[2]={(uint64_t)8*D*sizeof(float), (uint64_t)D*sizeof(float)};
-        uint32_t box[3]={32u,8u,8u}; uint32_t eStride[3]={1,1,1};
-        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,3,(void*)ptr,gSize,gStride,box,eStride,
-            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red_3d vn1: %s\n",e);exit(1);} return desc; };
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red vn2: %s\n",e);exit(1);} return desc; };
 
     const long drowN = (long)B * Hq * S;
     static float* d_Drow  = nullptr;
@@ -14875,7 +14883,7 @@ void launch_gqa_backward_vn1(
         dq_cap = dqN;
     }
     CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
-    CUtensorMap tma_dq_red = make_tma_red_3d(d_dq_accum, (uint64_t)B * Hq * S);
+    CUtensorMap tma_dq_red = make_tma_red(d_dq_accum, (uint64_t)B * Hq * S);
 
     const int  dBlock = 256;
     const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
@@ -14890,7 +14898,7 @@ void launch_gqa_backward_vn1(
     if (!d_gWork) CUDA_CHECK(cudaMalloc(&d_gWork, sizeof(int)));
     CUDA_CHECK(cudaMemset(d_gWork, 0, sizeof(int)));
     constexpr dim3 BLOCK(384);
-    gqa_backward_vn1_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
+    gqa_backward_vn2_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale, d_gWork, totalW);
 
@@ -15780,9 +15788,9 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── Vp1 Br=64 Bc=64 PERSISTENT V44 warm-bridge (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_vn1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    launch_gqa_backward_vn2<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── Vn1 Br=64 Bc=64  de-aliased dQ store (kill bank conflicts) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── Vn2 Br=64 Bc=64  vectorized dQ store (STS.64) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_vr1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -16127,10 +16135,10 @@ int main(){
     }
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_vn1<Br2,Bc2,D>(
+            [&](){ launch_gqa_backward_vn2<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd Vn1 Br=64, Bc=64  de-aliased dQ store  (Hopper SM_90)", s);
+        displayStats("GQA bwd Vn2 Br=64, Bc=64  vectorized dQ store (STS.64)  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
