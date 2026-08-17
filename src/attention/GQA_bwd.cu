@@ -14744,40 +14744,50 @@ gqa_backward_vc8_kv(
                 fuse_dS_ldstsm<Bc>(sP[wg], dPacc, sD[s], sDS[wg], wtid);
                 if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
 
-                const int db = it & 1;
-                float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
                 const int hqC = hkv * G + gC;
                 const uint32_t crow = (uint32_t)((b * Hq + hqC) * S + qcC * Br);
 
-                // dK[:,0:64] += dS^T @ Q[:,0:64]  ;  dQ[:,0:64] = dS @ K[:,0:64]
-                float dq[32]; zeroN<32>(dq);
-                run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf0, sQ_sw[s] + 0);
-                run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-                store_acc_sw128_f32(dq, stageDQ, wtid, scale);
-                if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-                fence_proxy_async_shared();
-                if (wtid == 0) {
-                    tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           0,  crow);
-                    tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, 32, crow);
-                    tma_store_commit_v34(); tma_bulk_wait0_v43();
+                // dK (both halves, accumulated) + dQ. dQ[q] needs BOTH k-tiles' contributions summed.
+                // To avoid intra-CTA same-address async-reduce (the two wgs would add to the SAME dQ
+                // element concurrently -> lost update), each wg stages its two dQ half-tiles to its OWN
+                // smem (wg0->sS[0,1], wg1->sdP[0,1]); then wg0 OWNS cols 0-63 and wg1 OWNS cols 64-127,
+                // each summing k0+k1 for its columns and reducing to DISJOINT global addresses.
+                float* b0 = (wg == 0) ? sS[0] : sdP[0];   // this wg's dQ, D-half 0
+                float* b1 = (wg == 0) ? sS[1] : sdP[1];   // this wg's dQ, D-half 1
+                {   float dq[32]; zeroN<32>(dq);
+                    run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf0, sQ_sw[s] + 0);
+                    run_gemm_dVdKdQ_te_wait(dv, dk, dq);
+                    store_acc_sw128_f32(dq, b0, wtid, scale);
                 }
-                // barrier: half-0's async reduce must finish READING stageDQ before half-1 overwrites it
-                // (only thread 0 waits above; this makes threads 1-127 wait for that completion too).
-                if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-
-                // dK[:,64:128] += dS^T @ Q[:,64:128] ; dQ[:,64:128] = dS @ K[:,64:128]
-                zeroN<32>(dq);
-                run_gemm_dKdQ_te_issue_ho(dk + 32, dq, descDSmn, descDSk, descKhalf1, sQ_sw[s] + 4096);
-                run_gemm_dVdKdQ_te_wait(dv, dk + 32, dq);
-                if (wtid == 0) mbar_arrive_v11(&empty[s]);   // slot's last use by this wg
-                store_acc_sw128_f32(dq, stageDQ, wtid, scale);
-                if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-                fence_proxy_async_shared();
-                if (wtid == 0) {
-                    tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           64, crow);
-                    tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, 96, crow);
-                    tma_store_commit_v34(); tma_bulk_wait0_v43();
+                {   float dq[32]; zeroN<32>(dq);
+                    run_gemm_dKdQ_te_issue_ho(dk + 32, dq, descDSmn, descDSk, descKhalf1, sQ_sw[s] + 4096);
+                    run_gemm_dVdKdQ_te_wait(dv, dk + 32, dq);
+                    if (wtid == 0) mbar_arrive_v11(&empty[s]);   // slot's last use by this wg
+                    store_acc_sw128_f32(dq, b1, wtid, scale);
                 }
+                consumer_sync();   // 256: both wgs' dQ half-tiles staged & cross-wg visible
+                if (wg == 0) {     // wg0 owns cols 0-63: sum k0.h0 + k1.h0, reduce
+                    #pragma unroll 4
+                    for (int i = wtid; i < Br * 64; i += 128) sS[0][i] += sdP[0][i];
+                    consumer_sync_wg0();
+                    fence_proxy_async_shared();
+                    if (wtid == 0) {
+                        tma_reduce_add_2d_v43(&tma_dq_red, sS[0],           0,  crow);
+                        tma_reduce_add_2d_v43(&tma_dq_red, sS[0] + 64 * 32, 32, crow);
+                        tma_store_commit_v34(); tma_bulk_wait0_v43();
+                    }
+                } else {           // wg1 owns cols 64-127: sum k0.h1 + k1.h1, reduce
+                    #pragma unroll 4
+                    for (int i = wtid; i < Br * 64; i += 128) sdP[1][i] += sS[1][i];
+                    consumer_sync_wg1();
+                    fence_proxy_async_shared();
+                    if (wtid == 0) {
+                        tma_reduce_add_2d_v43(&tma_dq_red, sdP[1],           64, crow);
+                        tma_reduce_add_2d_v43(&tma_dq_red, sdP[1] + 64 * 32, 96, crow);
+                        tma_store_commit_v34(); tma_bulk_wait0_v43();
+                    }
+                }
+                consumer_sync();   // 256: reduces drained before next q-tile overwrites sS/sdP
                 git++;
                 if (++qcC == nQTiles) { qcC = qc0; ++gC; }
             }
