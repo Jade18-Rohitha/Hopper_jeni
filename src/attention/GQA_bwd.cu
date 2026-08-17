@@ -14581,7 +14581,7 @@ void launch_gqa_backward_vp1(
 
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
-gqa_backward_vj1_kv(
+gqa_backward_vk1_kv(
     const __grid_constant__ CUtensorMap tma_K_sw,
     const __grid_constant__ CUtensorMap tma_V_sw,
     const __grid_constant__ CUtensorMap tma_Q_sw,
@@ -14612,9 +14612,6 @@ gqa_backward_vj1_kv(
     __shared__ __align__(8)    uint64_t full   [PD];
     __shared__ __align__(8)    uint64_t empty  [PD];
     __shared__ __align__(8)    uint64_t d_ready[PD];
-    __shared__ __align__(8)    uint64_t dq_ready[PD];
-    __shared__ __align__(8)    uint64_t dq_done [PD];
-    __shared__ int crow_s[PD];
     __shared__ int s_w;
 
     const int tid  = threadIdx.x;
@@ -14633,9 +14630,6 @@ gqa_backward_vj1_kv(
             mbar_init_v4(&full[i], 1);
             mbar_init_v4(&empty[i], 2);          // early-empty: each consumer wg signals independently
             mbar_init_v4(&d_ready[i], 1);
-            mbar_init_v4(&dq_ready[i], 2);
-            mbar_init_v4(&dq_done[i], 1);
-            mbar_arrive_v11(&dq_done[i]);   // Vj1: pre-arm (pipeline fill) -> buffer starts "free"
         }
     }
     __syncthreads();
@@ -14662,51 +14656,49 @@ gqa_backward_vj1_kv(
     // grabbed pair is {k_tile t, WKV-1-t} = CONSTANT work (causal pairs sum to a constant) -> no drift ->
     // the 132-CTA lockstep (and thus 96% L2) is preserved, UNLIKE plain consecutive chunks. Both items are
     // the SAME group, so the in-pair K/V prefetch is LOCAL (no far-group L2 pollution).
+    const int WKVpair = WKV / 2;   // Vk1: work-item = CONSECUTIVE k-tile PAIR {2p, 2p+1} (Bc-128-equiv)
     auto decodeKV = [&](int idx, int& b, int& hkv, int& k_tile, uint32_t& kvFlatRow, int& qc0, int& nIter) {
-        const int grp = idx / WKV, pos = idx % WKV;
-        k_tile = (pos & 1) ? (WKV - 1 - (pos >> 1)) : (pos >> 1);   // causal-paired within group
+        const int grp = idx / WKVpair, pos = idx % WKVpair;
+        k_tile = 2 * pos;                                          // A = 2p ; B = 2p+1 (consecutive)
         hkv = grp % Hkv; b = grp / Hkv;
         const int k_row0 = k_tile * Bc;
         kvFlatRow = (uint32_t)((b * Hkv + hkv) * S + k_row0);
-        qc0 = k_row0 / Br; nIter = G * (nQTiles - qc0);
+        qc0 = k_row0 / Br; nIter = G * (nQTiles - qc0);           // q-tiles >= A's rows
     };
-    auto loadKV = [&](int idx, int buf) {
-        int b_,hkv_,kt_,qc_,ni_; uint32_t kfr; decodeKV(idx,b_,hkv_,kt_,kfr,qc_,ni_);
-        mbar_expect_tx_v4(&mbar_kv[buf], bytesAtom * 4);
-        tma_load_2d_v4(&tma_K_sw, sK_sw[buf],           &mbar_kv[buf], 0,  kfr);
-        tma_load_2d_v4(&tma_K_sw, sK_sw[buf] + 64 * 64, &mbar_kv[buf], 64, kfr);
-        tma_load_2d_v4(&tma_V_sw, sV_sw[buf],           &mbar_kv[buf], 0,  kfr);
-        tma_load_2d_v4(&tma_V_sw, sV_sw[buf] + 64 * 64, &mbar_kv[buf], 64, kfr);
+    // Vk1: load BOTH k-tiles of the pair — A into buf0, B into buf1 (both resident, shared by Q/dO).
+    auto loadKV = [&](int idx, int /*buf ignored*/) {
+        int b_,hkv_,ktA,qc_,ni_; uint32_t kfrA; decodeKV(idx,b_,hkv_,ktA,kfrA,qc_,ni_);
+        const uint32_t kfrB = kfrA + (uint32_t)Bc;   // B = A+1 -> +Bc rows
+        mbar_expect_tx_v4(&mbar_kv[0], bytesAtom * 8);   // A+B (8 atoms)
+        tma_load_2d_v4(&tma_K_sw, sK_sw[0],           &mbar_kv[0], 0,  kfrA);
+        tma_load_2d_v4(&tma_K_sw, sK_sw[0] + 64 * 64, &mbar_kv[0], 64, kfrA);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[0],           &mbar_kv[0], 0,  kfrA);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[0] + 64 * 64, &mbar_kv[0], 64, kfrA);
+        tma_load_2d_v4(&tma_K_sw, sK_sw[1],           &mbar_kv[0], 0,  kfrB);
+        tma_load_2d_v4(&tma_K_sw, sK_sw[1] + 64 * 64, &mbar_kv[0], 64, kfrB);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[1],           &mbar_kv[0], 0,  kfrB);
+        tma_load_2d_v4(&tma_V_sw, sV_sw[1] + 64 * 64, &mbar_kv[0], 64, kfrB);
     };
     uint32_t kvpar[2] = {0,0};
     // CHUNK consecutive causal-paired work-items per grab: C-1 of C K/V boundaries are hidden by the
     // in-chunk LOCAL prefetch; only the chunk boundary is exposed. Larger C hides more but widens the
     // concurrent group span (132*C work-items) -> watch L2. Causal-pair order keeps each chunk balanced.
-    constexpr int CHUNK = 2;   // C=2 = L2 sweet spot (94.5%); C=4 thrashed to 84.5% for no SM-busy gain
-    // Prologue: grab first chunk, fresh-load its first item's K/V into buffer 0.
-    if (tid == 0) s_w = atomicAdd(gWork, CHUNK);
+    // Vk1: grab ONE pair-work-item at a time; loadKV loads BOTH k-tiles (A+B) into buf0/buf1.
+    if (tid == 0) s_w = atomicAdd(gWork, 1);
     __syncthreads();
-    int base = s_w;
-    int w    = base;
-    int pend = (base + CHUNK < totalW) ? (base + CHUNK) : totalW;
+    int w = s_w;
     if (wg == 2 && leader && w < totalW) loadKV(w, 0);
 
     uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0};
-    uint32_t qdpar[PD] = {0}, qrpar[PD] = {0};   // Vj1: persist across work-items (mbar phase continuity)
     int git = 0;
-    int curbuf = 0;
 
     while (w < totalW) {
-        const bool local = (w + 1 < pend);          // next item still in this chunk (same group)?
-        int wn;
-        if (local) { wn = w + 1; }
-        else { if (tid == 0) s_w = atomicAdd(gWork, CHUNK); __syncthreads(); wn = s_w; }
         int b, hkv, k_tile, qc0, nIter; uint32_t kvFlatRow;
         decodeKV(w, b, hkv, k_tile, kvFlatRow, qc0, nIter);
         const int k_row0 = k_tile * Bc;
 
-        if (wg == 2 && tid < 352) {
-            // -------- PRODUCER (tid 256-351) — syncs only among the 96 producer threads (bar 2,96) --------
+        if (wg == 2) {
+            // -------- PRODUCER (Q/dO ring; K/V for w already in buffer curbuf) --------
             int gP = 0, qcP = qc0;
             for (int it = 0; it < nIter; it++) {
                 const int s = git % PD;
@@ -14722,106 +14714,122 @@ gqa_backward_vj1_kv(
                     tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
                 }
                 if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }
-                asm volatile("bar.sync 2, 96;\n" ::: "memory");   // Vj1: producer-only (excludes reducer warp)
+                producer_sync();
                 if (leader) mbar_arrive_v11(&d_ready[s]);
                 git++;
                 if (++qcP == nQTiles) { qcP = qc0; ++gP; }
             }
-            if (leader && local && wn < totalW) loadKV(wn, curbuf ^ 1);
-        } else if (wg == 2) {
-            // -------- REDUCER warp (tid 352-383) — independent dQ reduce loop, NOT in producer_sync --------
-            if (tid == 352) {
-                for (int it = 0; it < nIter; it++) {
-                    const int rb = it & 1;
-                    mbar_wait_v4(&dq_ready[rb], qrpar[rb]); qrpar[rb] ^= 1;
-                    fence_proxy_async_shared();   // Vj1: cross-warp — see consumer's STS in async proxy
-                    const uint32_t crow = (uint32_t)crow_s[rb];
-                    tma_reduce_add_2d_v43(&tma_dq_red, sS [rb],           0u,  crow);
-                    tma_reduce_add_2d_v43(&tma_dq_red, sS [rb] + 64 * 32, 32u, crow);
-                    tma_reduce_add_2d_v43(&tma_dq_red, sdP[rb],           64u, crow);
-                    tma_reduce_add_2d_v43(&tma_dq_red, sdP[rb] + 64 * 32, 96u, crow);
-                    tma_store_commit_v34();
-                    tma_bulk_wait0_v43();   // Vj1: FULL drain before buffer-free (reduce done reading sS/sdP)
-                    mbar_arrive_v11(&dq_done[rb]);
-                }
-            }
+
         } else {
             // ---------------------- CONSUMER work-item (= V44 consumer + epilogue) ----------------------
-        mbar_wait_v4(&mbar_kv[curbuf], kvpar[curbuf]); kvpar[curbuf] ^= 1;   // K/V resident (prefetched)
+        mbar_wait_v4(&mbar_kv[0], kvpar[0]); kvpar[0] ^= 1;   // K/V resident (prefetched)
 
-        float dv[32]; zeroN<32>(dv);
-        float dk[32]; zeroN<32>(dk);
+        float dvA[32]; zeroN<32>(dvA);   float dkA[32]; zeroN<32>(dkA);   // Vk1: k-tile A accumulators
+        float dvB[32]; zeroN<32>(dvB);   float dkB[32]; zeroN<32>(dkB);   // Vk1: k-tile B accumulators
+        const int ktA = k_tile, ktB = k_tile + 1;
+        const int k_row0_A = k_row0, k_row0_B = k_row0 + Bc;
         int gC = 0, qcC = qc0;
         for (int it = 0; it < nIter; it++) {
             const int s = git % PD;
             const int q_row0 = qcC * Br;
             mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
             mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
-
-            float dPacc[32];
-            if (wg == 0) {
-                float acc[32]; zeroN<32>(acc);
-                run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descGemmB[curbuf]);
-                if (qcC == qc0) fused_p_stsm<Bc, true >(acc, sP, sLSE[s], wtid, q_row0, k_row0, scale2);
-                else            fused_p_stsm<Bc, false>(acc, sP, sLSE[s], wtid, 0,       0,      scale2);
-            } else {
-                zeroN<32>(dPacc);
-                run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB[curbuf]);
-            }
-            consumer_sync();
-
-            run_gemm_dVdK_half_te_issue_hoA(dv, descP, sdO_sw[s] + wg * 4096);
-
-            if (wg == 1) fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
-            consumer_sync();
-
+            const bool doB = (qcC > ktA);   // B (rows ktB*Bc) causal-active only when qc >= ktB
             float dq[32]; zeroN<32>(dq);
-            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf[curbuf], sQ_sw[s] + wg * 4096);
-            run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-            if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
+
+            // ===== k-tile A (shares sQ/sdO with B) =====
+            {   float dPacc[32];
+                if (wg == 0) {
+                    float acc[32]; zeroN<32>(acc);
+                    run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descGemmB[0]);
+                    if (qcC == ktA) fused_p_stsm<Bc, true >(acc, sP, sLSE[s], wtid, q_row0, k_row0_A, scale2);
+                    else            fused_p_stsm<Bc, false>(acc, sP, sLSE[s], wtid, 0, 0, scale2);
+                } else { zeroN<32>(dPacc); run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB[0]); }
+                consumer_sync();
+                run_gemm_dVdK_half_te_issue_hoA(dvA, descP, sdO_sw[s] + wg * 4096);
+                if (wg == 1) fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
+                consumer_sync();
+                float dqA[32]; zeroN<32>(dqA);
+                run_gemm_dKdQ_te_issue_ho(dkA, dqA, descDSmn, descDSk, descKhalf[0], sQ_sw[s] + wg * 4096);
+                run_gemm_dVdKdQ_te_wait(dvA, dkA, dqA);
+                #pragma unroll
+                for (int i = 0; i < 32; i++) dq[i] += dqA[i];
+            }
+            // ===== k-tile B (only if causal-active) =====
+            if (doB) {
+                consumer_sync();   // A's sP/sDS reads drained -> safe to overwrite for B
+                float dPacc[32];
+                if (wg == 0) {
+                    float acc[32]; zeroN<32>(acc);
+                    run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descGemmB[1]);
+                    if (qcC == ktB) fused_p_stsm<Bc, true >(acc, sP, sLSE[s], wtid, q_row0, k_row0_B, scale2);
+                    else            fused_p_stsm<Bc, false>(acc, sP, sLSE[s], wtid, 0, 0, scale2);
+                } else { zeroN<32>(dPacc); run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descGemmB[1]); }
+                consumer_sync();
+                run_gemm_dVdK_half_te_issue_hoA(dvB, descP, sdO_sw[s] + wg * 4096);
+                if (wg == 1) fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
+                consumer_sync();
+                float dqB[32]; zeroN<32>(dqB);
+                run_gemm_dKdQ_te_issue_ho(dkB, dqB, descDSmn, descDSk, descKhalf[1], sQ_sw[s] + wg * 4096);
+                run_gemm_dVdKdQ_te_wait(dvB, dkB, dqB);
+                #pragma unroll
+                for (int i = 0; i < 32; i++) dq[i] += dqB[i];
+            }
+
+            if (wtid == 0) mbar_arrive_v11(&empty[s]);
             const int db = it & 1;
-            mbar_wait_v4(&dq_done[db], qdpar[db]); qdpar[db] ^= 1;   // Vj1: buffer free (pre-armed)
             float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
             store_acc_sw128_f32(dq, stageDQ, wtid, scale);
-            if (wg == 0 && wtid == 0) { const int hqC = hkv * G + gC; crow_s[db] = (int)((b * Hq + hqC) * S + qcC * Br); }
             if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
             fence_proxy_async_shared();
-            if (wtid == 0) mbar_arrive_v11(&dq_ready[db]);
+            if (wtid == 0) {
+                const int hqC = hkv * G + gC;
+                const uint32_t crow = (uint32_t)((b * Hq + hqC) * S + qcC * Br);
+                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           (uint32_t)(wg * 64),      crow);
+                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow);
+                tma_store_commit_v34();
+                tma_bulk_wait1_v43();
+            }
             git++;
             if (++qcC == nQTiles) { qcC = qc0; ++gC; }
         }
 
-        // epilogue: producer is done with this work-item (rendezvous below) -> sQ ring is FREE; stage
-        // dV/dK into it exactly like V44 (no bridge, so no sS detour / no drain needed).
-        bf16 *qflat    = reinterpret_cast<bf16*>(&sQ_sw[0][0]);
-        bf16 *stage_dv = qflat + wg * 4096;
-        bf16 *stage_dk = qflat + 8192 + wg * 4096;
-        fence_operandN<32>(dv);
-        stage_acc_bf16_s<64, 64>(dv, stage_dv, wtid, 1.0f);
-        fence_operandN<32>(dk);
-        stage_acc_bf16_s<64, 64>(dk, stage_dk, wtid, scale);
+        // epilogue: store BOTH k-tiles' dV/dK (A at kvFlatRow, B at +Bc rows). Reuse sQ ring to stage.
+        bf16 *qflat = reinterpret_cast<bf16*>(&sQ_sw[0][0]);
+        {   bf16 *stg_dv = qflat + wg * 4096, *stg_dk = qflat + 8192 + wg * 4096;
+            fence_operandN<32>(dvA); stage_acc_bf16_s<64, 64>(dvA, stg_dv, wtid, 1.0f);
+            fence_operandN<32>(dkA); stage_acc_bf16_s<64, 64>(dkA, stg_dk, wtid, scale);
+            consumer_sync(); fence_proxy_async_shared();
+            if (wtid == 0) {
+                tma_store_2d_v34(&tma_dV_st, stg_dv, (uint32_t)(wg * 64), kvFlatRow);
+                tma_store_2d_v34(&tma_dK_st, stg_dk, (uint32_t)(wg * 64), kvFlatRow);
+                tma_store_commit_v34(); tma_store_wait_v34();
+            }
+        }
         consumer_sync();
-        fence_proxy_async_shared();
-        if (wtid == 0) {
-            tma_store_2d_v34(&tma_dV_st, stage_dv, (uint32_t)(wg * 64), kvFlatRow);
-            tma_store_2d_v34(&tma_dK_st, stage_dk, (uint32_t)(wg * 64), kvFlatRow);
-            tma_store_commit_v34();
-            tma_store_wait_v34();
+        {   bf16 *stg_dv = qflat + wg * 4096, *stg_dk = qflat + 8192 + wg * 4096;
+            fence_operandN<32>(dvB); stage_acc_bf16_s<64, 64>(dvB, stg_dv, wtid, 1.0f);
+            fence_operandN<32>(dkB); stage_acc_bf16_s<64, 64>(dkB, stg_dk, wtid, scale);
+            consumer_sync(); fence_proxy_async_shared();
+            if (wtid == 0) {
+                const uint32_t kvRowB = kvFlatRow + (uint32_t)Bc;
+                tma_store_2d_v34(&tma_dV_st, stg_dv, (uint32_t)(wg * 64), kvRowB);
+                tma_store_2d_v34(&tma_dK_st, stg_dk, (uint32_t)(wg * 64), kvRowB);
+                tma_store_commit_v34(); tma_store_wait_v34();
+            }
         }
         }   // end CONSUMER branch
         __syncthreads();   // work-item boundary rendezvous (orders the alt-buffer K/V write)
-        w = wn;
-        curbuf ^= 1;
-        if (!local && w < totalW) {   // new chunk: base K/V wasn't prefetched -> fresh-load (exposed 1/C)
-            pend = (w + CHUNK < totalW) ? (w + CHUNK) : totalW;
-            if (wg == 2 && leader) loadKV(w, curbuf);
-        }
+        if (tid == 0) s_w = atomicAdd(gWork, 1);
+        __syncthreads();
+        w = s_w;
+        if (wg == 2 && leader && w < totalW) loadKV(w, 0);   // fresh-load next pair (exposed)
     }       // end persistent while
 }
 
 
 template<int Br, int Bc, int D>
-void launch_gqa_backward_vj1(
+void launch_gqa_backward_vk1(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
     const bf16 *d_dO, const float *d_LSE,
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
@@ -14840,7 +14848,7 @@ void launch_gqa_backward_vj1(
             CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
             CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
         if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
-            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) vj1: %s\n", e); exit(1); }
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) vk1: %s\n", e); exit(1); }
         return desc;
     };
     const uint64_t Rq  = (uint64_t)B * Hq  * S;
@@ -14855,7 +14863,7 @@ void launch_gqa_backward_vj1(
         uint32_t box[2]={64u,64u}; uint32_t eStride[2]={1,1};
         CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)ptr,gSize,gStride,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out vj1: %s\n",e);exit(1);} return desc; };
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out vk1: %s\n",e);exit(1);} return desc; };
     CUtensorMap tma_dV_st = make_tma_out(d_dV, Rkv);
     CUtensorMap tma_dK_st = make_tma_out(d_dK, Rkv);
     auto make_tma_red = [&](const float* ptr, uint64_t rows) {
@@ -14864,7 +14872,7 @@ void launch_gqa_backward_vj1(
         uint32_t box[2]={32u,64u}; uint32_t eStride[2]={1,1};
         CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gSize,gStride,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red vj1: %s\n",e);exit(1);} return desc; };
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red vk1: %s\n",e);exit(1);} return desc; };
 
     const long drowN = (long)B * Hq * S;
     static float* d_Drow  = nullptr;
@@ -14893,12 +14901,12 @@ void launch_gqa_backward_vj1(
     // counter (gWork) so the concurrent working set stays L2-resident (cuDNN's tile-scheduler pattern).
     int dev = 0; CUDA_CHECK(cudaGetDevice(&dev));
     int nSM = 0; CUDA_CHECK(cudaDeviceGetAttribute(&nSM, cudaDevAttrMultiProcessorCount, dev));
-    const int totalW = B * Hkv * (S / Bc);
+    const int totalW = B * Hkv * (S / Bc / 2);   // Vk1: work-items are consecutive k-tile PAIRS
     static int* d_gWork = nullptr;
     if (!d_gWork) CUDA_CHECK(cudaMalloc(&d_gWork, sizeof(int)));
     CUDA_CHECK(cudaMemset(d_gWork, 0, sizeof(int)));
     constexpr dim3 BLOCK(384);
-    gqa_backward_vj1_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
+    gqa_backward_vk1_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale, d_gWork, totalW);
 
@@ -15788,9 +15796,9 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── Vp1 Br=64 Bc=64 PERSISTENT V44 warm-bridge (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_vj1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    launch_gqa_backward_vk1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── Vj1 Br=64 Bc=64  separate reducer warp (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── Vk1 Br=64 Bc=64  block-2 (Bc-128-equiv, halve Q/dO) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_vr1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -16135,10 +16143,10 @@ int main(){
     }
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_vj1<Br2,Bc2,D>(
+            [&](){ launch_gqa_backward_vk1<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd Vj1 Br=64, Bc=64  separate reducer warp  (Hopper SM_90)", s);
+        displayStats("GQA bwd Vk1 Br=64, Bc=64  block-2 (halve Q/dO L2 traffic)  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
