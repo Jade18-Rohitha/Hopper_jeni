@@ -14759,7 +14759,7 @@ gqa_backward_vc8_kv(
                 if (wtid == 0) {
                     tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           0,  crow);
                     tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, 32, crow);
-                    tma_store_commit_v34(); tma_bulk_wait1_v43();
+                    tma_store_commit_v34(); tma_bulk_wait0_v43();
                 }
                 // barrier: half-0's async reduce must finish READING stageDQ before half-1 overwrites it
                 // (only thread 0 waits above; this makes threads 1-127 wait for that completion too).
@@ -14776,7 +14776,7 @@ gqa_backward_vc8_kv(
                 if (wtid == 0) {
                     tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           64, crow);
                     tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, 96, crow);
-                    tma_store_commit_v34(); tma_bulk_wait1_v43();
+                    tma_store_commit_v34(); tma_bulk_wait0_v43();
                 }
                 git++;
                 if (++qcC == nQTiles) { qcC = qc0; ++gC; }
