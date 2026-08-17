@@ -14762,8 +14762,9 @@ gqa_backward_vc8_kv(
                 // dK (both halves) + dQ. Each wg reduces its OWN k-tile's full-D dQ into its OWN
                 // global accumulator (wg0->tma_dq_red, wg1->tma_dq_red2) -> NO cross-wg barrier and
                 // NO intra-CTA same-address hazard; the convert kernel sums the two accumulators.
-                // The two D-halves use SEPARATE stage buffers (bh0/bh1) so wait1 overlaps the reduce
-                // with the next half's compute (Vp1-style double-buffer), instead of a wait0 drain.
+                // h0's reduce is committed but NOT waited, so it overlaps h1's compute; ONE wait0 at
+                // the end drains both, and a per-wg barrier makes all 128 threads honor the drain
+                // before the next q-tile overwrites bh0/bh1 (only thread 0 issues/waits the reduce).
                 const CUtensorMap* myred = (wg == 0) ? &tma_dq_red : &tma_dq_red2;
                 float* bh0 = (wg == 0) ? sS[0] : sdP[0];
                 float* bh1 = (wg == 0) ? sS[1] : sdP[1];
@@ -14773,10 +14774,10 @@ gqa_backward_vc8_kv(
                     store_acc_sw128_f32(dq, bh0, wtid, scale);
                     if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
                     fence_proxy_async_shared();
-                    if (wtid == 0) {
+                    if (wtid == 0) {   // commit, DON'T wait — overlap with h1's compute
                         tma_reduce_add_2d_v43(myred, bh0,           0,  crow);
                         tma_reduce_add_2d_v43(myred, bh0 + 64 * 32, 32, crow);
-                        tma_store_commit_v34(); tma_bulk_wait1_v43();
+                        tma_store_commit_v34();
                     }
                 }
                 {   float dq[32]; zeroN<32>(dq);
@@ -14786,12 +14787,13 @@ gqa_backward_vc8_kv(
                     store_acc_sw128_f32(dq, bh1, wtid, scale);
                     if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
                     fence_proxy_async_shared();
-                    if (wtid == 0) {
+                    if (wtid == 0) {   // commit h1, then drain BOTH h0+h1 reduces
                         tma_reduce_add_2d_v43(myred, bh1,           64, crow);
                         tma_reduce_add_2d_v43(myred, bh1 + 64 * 32, 96, crow);
-                        tma_store_commit_v34(); tma_bulk_wait1_v43();
+                        tma_store_commit_v34(); tma_bulk_wait0_v43();
                     }
                 }
+                if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // all threads honor the drain
                 git++;
                 if (++qcC == nQTiles) { qcC = qc0; ++gC; }
             }
