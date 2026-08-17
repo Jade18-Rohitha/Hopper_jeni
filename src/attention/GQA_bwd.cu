@@ -14729,8 +14729,10 @@ gqa_backward_vc8_kv(
                 // S = Q @ K_my^T  (masked per this wg's k-tile) ; dP = dO @ V_my^T
                 float acc[32]; zeroN<32>(acc);
                 run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descK);
-                if (qcC == qc0) fused_p_stsm<Bc, true >(acc, sP[wg], sLSE[s], wtid, q_row0, k_row0, scale2);
-                else            fused_p_stsm<Bc, false>(acc, sP[wg], sLSE[s], wtid, 0,       0,      scale2);
+                // diagonal/masked whenever q-tile <= THIS wg's own k-tile (ktA+wg); wg1's diagonal is at
+                // qcC=2p+1, NOT qc0=2p — the true-mask also fully-masks the qcC<mykt (wg1 q=2p) tile.
+                if (qcC <= ktA + wg) fused_p_stsm<Bc, true >(acc, sP[wg], sLSE[s], wtid, q_row0, k_row0, scale2);
+                else                 fused_p_stsm<Bc, false>(acc, sP[wg], sLSE[s], wtid, 0,       0,      scale2);
                 float dPacc[32]; zeroN<32>(dPacc);
                 run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descV);
                 if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
