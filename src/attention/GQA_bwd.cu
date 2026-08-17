@@ -14772,6 +14772,7 @@ gqa_backward_vh1_kv(
                 tma_store_commit_v34();
                 tma_bulk_wait0_v43();
             }
+            if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // Vh1: all threads wait leader drain
             // Vh1: dV reduce (scale 1.0) -> reuse stageDQ, then dK reduce (scale)
             store_acc_sw128_f32(dv, stageDQ, wtid, 1.0f);
             if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
@@ -14782,6 +14783,7 @@ gqa_backward_vh1_kv(
                 tma_store_commit_v34();
                 tma_bulk_wait0_v43();
             }
+            if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // Vh1: all threads wait leader drain
             store_acc_sw128_f32(dk, stageDQ, wtid, scale);
             if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
             fence_proxy_async_shared();
