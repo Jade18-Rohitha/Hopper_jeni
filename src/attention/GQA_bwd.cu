@@ -15774,6 +15774,10 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── Vp1 Br=64 Bc=64 PERSISTENT V44 warm-bridge (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
+    launch_gqa_backward_vc8<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+    check("── Vc8 Br=64 Bc=64 COMBO one-full-k-tile-per-wg shared Q/dO (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+
     launch_gqa_backward_vr1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── Vr1 Br=64 Bc=64 per-hq main + cuDNN G-head reduce dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
