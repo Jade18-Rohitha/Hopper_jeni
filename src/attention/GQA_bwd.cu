@@ -14761,6 +14761,9 @@ gqa_backward_vc8_kv(
                     tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, 32, crow);
                     tma_store_commit_v34(); tma_bulk_wait1_v43();
                 }
+                // barrier: half-0's async reduce must finish READING stageDQ before half-1 overwrites it
+                // (only thread 0 waits above; this makes threads 1-127 wait for that completion too).
+                if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
 
                 // dK[:,64:128] += dS^T @ Q[:,64:128] ; dQ[:,64:128] = dS @ K[:,64:128]
                 zeroN<32>(dq);
