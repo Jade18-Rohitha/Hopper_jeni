@@ -14691,6 +14691,7 @@ gqa_backward_vj1_kv(
     if (wg == 2 && leader && w < totalW) loadKV(w, 0);
 
     uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0};
+    uint32_t qdpar[PD] = {0}, qrpar[PD] = {0};   // Vj1: persist across work-items (mbar phase continuity)
     int git = 0;
     int curbuf = 0;
 
@@ -14729,7 +14730,6 @@ gqa_backward_vj1_kv(
         } else if (wg == 2) {
             // -------- REDUCER warp (tid 352-383) — independent dQ reduce loop, NOT in producer_sync --------
             if (tid == 352) {
-                uint32_t qrpar[PD] = {0};
                 for (int it = 0; it < nIter; it++) {
                     const int rb = it & 1;
                     mbar_wait_v4(&dq_ready[rb], qrpar[rb]); qrpar[rb] ^= 1;
@@ -14750,7 +14750,6 @@ gqa_backward_vj1_kv(
 
         float dv[32]; zeroN<32>(dv);
         float dk[32]; zeroN<32>(dk);
-        uint32_t qdpar[PD] = {0};
         int gC = 0, qcC = qc0;
         for (int it = 0; it < nIter; it++) {
             const int s = git % PD;
