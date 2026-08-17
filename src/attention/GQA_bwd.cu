@@ -931,24 +931,6 @@ __device__ __forceinline__ void wgmma_m64n128k16_tA(float d[64], uint64_t descA,
           "+f"(d[56]), "+f"(d[57]), "+f"(d[58]), "+f"(d[59]), "+f"(d[60]), "+f"(d[61]), "+f"(d[62]), "+f"(d[63])
         : "l"(descA), "l"(descB));
 }
-__device__ __forceinline__ void wgmma_m64n128k16_tAtB(float d[64], uint64_t descA, uint64_t descB) {
-    asm volatile(
-        "wgmma.mma_async.sync.aligned.m64n128k16.f32.bf16.bf16 "
-        "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
-        "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31,"
-        "%32,%33,%34,%35,%36,%37,%38,%39,%40,%41,%42,%43,%44,%45,%46,%47,"
-        "%48,%49,%50,%51,%52,%53,%54,%55,%56,%57,%58,%59,%60,%61,%62,%63}, "
-        "%64, %65, 1, 1, 1, 1, 1;\n"   // scaleD, scaleA, scaleB, transA=1, transB=1 (dV=Pᵀ·dO, dK=dSᵀ·Q full-width)
-        : "+f"(d[0]),  "+f"(d[1]),  "+f"(d[2]),  "+f"(d[3]),  "+f"(d[4]),  "+f"(d[5]),  "+f"(d[6]),  "+f"(d[7]),
-          "+f"(d[8]),  "+f"(d[9]),  "+f"(d[10]), "+f"(d[11]), "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]),
-          "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]), "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]),
-          "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]), "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31]),
-          "+f"(d[32]), "+f"(d[33]), "+f"(d[34]), "+f"(d[35]), "+f"(d[36]), "+f"(d[37]), "+f"(d[38]), "+f"(d[39]),
-          "+f"(d[40]), "+f"(d[41]), "+f"(d[42]), "+f"(d[43]), "+f"(d[44]), "+f"(d[45]), "+f"(d[46]), "+f"(d[47]),
-          "+f"(d[48]), "+f"(d[49]), "+f"(d[50]), "+f"(d[51]), "+f"(d[52]), "+f"(d[53]), "+f"(d[54]), "+f"(d[55]),
-          "+f"(d[56]), "+f"(d[57]), "+f"(d[58]), "+f"(d[59]), "+f"(d[60]), "+f"(d[61]), "+f"(d[62]), "+f"(d[63])
-        : "l"(descA), "l"(descB));
-}
 // One full m64n128 GEMM over NK k-steps (K-major A, K-major B).  For dQ=dS·K:
 // contraction K = Bc = 64 -> NK = 4, SBO = (Bc/8)*128 = 1024.
 template<int NK>
@@ -5824,25 +5806,6 @@ __device__ __forceinline__ void run_gemm_dVdK_half_te_issue_hoA(float acc[32], u
         wgmma_m64n64k16_tAtB(acc, dA, dB);
     }
     wgmma_commit();
-}
-
-// Vm1: full-width m64n128 dV (= Pᵀ·dO) and dK (= dSᵀ·Q) — one warpgroup owns the WHOLE D=128.
-// acc[64] (m64n128, 64 regs). Same descriptor conventions as the 64x64 half (tAtB), full B (no D-half offset).
-__device__ __forceinline__ void run_gemm_dV_full_te_issue(float acc[64], uint64_t descA_base, const bf16* B_sw) {
-    fence_proxy_async_shared();
-    fence_operandN<64>(acc);
-    wgmma_fence();
-#pragma unroll
-    for (int k = 0; k < 4; k++) {
-        uint64_t dA = descA_base + (uint64_t)(k * 128);
-        uint64_t dB = make_desc_sw128_MN(B_sw + k * 1024);
-        wgmma_m64n128k16_tAtB(acc, dA, dB);
-    }
-    wgmma_commit();
-}
-__device__ __forceinline__ void run_gemm_dVdKfull_te_wait(float acc[64]) {
-    wgmma_wait0();
-    fence_operandN<64>(acc);
 }
 // V43: dV — BOTH A(sP invariant) and B(sdO_sw[s] half, PD-variant → hoisted base+s-advance) hoisted; MN +k·128.
 __device__ __forceinline__ void run_gemm_dVdK_half_te_issue_hoAB(float acc[32], uint64_t descA_base,
@@ -12138,17 +12101,6 @@ __device__ __forceinline__ void run_gemm_dKdQ_te_issue_ho(
                                  descKhalf_base + (uint64_t)(k * 128));
     wgmma_commit();
 }
-
-// Vm1: dQ-only half (m64n64) — the dQ part of run_gemm_dKdQ, isolated for quantity-split.
-__device__ __forceinline__ void run_gemm_dQ_half_te_issue(float dq[32], uint64_t descDSk_base, uint64_t descKhalf_base) {
-    fence_proxy_async_shared();
-    fence_operandN<32>(dq);
-    wgmma_fence();
-#pragma unroll
-    for (int k = 0; k < 4; k++)
-        wgmma_m64n64k16_tB(dq, descDSk_base + (uint64_t)(k * 2), descKhalf_base + (uint64_t)(k * 128));
-    wgmma_commit();
-}
 // V4b1 (dK/dV-only kernel): the dK half of run_gemm_dKdQ (dS^T @ Q), no dQ. + a dv/dk-only wait.
 __device__ __forceinline__ void run_gemm_dK_te_issue(float dk[32], uint64_t descDSmn_base, const bf16* sQ_half) {
     fence_proxy_async_shared();
@@ -14629,7 +14581,7 @@ void launch_gqa_backward_vp1(
 
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(384, 1)
-gqa_backward_vm1_kv(
+gqa_backward_vn1_kv(
     const __grid_constant__ CUtensorMap tma_K_sw,
     const __grid_constant__ CUtensorMap tma_V_sw,
     const __grid_constant__ CUtensorMap tma_Q_sw,
@@ -14775,7 +14727,8 @@ gqa_backward_vm1_kv(
             // ---------------------- CONSUMER work-item (= V44 consumer + epilogue) ----------------------
         mbar_wait_v4(&mbar_kv[curbuf], kvpar[curbuf]); kvpar[curbuf] ^= 1;   // K/V resident (prefetched)
 
-        float acc64[64]; zeroN<64>(acc64);   // Vm1: PERSISTENT m64n128 accumulator — wg0=dV, wg1=dK (64 regs)
+        float dv[32]; zeroN<32>(dv);
+        float dk[32]; zeroN<32>(dk);
         int gC = 0, qcC = qc0;
         for (int it = 0; it < nIter; it++) {
             const int s = git % PD;
@@ -14795,29 +14748,26 @@ gqa_backward_vm1_kv(
             }
             consumer_sync();
 
-            // wg0: dV (full m64n128, += Pᵀ·dO). wg1: fuse_dS -> sDS.
-            if (wg == 0) run_gemm_dV_full_te_issue(acc64, descP, sdO_sw[s]);
-            else         fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
+            run_gemm_dVdK_half_te_issue_hoA(dv, descP, sdO_sw[s] + wg * 4096);
+
+            if (wg == 1) fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
             consumer_sync();
 
-            // wg1: dK (full m64n128, += dSᵀ·Q). dQ half (both wgs, D-split).
-            if (wg == 1) run_gemm_dV_full_te_issue(acc64, descDSmn, sQ_sw[s]);
             float dq[32]; zeroN<32>(dq);
-            run_gemm_dQ_half_te_issue(dq, descDSk, descKhalf[curbuf]);
-            wgmma_wait0();
-            fence_operandN<64>(acc64); fence_operandN<32>(dq);
-
-            if (wtid == 0) mbar_arrive_v11(&empty[s]);
+            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf[curbuf], sQ_sw[s] + wg * 4096);
+            run_gemm_dVdKdQ_te_wait(dv, dk, dq);
+            if (wtid == 0) mbar_arrive_v11(&empty[s]);   // early-empty (2-count): slot's true last use
             const int db = it & 1;
             float* stageDQ = (wg == 0) ? sS[db] : sdP[db];
-            store_acc_sw128_f32(dq, stageDQ, wtid, scale);
+            store_acc_dealias(dq, stageDQ, wtid, scale);
             if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
             fence_proxy_async_shared();
             if (wtid == 0) {
                 const int hqC = hkv * G + gC;
                 const uint32_t crow = (uint32_t)((b * Hq + hqC) * S + qcC * Br);
-                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           (uint32_t)(wg * 64),      crow);
-                tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow);
+                const uint32_t bg = crow >> 3;
+                tma_reduce_add_3d_v4d(&tma_dq_red, stageDQ,           (uint32_t)(wg * 64),      bg, 0u);
+                tma_reduce_add_3d_v4d(&tma_dq_red, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), bg, 0u);
                 tma_store_commit_v34();
                 tma_bulk_wait1_v43();
             }
@@ -14825,25 +14775,22 @@ gqa_backward_vm1_kv(
             if (++qcC == nQTiles) { qcC = qc0; ++gC; }
         }
 
-        // epilogue: wg0 owns dV[64×128], wg1 owns dK[64×128] — store full-width as two D-halves.
-        bf16 *qflat = reinterpret_cast<bf16*>(&sQ_sw[0][0]);
-        bf16 *stg = qflat + wg * 4096;
-        const float epi_scl = (wg == 0) ? 1.0f : scale;
-        fence_operandN<64>(acc64);
-        stage_acc_bf16_s<64, 64>(acc64, stg, wtid, epi_scl);          // D-half [0,64)
-        consumer_sync(); fence_proxy_async_shared();
-        if (wtid == 0) {
-            if (wg == 0) tma_store_2d_v34(&tma_dV_st, stg, 0u, kvFlatRow);
-            else         tma_store_2d_v34(&tma_dK_st, stg, 0u, kvFlatRow);
-            tma_store_commit_v34(); tma_store_wait_v34();
-        }
+        // epilogue: producer is done with this work-item (rendezvous below) -> sQ ring is FREE; stage
+        // dV/dK into it exactly like V44 (no bridge, so no sS detour / no drain needed).
+        bf16 *qflat    = reinterpret_cast<bf16*>(&sQ_sw[0][0]);
+        bf16 *stage_dv = qflat + wg * 4096;
+        bf16 *stage_dk = qflat + 8192 + wg * 4096;
+        fence_operandN<32>(dv);
+        stage_acc_bf16_s<64, 64>(dv, stage_dv, wtid, 1.0f);
+        fence_operandN<32>(dk);
+        stage_acc_bf16_s<64, 64>(dk, stage_dk, wtid, scale);
         consumer_sync();
-        stage_acc_bf16_s<64, 64>(acc64 + 32, stg, wtid, epi_scl);     // D-half [64,128)
-        consumer_sync(); fence_proxy_async_shared();
+        fence_proxy_async_shared();
         if (wtid == 0) {
-            if (wg == 0) tma_store_2d_v34(&tma_dV_st, stg, 64u, kvFlatRow);
-            else         tma_store_2d_v34(&tma_dK_st, stg, 64u, kvFlatRow);
-            tma_store_commit_v34(); tma_store_wait_v34();
+            tma_store_2d_v34(&tma_dV_st, stage_dv, (uint32_t)(wg * 64), kvFlatRow);
+            tma_store_2d_v34(&tma_dK_st, stage_dk, (uint32_t)(wg * 64), kvFlatRow);
+            tma_store_commit_v34();
+            tma_store_wait_v34();
         }
         }   // end CONSUMER branch
         __syncthreads();   // work-item boundary rendezvous (orders the alt-buffer K/V write)
@@ -14858,7 +14805,7 @@ gqa_backward_vm1_kv(
 
 
 template<int Br, int Bc, int D>
-void launch_gqa_backward_vm1(
+void launch_gqa_backward_vn1(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
     const bf16 *d_dO, const float *d_LSE,
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
@@ -14877,7 +14824,7 @@ void launch_gqa_backward_vm1(
             CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
             CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
         if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
-            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) vm1: %s\n", e); exit(1); }
+            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) vn1: %s\n", e); exit(1); }
         return desc;
     };
     const uint64_t Rq  = (uint64_t)B * Hq  * S;
@@ -14892,7 +14839,7 @@ void launch_gqa_backward_vm1(
         uint32_t box[2]={64u,64u}; uint32_t eStride[2]={1,1};
         CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)ptr,gSize,gStride,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out vm1: %s\n",e);exit(1);} return desc; };
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out vn1: %s\n",e);exit(1);} return desc; };
     CUtensorMap tma_dV_st = make_tma_out(d_dV, Rkv);
     CUtensorMap tma_dK_st = make_tma_out(d_dK, Rkv);
     auto make_tma_red = [&](const float* ptr, uint64_t rows) {
@@ -14901,7 +14848,15 @@ void launch_gqa_backward_vm1(
         uint32_t box[2]={32u,64u}; uint32_t eStride[2]={1,1};
         CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gSize,gStride,box,eStride,
             CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red vm1: %s\n",e);exit(1);} return desc; };
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red vn1: %s\n",e);exit(1);} return desc; };
+    auto make_tma_red_3d = [&](const float* ptr, uint64_t rows) {
+        CUtensorMap desc{};
+        uint64_t gSize[3]={(uint64_t)D, rows/8, 8};
+        uint64_t gStride[2]={(uint64_t)8*D*sizeof(float), (uint64_t)D*sizeof(float)};
+        uint32_t box[3]={32u,8u,8u}; uint32_t eStride[3]={1,1,1};
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,3,(void*)ptr,gSize,gStride,box,eStride,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red_3d vn1: %s\n",e);exit(1);} return desc; };
 
     const long drowN = (long)B * Hq * S;
     static float* d_Drow  = nullptr;
@@ -14920,7 +14875,7 @@ void launch_gqa_backward_vm1(
         dq_cap = dqN;
     }
     CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
-    CUtensorMap tma_dq_red = make_tma_red(d_dq_accum, (uint64_t)B * Hq * S);
+    CUtensorMap tma_dq_red = make_tma_red_3d(d_dq_accum, (uint64_t)B * Hq * S);
 
     const int  dBlock = 256;
     const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
@@ -14935,7 +14890,7 @@ void launch_gqa_backward_vm1(
     if (!d_gWork) CUDA_CHECK(cudaMalloc(&d_gWork, sizeof(int)));
     CUDA_CHECK(cudaMemset(d_gWork, 0, sizeof(int)));
     constexpr dim3 BLOCK(384);
-    gqa_backward_vm1_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
+    gqa_backward_vn1_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
         tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale, d_gWork, totalW);
 
@@ -15825,9 +15780,9 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── Vp1 Br=64 Bc=64 PERSISTENT V44 warm-bridge (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_vm1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    launch_gqa_backward_vn1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── Vm1 Br=64 Bc=64  quantity-split m64n128 dV/dK (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── Vn1 Br=64 Bc=64  de-aliased dQ store (kill bank conflicts) (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_vr1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -16172,10 +16127,10 @@ int main(){
     }
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_vm1<Br2,Bc2,D>(
+            [&](){ launch_gqa_backward_vn1<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd Vm1 Br=64, Bc=64  quantity-split m64n128 dV/dK  (Hopper SM_90)", s);
+        displayStats("GQA bwd Vn1 Br=64, Bc=64  de-aliased dQ store  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
