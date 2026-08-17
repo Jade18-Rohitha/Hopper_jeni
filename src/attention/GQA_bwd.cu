@@ -1849,6 +1849,17 @@ __global__ void convert_dq_accum_to_bf16_v6(const float4 * __restrict__ in, uint
         out[i] = *reinterpret_cast<const uint2*>(o);
     }
 }
+// Vc8: sum two fp32 dQ accumulators (wg0 + wg1 private) -> bf16, vectorized float4->uint2.
+__global__ void convert_dq_accum2_sum_v6(const float4 * __restrict__ inA, const float4 * __restrict__ inB,
+                                         uint2 * __restrict__ out, long n4) {
+    long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n4) {
+        float4 a = inA[i], b = inB[i];
+        bf16 o[4] = { __float2bfloat16(a.x + b.x), __float2bfloat16(a.y + b.y),
+                      __float2bfloat16(a.z + b.z), __float2bfloat16(a.w + b.w) };
+        out[i] = *reinterpret_cast<const uint2*>(o);
+    }
+}
 
 // ── V5 — fused dQ + dK + dV ──  Grid (B,Hkv,S/Bc), 128 threads (one warpgroup).
 //   Persistent (per K-tile): K swizzled (S=Q·Kᵀ B), K plain (dQ=dS·K B), V swizzled.
@@ -14589,6 +14600,7 @@ gqa_backward_vc8_kv(
     const __grid_constant__ CUtensorMap tma_dV_st,
     const __grid_constant__ CUtensorMap tma_dK_st,
     const __grid_constant__ CUtensorMap tma_dq_red,
+    const __grid_constant__ CUtensorMap tma_dq_red2,   // Vc8: wg1's private dQ accumulator (summed in convert)
     const float * __restrict__ d_Drow,
     const float * __restrict__ d_LSE,
     bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV,
@@ -14747,47 +14759,39 @@ gqa_backward_vc8_kv(
                 const int hqC = hkv * G + gC;
                 const uint32_t crow = (uint32_t)((b * Hq + hqC) * S + qcC * Br);
 
-                // dK (both halves, accumulated) + dQ. dQ[q] needs BOTH k-tiles' contributions summed.
-                // To avoid intra-CTA same-address async-reduce (the two wgs would add to the SAME dQ
-                // element concurrently -> lost update), each wg stages its two dQ half-tiles to its OWN
-                // smem (wg0->sS[0,1], wg1->sdP[0,1]); then wg0 OWNS cols 0-63 and wg1 OWNS cols 64-127,
-                // each summing k0+k1 for its columns and reducing to DISJOINT global addresses.
-                float* b0 = (wg == 0) ? sS[0] : sdP[0];   // this wg's dQ, D-half 0
-                float* b1 = (wg == 0) ? sS[1] : sdP[1];   // this wg's dQ, D-half 1
+                // dK (both halves) + dQ. Each wg reduces its OWN k-tile's full-D dQ into its OWN
+                // global accumulator (wg0->tma_dq_red, wg1->tma_dq_red2) -> NO cross-wg barrier and
+                // NO intra-CTA same-address hazard; the convert kernel sums the two accumulators.
+                // The two D-halves use SEPARATE stage buffers (bh0/bh1) so wait1 overlaps the reduce
+                // with the next half's compute (Vp1-style double-buffer), instead of a wait0 drain.
+                const CUtensorMap* myred = (wg == 0) ? &tma_dq_red : &tma_dq_red2;
+                float* bh0 = (wg == 0) ? sS[0] : sdP[0];
+                float* bh1 = (wg == 0) ? sS[1] : sdP[1];
                 {   float dq[32]; zeroN<32>(dq);
                     run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf0, sQ_sw[s] + 0);
                     run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-                    store_acc_sw128_f32(dq, b0, wtid, scale);
+                    store_acc_sw128_f32(dq, bh0, wtid, scale);
+                    if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
+                    fence_proxy_async_shared();
+                    if (wtid == 0) {
+                        tma_reduce_add_2d_v43(myred, bh0,           0,  crow);
+                        tma_reduce_add_2d_v43(myred, bh0 + 64 * 32, 32, crow);
+                        tma_store_commit_v34(); tma_bulk_wait1_v43();
+                    }
                 }
                 {   float dq[32]; zeroN<32>(dq);
                     run_gemm_dKdQ_te_issue_ho(dk + 32, dq, descDSmn, descDSk, descKhalf1, sQ_sw[s] + 4096);
                     run_gemm_dVdKdQ_te_wait(dv, dk + 32, dq);
                     if (wtid == 0) mbar_arrive_v11(&empty[s]);   // slot's last use by this wg
-                    store_acc_sw128_f32(dq, b1, wtid, scale);
-                }
-                consumer_sync();   // 256: both wgs' dQ half-tiles staged & cross-wg visible
-                if (wg == 0) {     // wg0 owns cols 0-63: sum k0.h0 + k1.h0, reduce
-                    #pragma unroll 4
-                    for (int i = wtid; i < Br * 64; i += 128) sS[0][i] += sdP[0][i];
-                    consumer_sync_wg0();
+                    store_acc_sw128_f32(dq, bh1, wtid, scale);
+                    if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
                     fence_proxy_async_shared();
                     if (wtid == 0) {
-                        tma_reduce_add_2d_v43(&tma_dq_red, sS[0],           0,  crow);
-                        tma_reduce_add_2d_v43(&tma_dq_red, sS[0] + 64 * 32, 32, crow);
-                        tma_store_commit_v34(); tma_bulk_wait0_v43();
-                    }
-                } else {           // wg1 owns cols 64-127: sum k0.h1 + k1.h1, reduce
-                    #pragma unroll 4
-                    for (int i = wtid; i < Br * 64; i += 128) sdP[1][i] += sS[1][i];
-                    consumer_sync_wg1();
-                    fence_proxy_async_shared();
-                    if (wtid == 0) {
-                        tma_reduce_add_2d_v43(&tma_dq_red, sdP[1],           64, crow);
-                        tma_reduce_add_2d_v43(&tma_dq_red, sdP[1] + 64 * 32, 96, crow);
-                        tma_store_commit_v34(); tma_bulk_wait0_v43();
+                        tma_reduce_add_2d_v43(myred, bh1,           64, crow);
+                        tma_reduce_add_2d_v43(myred, bh1 + 64 * 32, 96, crow);
+                        tma_store_commit_v34(); tma_bulk_wait1_v43();
                     }
                 }
-                consumer_sync();   // 256: reduces drained before next q-tile overwrites sS/sdP
                 git++;
                 if (++qcC == nQTiles) { qcC = qc0; ++gC; }
             }
@@ -14883,8 +14887,17 @@ void launch_gqa_backward_vc8(
         CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
         dq_cap = dqN;
     }
-    CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
-    CUtensorMap tma_dq_red = make_tma_red(d_dq_accum, (uint64_t)B * Hq * S);
+    static float* d_dq_accum2 = nullptr;   // Vc8: wg1's private dQ accumulator
+    static long   dq_cap2     = 0;
+    if (dqN > dq_cap2) {
+        if (d_dq_accum2) CUDA_CHECK(cudaFree(d_dq_accum2));
+        CUDA_CHECK(cudaMalloc(&d_dq_accum2, dqN * sizeof(float)));
+        dq_cap2 = dqN;
+    }
+    CUDA_CHECK(cudaMemset(d_dq_accum,  0, dqN * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_dq_accum2, 0, dqN * sizeof(float)));
+    CUtensorMap tma_dq_red  = make_tma_red(d_dq_accum,  (uint64_t)B * Hq * S);
+    CUtensorMap tma_dq_red2 = make_tma_red(d_dq_accum2, (uint64_t)B * Hq * S);
 
     const int  dBlock = 256;
     const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
@@ -14900,14 +14913,15 @@ void launch_gqa_backward_vc8(
     CUDA_CHECK(cudaMemset(d_gWork, 0, sizeof(int)));
     constexpr dim3 BLOCK(384);
     gqa_backward_vc8_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
-        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red,
+        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red, tma_dq_red2,
         d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale, d_gWork, totalW);
 
     const int  convBlock = 256;
     const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
     const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
-    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
-        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
+    convert_dq_accum2_sum_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<const float4*>(d_dq_accum2),
+        reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 
@@ -16139,7 +16153,7 @@ int main(){
             [&](){ launch_gqa_backward_vc8<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd Vc8 register-gate  (Hopper SM_90)", s);
+        displayStats("GQA bwd Vc8 COMBO one-full-k-tile-per-wg shared Q/dO  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
