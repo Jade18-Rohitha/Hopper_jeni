@@ -14770,7 +14770,7 @@ gqa_backward_vh1_kv(
                 tma_reduce_add_2d_v43(&tma_dq_red, stageDQ,           (uint32_t)(wg * 64),      crow);
                 tma_reduce_add_2d_v43(&tma_dq_red, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow);
                 tma_store_commit_v34();
-                tma_bulk_wait1_v43();
+                tma_bulk_wait0_v43();
             }
             // Vh1: dV reduce (scale 1.0) -> reuse stageDQ, then dK reduce (scale)
             store_acc_sw128_f32(dv, stageDQ, wtid, 1.0f);
@@ -14780,7 +14780,7 @@ gqa_backward_vh1_kv(
                 tma_reduce_add_2d_v43(&tma_dV_st, stageDQ,           (uint32_t)(wg * 64),      crow_kv);
                 tma_reduce_add_2d_v43(&tma_dV_st, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow_kv);
                 tma_store_commit_v34();
-                tma_bulk_wait1_v43();
+                tma_bulk_wait0_v43();
             }
             store_acc_sw128_f32(dk, stageDQ, wtid, scale);
             if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
@@ -14789,7 +14789,7 @@ gqa_backward_vh1_kv(
                 tma_reduce_add_2d_v43(&tma_dK_st, stageDQ,           (uint32_t)(wg * 64),      crow_kv);
                 tma_reduce_add_2d_v43(&tma_dK_st, stageDQ + 64 * 32, (uint32_t)(wg * 64 + 32), crow_kv);
                 tma_store_commit_v34();
-                tma_bulk_wait1_v43();
+                tma_bulk_wait0_v43();
             }
             git++;
             if (++qcC == nQTiles) { qcC = qc0; ++gC; }
