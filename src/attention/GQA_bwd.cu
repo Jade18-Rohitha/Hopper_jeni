@@ -15241,21 +15241,29 @@ gqa_bwd_vz2_wgmma(
     // half1 dK-gemm frees sQ/sdO, overlapping the dQ-reduce (which touches only sStage). No ring, no
     // smem cost, 2 CTAs preserved. Attacks long_scoreboard 2.51 (loads were issued-then-immediately-waited).
     const int nq_ = nQ - kt, nIter = G * nq_;
-    auto issue = [&](int it) {
+    // SPLIT prefetch: dO is issued the moment the dV-GEMM frees sdO (half0) so its 32 KB fully hides;
+    // Q is issued after the dK-GEMM frees sQ (half1). One mbar tracks both -> exposed load ≈ Q only.
+    auto issue_dO = [&](int it) {            // arm mbar (total Q+dO) + load dO, LSE, Drow
         const int g = it / nq_, q = kt + it % nq_, hq = hkv*G + g;
         const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
         const long lb = (long)(b*Hq+hq)*S + (long)q*Br;
         if (wtid == 0) {
             mbar_expect_tx_v4(&mbar_qo, (uint32_t)(Br*D*sizeof(bf16))*2);
-            tma_load_2d_v4(&tma_Q,  sQ_sw,        &mbar_qo, 0,  qRow);
-            tma_load_2d_v4(&tma_Q,  sQ_sw+64*64,  &mbar_qo, 64, qRow);
             tma_load_2d_v4(&tma_dO, sdO_sw,       &mbar_qo, 0,  qRow);
             tma_load_2d_v4(&tma_dO, sdO_sw+64*64, &mbar_qo, 64, qRow);
         }
         if (wtid < Br) { sLSE[wtid] = LSE[lb+wtid]; sD[wtid] = Drow[lb+wtid]; }
     };
+    auto issue_Q = [&](int it) {             // load Q (mbar already armed by issue_dO)
+        const int g = it / nq_, q = kt + it % nq_, hq = hkv*G + g;
+        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
+        if (wtid == 0) {
+            tma_load_2d_v4(&tma_Q, sQ_sw,       &mbar_qo, 0,  qRow);
+            tma_load_2d_v4(&tma_Q, sQ_sw+64*64, &mbar_qo, 64, qRow);
+        }
+    };
     uint32_t qopar = 0;
-    issue(0);                                          // prologue: load tile 0
+    issue_dO(0); issue_Q(0);                            // prologue: full load of tile 0
 
     for (int it = 0; it < nIter; it++) {
         const int g = it / nq_, q = kt + it % nq_, hq = hkv*G + g;
@@ -15289,6 +15297,7 @@ gqa_bwd_vz2_wgmma(
             run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKh0, sQ_sw + 0);
             if (wtid == 0) tma_bulk_wait0_v43();        // drain PREV reduces — moved BEFORE the wgmma wait
             run_gemm_dVdKdQ_te_wait(dv, dk, dq);        //   so thread 0's drain overlaps the dK/dQ GEMM
+            if (it + 1 < nIter) issue_dO(it + 1);       // prefetch next dO — sdO free after dV (early, hides)
             __syncthreads();
             store_acc_sw128_f32(dq, sStage[0], wtid, scale);
             __syncthreads(); fence_proxy_async_shared();
@@ -15301,8 +15310,8 @@ gqa_bwd_vz2_wgmma(
         {   float dq[32]; zeroN<32>(dq);
             run_gemm_dKdQ_te_issue_ho(dk+32, dq, descDSmn, descDSk, descKh1, sQ_sw + 4096);
             run_gemm_dVdKdQ_te_wait(dv, dk+32, dq);
-            __syncthreads();                            // all threads done reading sQ/sdO
-            if (it + 1 < nIter) issue(it + 1);          // prefetch next tile into same buffer (overlap)
+            __syncthreads();                            // all threads done reading sQ
+            if (it + 1 < nIter) issue_Q(it + 1);        // prefetch next Q — sQ free after dK (late; exposed)
             store_acc_sw128_f32(dq, sStage[1], wtid, scale);
             __syncthreads(); fence_proxy_async_shared();
             if (wtid == 0) {

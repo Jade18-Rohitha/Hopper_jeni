@@ -4,6 +4,34 @@
 that hits **≤ 2.7 ms** — beating cuDNN (2.739 ms) at the one shape we've never won. Build naive →
 stack optimizations, each one measured. This doc is the carry-forward of everything already paid for.
 
+## RESULT (2026-08-18): Vz2 @ **2.82 ms** — best kernel we've ever built.
+Naive → profile-driven → **beats Vp1 (3.05), Vr1 (3.04), V44, V45** and lands **2.9% off cuDNN (2.74)**,
+~1170 TFLOPS. `gqa_bwd_vz2_wgmma`: single warpgroup / full k-tile / 2 CTAs / heavy fine-grained overlap.
+Full ladder (each step profile-justified, measured, kept only if it moved SM-busy):
+| step | change | ms |
+|---|---|---|
+| Vz1 | naive scalar fp32 | 304.9 |
+| Vz2 | +wgmma tensor cores | 3.49 |
+| | +defer dQ half1 drain | 3.29 |
+| | +single-buffer prefetch (reuse buffer, overlap reduce) | 3.21 |
+| | **+sStage[2] double-buffer, defer BOTH reduces** | 2.91 |
+| | +delete redundant post-load barrier | 2.90 |
+| | +issue S & dP together (overlap on tensor pipe) | 2.87 |
+| | +softmax overlaps dP GEMM (wait1 then fused_p) | **2.82** |
+
+**3-warpgroup verdict (probe, conclusive):** all three 3-wg structures regress — Vp1 3.05, Vc8 5.87,
+Vz3 4.71. The probe checked Vp1's dQ and found it ALREADY has every overlap we added to Vz2 (deferred
+double-buffered reduce via wait1+db, S/dP overlap via D-split, prefetch via producer) — yet it's 3.05.
+So the 3-wg coordination cost (cross-wg dS sync + persistent machinery) is inherently ~8% heavier than
+a clean independent single warpgroup at 2 CTAs. **3-wg cannot beat 2.82 for us; grafting overlaps is moot.**
+The last ~3% to cuDNN is its un-emittable DEFER_BLOCKING/nanosleep sync — a codegen limit, not hardware.
+
+**Method that worked:** strictly profile-driven, one lever at a time, measure SM-busy (not TFLOPs),
+revert anything that didn't move it. Biggest single lessons: (1) recompute the occupancy smem budget
+EXACTLY (cap/nCTA) — 17 KB of hidden 2-CTA headroom held the biggest lever (sStage[2]); (2) fewer
+barriers ≠ faster if they were already hidden by overlap (combining dQ regressed); (3) prefer levers
+that ADD overlap over ones that remove syncs.
+
 ---
 
 ## 0. The one lesson that reframes the whole effort
