@@ -14700,9 +14700,12 @@ gqa_backward_vc8_kv(
     int git = 0;
 
     while (true) {
-        if (tid == 0) s_w = atomicAdd(gWork, 1);
+        if (tid == 0) s_w = atomicAdd(gWork, 2);   // Vc8: grab a BALANCED chunk of 2 causal-paired pairs
         __syncthreads();
-        const int w = s_w;
+        const int base = s_w;
+        if (base >= totalW) break;
+        for (int cc = 0; cc < 2; cc++) {           // process the chunk's 2 pairs; {base,base+1}={heavy,light}
+        const int w = base + cc;
         if (w >= totalW) break;
         int b, hkv, ktA, qc0, nIter; uint32_t rowA, rowB;
         decodePair(w, b, hkv, ktA, rowA, rowB, qc0, nIter);
@@ -14832,6 +14835,7 @@ gqa_backward_vc8_kv(
             }
         }   // end CONSUMER branch
         __syncthreads();   // pair boundary rendezvous (frees K/V + sQ ring for next pair)
+        }   // end chunk-of-2 loop
     }       // end persistent while
 }
 
