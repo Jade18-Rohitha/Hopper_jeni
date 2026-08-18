@@ -15200,10 +15200,11 @@ gqa_bwd_vz2_wgmma(
     const __grid_constant__ CUtensorMap tma_dV_st, const __grid_constant__ CUtensorMap tma_dK_st,
     const __grid_constant__ CUtensorMap tma_dq_red,
     const float* __restrict__ LSE, const float* __restrict__ Drow,
-    int B, int Hq, int Hkv, int G, int S, float scale,
-    int* __restrict__ gWork, int totalW) {
+    int B, int Hq, int Hkv, int G, int S, float scale) {
+    const int kt = blockIdx.x, hkv = blockIdx.y, b = blockIdx.z;
     const int wtid = threadIdx.x;
-    const int nQ = S / Br, WKV = S / Bc;
+    const int nQ = S / Br;
+    const int k_row0 = kt * Bc;
     const float scale2 = scale * LOG2E_V29;
 
     __shared__ __align__(128)  bf16  sK_sw[Bc*D], sV_sw[Bc*D], sQ_sw[Br*D], sdO_sw[Br*D];
@@ -15211,7 +15212,6 @@ gqa_bwd_vz2_wgmma(
     __shared__ __align__(1024) float sStage[2][Br*64];   // double-buffered: both dQ halves deferred
     __shared__ float sLSE[Br], sD[Br];
     __shared__ __align__(8) uint64_t mbar_kv, mbar_qo;
-    __shared__ int s_w;
 
     if (wtid == 0) { mbar_init_v4(&mbar_kv, 1); mbar_init_v4(&mbar_qo, 1); }
     __syncthreads();
@@ -15224,19 +15224,6 @@ gqa_bwd_vz2_wgmma(
     const uint64_t descDSmn = make_desc_sw128_MN(sDS);
     const uint64_t descDSk  = make_desc_sw128_K (sDS);
 
-    uint32_t qopar = 0, kvpar = 0;
-    // PERSISTENT: 132 CTAs pull k-tile work-items from an atomic counter (recovers the ~10% wave-transition
-    // idle of the 2048-CTA grid). Causal-pair k-tile order keeps the concurrent working set L2-resident.
-    while (true) {
-        if (wtid == 0) s_w = atomicAdd(gWork, 1);
-        __syncthreads();
-        const int w = s_w;
-        if (w >= totalW) break;
-        const int grp = w / WKV, pos = w % WKV;
-        const int kt = (pos & 1) ? (WKV - 1 - (pos >> 1)) : (pos >> 1);
-        const int hkv = grp % Hkv, b = grp / Hkv;
-        const int k_row0 = kt * Bc;
-
     const uint32_t kvRow = (uint32_t)((b*Hkv+hkv)*S + k_row0);
     if (wtid == 0) {
         mbar_expect_tx_v4(&mbar_kv, (uint32_t)(Bc*64*sizeof(bf16))*4);
@@ -15245,7 +15232,7 @@ gqa_bwd_vz2_wgmma(
         tma_load_2d_v4(&tma_V, sV_sw,       &mbar_kv, 0,  kvRow);
         tma_load_2d_v4(&tma_V, sV_sw+64*64, &mbar_kv, 64, kvRow);
     }
-    mbar_wait_v4(&mbar_kv, kvpar); kvpar ^= 1;
+    mbar_wait_v4(&mbar_kv, 0);
 
     float dv[64], dk[64];
     zeroN<64>(dv); zeroN<64>(dk);
@@ -15267,6 +15254,7 @@ gqa_bwd_vz2_wgmma(
         }
         if (wtid < Br) { sLSE[wtid] = LSE[lb+wtid]; sD[wtid] = Drow[lb+wtid]; }
     };
+    uint32_t qopar = 0;
     issue(0);                                          // prologue: load tile 0
 
     for (int it = 0; it < nIter; it++) {
@@ -15341,8 +15329,6 @@ gqa_bwd_vz2_wgmma(
         tma_store_2d_v34(&tma_dK_st, sdO_sw + 4096, 64, kvRow);
         tma_store_commit_v34(); tma_store_wait_v34();
     }
-    __syncthreads();   // work-item boundary
-    }   // end persistent while
 }
 
 template<int Br, int Bc, int D>
@@ -15385,24 +15371,23 @@ void launch_gqa_backward_vz2(
     const int dBlock=256; const long dGrid=(drowN+(dBlock/32)-1)/(dBlock/32);
     compute_drowsum_v22<<<(unsigned)dGrid,dBlock>>>(d_dO,d_O,d_Drow,drowN);
 
-    int dev=0; CUDA_CHECK(cudaGetDevice(&dev));
-    int nSM=0; CUDA_CHECK(cudaDeviceGetAttribute(&nSM, cudaDevAttrMultiProcessorCount, dev));
-    const int totalW = B * Hkv * (S / Bc);
-    static int* d_gWork=nullptr;
-    if (!d_gWork) CUDA_CHECK(cudaMalloc(&d_gWork, sizeof(int)));
-    CUDA_CHECK(cudaMemset(d_gWork, 0, sizeof(int)));
-    gqa_bwd_vz2_wgmma<Br,Bc,D><<<(unsigned)nSM,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale,d_gWork,totalW);
+    dim3 GRID(S/Bc, Hkv, B);
+    gqa_bwd_vz2_wgmma<Br,Bc,D><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale);
 
     const int cB=256; const long dqN4=dqN/4; const int cG=(int)((dqN4+cB-1)/cB);
     convert_dq_accum_to_bf16_v6<<<cG,cB>>>(reinterpret_cast<const float4*>(d_dqa), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 
-int main(){
+int main(int argc, char** argv){
     std::cout << "GQA Backward — precision test  [Hopper SM_90 / H200]\n";
     std::cout << "Prerequisite: python precision/baseline_gqa.py\n\n";
 
-    constexpr int B   = 8, Hq  = 12, Hkv = 4, G = Hq / Hkv;
+    const int B   = argc > 1 ? atoi(argv[1]) : 8;    // shape from argv (default 8x12x4) -> sweep-friendly
+    const int Hq  = argc > 2 ? atoi(argv[2]) : 12;
+    const int Hkv = argc > 3 ? atoi(argv[3]) : 4;
+    const int G   = Hq / Hkv;
+    std::cout << "  shape: B=" << B << " Hq=" << Hq << " Hkv=" << Hkv << " (G=" << G << ")\n\n";
     constexpr int S   = 4096, D = 128, Br = 16, Bc = 32;
     constexpr int Br2 = 64, Bc2 = 64;
 
