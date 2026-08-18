@@ -15207,13 +15207,13 @@ gqa_bwd_vz2_wgmma(
     const int k_row0 = kt * Bc;
     const float scale2 = scale * LOG2E_V29;
 
-    __shared__ __align__(128)  bf16  sK_sw[Bc*D], sV_sw[Bc*D], sQ_sw[2][Br*D], sdO_sw[2][Br*D];
+    __shared__ __align__(128)  bf16  sK_sw[Bc*D], sV_sw[Bc*D], sQ_sw[Br*D], sdO_sw[Br*D];
     __shared__ __align__(1024) bf16  sP[Br*64], sDS[Br*64];
     __shared__ __align__(1024) float sStage[Br*64];
-    __shared__ float sLSE[2][Br], sD[2][Br];
-    __shared__ __align__(8) uint64_t mbar_kv, mbar_qo[2];
+    __shared__ float sLSE[Br], sD[Br];
+    __shared__ __align__(8) uint64_t mbar_kv, mbar_qo;
 
-    if (wtid == 0) { mbar_init_v4(&mbar_kv, 1); mbar_init_v4(&mbar_qo[0], 1); mbar_init_v4(&mbar_qo[1], 1); }
+    if (wtid == 0) { mbar_init_v4(&mbar_kv, 1); mbar_init_v4(&mbar_qo, 1); }
     __syncthreads();
 
     const uint64_t descK    = make_desc_sw128_K (sK_sw);
@@ -15237,50 +15237,49 @@ gqa_bwd_vz2_wgmma(
     float dv[64], dk[64];
     zeroN<64>(dv); zeroN<64>(dk);
 
-    // SELF-PREFETCH: single warpgroup, 2-slot Q/dO ring. Issue tile it+1's TMA BEFORE computing tile it,
-    // so the load overlaps compute (attacks long_scoreboard 2.51). 1 CTA/SM, but no idled producer wg.
+    // SINGLE-BUFFER SOFTWARE PREFETCH: issue tile it+1's Q/dO TMA into the SAME buffer right after the
+    // half1 dK-gemm frees sQ/sdO, overlapping the dQ-reduce (which touches only sStage). No ring, no
+    // smem cost, 2 CTAs preserved. Attacks long_scoreboard 2.51 (loads were issued-then-immediately-waited).
     const int nq_ = nQ - kt, nIter = G * nq_;
-    auto prefetch = [&](int it, int s) {
+    auto issue = [&](int it) {
         const int g = it / nq_, q = kt + it % nq_, hq = hkv*G + g;
         const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
         const long lb = (long)(b*Hq+hq)*S + (long)q*Br;
         if (wtid == 0) {
-            mbar_expect_tx_v4(&mbar_qo[s], (uint32_t)(Br*D*sizeof(bf16))*2);
-            tma_load_2d_v4(&tma_Q,  sQ_sw[s],        &mbar_qo[s], 0,  qRow);
-            tma_load_2d_v4(&tma_Q,  sQ_sw[s]+64*64,  &mbar_qo[s], 64, qRow);
-            tma_load_2d_v4(&tma_dO, sdO_sw[s],       &mbar_qo[s], 0,  qRow);
-            tma_load_2d_v4(&tma_dO, sdO_sw[s]+64*64, &mbar_qo[s], 64, qRow);
+            mbar_expect_tx_v4(&mbar_qo, (uint32_t)(Br*D*sizeof(bf16))*2);
+            tma_load_2d_v4(&tma_Q,  sQ_sw,        &mbar_qo, 0,  qRow);
+            tma_load_2d_v4(&tma_Q,  sQ_sw+64*64,  &mbar_qo, 64, qRow);
+            tma_load_2d_v4(&tma_dO, sdO_sw,       &mbar_qo, 0,  qRow);
+            tma_load_2d_v4(&tma_dO, sdO_sw+64*64, &mbar_qo, 64, qRow);
         }
-        if (wtid < Br) { sLSE[s][wtid] = LSE[lb+wtid]; sD[s][wtid] = Drow[lb+wtid]; }
+        if (wtid < Br) { sLSE[wtid] = LSE[lb+wtid]; sD[wtid] = Drow[lb+wtid]; }
     };
-    uint32_t qopar[2] = {0,0};
-    prefetch(0, 0);                                    // prologue: tile 0 -> slot 0
+    uint32_t qopar = 0;
+    issue(0);                                          // prologue: load tile 0
 
     for (int it = 0; it < nIter; it++) {
-        const int s = it & 1;
-        if (it + 1 < nIter) prefetch(it + 1, s ^ 1);   // prefetch next tile into the other slot
         const int g = it / nq_, q = kt + it % nq_, hq = hkv*G + g;
         const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
-        mbar_wait_v4(&mbar_qo[s], qopar[s]); qopar[s] ^= 1;
+        mbar_wait_v4(&mbar_qo, qopar); qopar ^= 1;
         __syncthreads();
 
         // S = Q@Kᵀ -> P ; dP = dO@Vᵀ
         float acc[32]; zeroN<32>(acc);
-        run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descK);
-        if (q == kt) fused_p_stsm<Bc,true >(acc, sP, sLSE[s], wtid, q*Br, k_row0, scale2);
-        else         fused_p_stsm<Bc,false>(acc, sP, sLSE[s], wtid, 0, 0, scale2);
+        run_gemm_n64_sw2_hoB(acc, sQ_sw, descK);
+        if (q == kt) fused_p_stsm<Bc,true >(acc, sP, sLSE, wtid, q*Br, k_row0, scale2);
+        else         fused_p_stsm<Bc,false>(acc, sP, sLSE, wtid, 0, 0, scale2);
         float dPacc[32]; zeroN<32>(dPacc);
-        run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descV);
+        run_gemm_n64_sw2_hoB(dPacc, sdO_sw, descV);
         __syncthreads();
 
-        run_gemm_dVdK_half_te_issue_hoA(dv,    descP, sdO_sw[s] + 0);
-        run_gemm_dVdK_half_te_issue_hoA(dv+32, descP, sdO_sw[s] + 4096);
-        fuse_dS_ldstsm<Bc>(sP, dPacc, sD[s], sDS, wtid);
+        run_gemm_dVdK_half_te_issue_hoA(dv,    descP, sdO_sw + 0);
+        run_gemm_dVdK_half_te_issue_hoA(dv+32, descP, sdO_sw + 4096);
+        fuse_dS_ldstsm<Bc>(sP, dPacc, sD, sDS, wtid);
         __syncthreads();
 
-        // dK + dQ; half1 drain deferred to next tile's half0 (overlap)
+        // half0 dQ (deferred drain of prev tile's half1)
         {   float dq[32]; zeroN<32>(dq);
-            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKh0, sQ_sw[s] + 0);
+            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKh0, sQ_sw + 0);
             run_gemm_dVdKdQ_te_wait(dv, dk, dq);
             if (wtid == 0) tma_bulk_wait0_v43();
             __syncthreads();
@@ -15293,34 +15292,36 @@ gqa_bwd_vz2_wgmma(
             }
             __syncthreads();
         }
+        // half1 dQ: gemm frees sQ/sdO -> PREFETCH next tile, overlapping half1 store+reduce
         {   float dq[32]; zeroN<32>(dq);
-            run_gemm_dKdQ_te_issue_ho(dk+32, dq, descDSmn, descDSk, descKh1, sQ_sw[s] + 4096);
+            run_gemm_dKdQ_te_issue_ho(dk+32, dq, descDSmn, descDSk, descKh1, sQ_sw + 4096);
             run_gemm_dVdKdQ_te_wait(dv, dk+32, dq);
+            __syncthreads();                            // all threads done reading sQ/sdO
+            if (it + 1 < nIter) issue(it + 1);          // prefetch next tile into same buffer (overlap)
             store_acc_sw128_f32(dq, sStage, wtid, scale);
             __syncthreads(); fence_proxy_async_shared();
             if (wtid == 0) {
                 tma_reduce_add_2d_v43(&tma_dq_red, sStage,       64, qRow);
                 tma_reduce_add_2d_v43(&tma_dq_red, sStage+64*32, 96, qRow);
-                tma_store_commit_v34();
+                tma_store_commit_v34();   // NO wait0 — deferred to next tile's half0
             }
         }
     }
     if (wtid == 0) tma_bulk_wait0_v43();   // drain the last tile's deferred half1 reduce before epilogue
     __syncthreads();
-    // epilogue: stage + TMA-store dV, dK (full [64x128] each, 2 col-halves) into ring slot 0 (now free)
-    bf16* qb = &sQ_sw[0][0];  bf16* ob = &sdO_sw[0][0];
+    // epilogue: stage + TMA-store dV, dK (full [64x128] each, 2 col-halves)
     fence_operandN<64>(dv);
-    stage_acc_bf16_s<64,64>(dv,    qb + 0,    wtid, 1.0f);
-    stage_acc_bf16_s<64,64>(dv+32, qb + 4096, wtid, 1.0f);
+    stage_acc_bf16_s<64,64>(dv,    sQ_sw + 0,    wtid, 1.0f);
+    stage_acc_bf16_s<64,64>(dv+32, sQ_sw + 4096, wtid, 1.0f);
     fence_operandN<64>(dk);
-    stage_acc_bf16_s<64,64>(dk,    ob + 0,    wtid, scale);
-    stage_acc_bf16_s<64,64>(dk+32, ob + 4096, wtid, scale);
+    stage_acc_bf16_s<64,64>(dk,    sdO_sw + 0,    wtid, scale);
+    stage_acc_bf16_s<64,64>(dk+32, sdO_sw + 4096, wtid, scale);
     __syncthreads(); fence_proxy_async_shared();
     if (wtid == 0) {
-        tma_store_2d_v34(&tma_dV_st, qb + 0,    0,  kvRow);
-        tma_store_2d_v34(&tma_dV_st, qb + 4096, 64, kvRow);
-        tma_store_2d_v34(&tma_dK_st, ob + 0,    0,  kvRow);
-        tma_store_2d_v34(&tma_dK_st, ob + 4096, 64, kvRow);
+        tma_store_2d_v34(&tma_dV_st, sQ_sw + 0,    0,  kvRow);
+        tma_store_2d_v34(&tma_dV_st, sQ_sw + 4096, 64, kvRow);
+        tma_store_2d_v34(&tma_dK_st, sdO_sw + 0,    0,  kvRow);
+        tma_store_2d_v34(&tma_dK_st, sdO_sw + 4096, 64, kvRow);
         tma_store_commit_v34(); tma_store_wait_v34();
     }
 }

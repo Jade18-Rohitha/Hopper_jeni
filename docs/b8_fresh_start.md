@@ -110,6 +110,22 @@ at the stall they fix. Applying them speculatively is how we re-hit the same wal
 Context: Vz2's 3.49 ms is already within 15% of tuned Vp1/Vr1 (3.05) and 27% off cuDNN (2.74) —
 naive structure, one optimization. Next step is whatever the Vz2 profile names, NOT an assumption.
 
+**Vz2 evolution + MEASURED dead ends (2026-08-18):**
+- Vz2 profile: latency-bound, 2 CTAs/SM (98 KB), barrier 2.95 + long_scoreboard 2.17, 0.28 eligible.
+- **Small lever — defer dQ half1 drain across q-tile boundary → 3.49→3.29 ms** (KEEP). Confirmed drains
+  were a real slice of the barrier stall. Re-profile: barrier 2.95→2.11, long_scoreboard now #1 at 2.51.
+- **DEAD END: producer/consumer pipeline (Vz3, 1 CTA, 1 consumer wg) → 4.71 ms.** Dedicated a whole
+  warpgroup to producing = idled compute + lost 2nd CTA. Worst of both.
+- **DEAD END: self-prefetch 2-slot ring (1 CTA, no idled producer) → 4.60 ms.** Clean test of "1-CTA
+  prefetch vs 2-CTA concurrency" — 2-CTA concurrency WINS decisively at this tile size. The +32 KB ring
+  drops to 1 CTA and the shallow PD=2 prefetch can't cover the lost concurrency.
+- **MEASURED TRUTH: at Br=Bc=64/D=128, stay at 2 CTAs/SM. Do NOT spend smem on rings/producers — the
+  2nd resident CTA hides more than any shallow 1-CTA pipeline we can emit.** cuDNN's 1-CTA works only
+  via 2 consumer wgs + deep pipeline + un-emittable DEFER_BLOCKING; we can't match that at 1 CTA.
+- **Next (in progress): single-BUFFER software prefetch** — issue next tile's Q/dO TMA into the SAME
+  buffer right after the half1 dK-gemm frees it, overlapping the dQ-reduce (which touches only sStage).
+  No smem, no occupancy loss — attacks long_scoreboard 2.51 at 2 CTAs.
+
 **Design rule #2:** after every step, read `sm__throughput` + eligible-warps/scheduler. If SM-busy
 didn't move, revert. **Design rule #1 (from §0) still governs any smem spend: budget backward from
 occupancy** — but only spend it when the profile shows occupancy/latency is the binding limiter.
