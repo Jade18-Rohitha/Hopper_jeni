@@ -85,32 +85,29 @@ across sync points instead of hard-stalling on `bar.sync`/tight spins.
 
 ---
 
-## 4. The naive → stacked plan (each step MEASURED on SM-busy, not TFLOPs)
+## 4. Method: PROFILE-DRIVEN, no prescribed order (this is the whole point of the fresh start)
 
-**Step 0 — Naive, correct, simple.** One CTA per (b, hkv, k-tile). Each loads its K/V tile, loops
-over q-tiles (causal), computes S=QKᵀ, P, dP, dS, dV+=PᵀdO, dK+=dSᵀQ, dQ (atomicAdd or TMA-reduce).
-No warp-spec, no TMA, plain loads. Get it green vs the PyTorch ref @2e-2. This is the baseline SM-busy.
+We hit the wall last time by applying our *priors* in a fixed order (traffic → warp-spec → persistent
+→ combo) regardless of what actually bound the kernel. **New rule: the profile names the next move,
+not our habits.** The proven optimizations in §3 are a *toolbox*, pulled ONLY when a profile points
+at the stall they fix. Applying them speculatively is how we re-hit the same wall.
 
-**Step 1 — TMA loads + swizzled wgmma.** Replace global loads with 2D TMA into swizzled smem; wgmma
-m64n64k16. Measure SM-busy jump.
+**The loop (repeat until ≤2.7 ms):**
+1. Profile the current kernel: `--section SpeedOfLight --section WarpStateStats --section SchedulerStats`.
+2. Identify the **single top stall / limiter** (SM-busy, the dominant `stalled_*` reason, or the SoL
+   compute-vs-memory verdict). Write it down.
+3. Apply the **smallest change** that targets *that* limiter — reach into the §3 toolbox only if it's
+   the right tool for *this* stall.
+4. Re-profile. If SM-busy didn't move, the change addressed the wrong axis → **revert it.**
+5. Only after the profile flips from one limiter to another do we pick a different tool.
 
-**Step 2 — Warp-specialized producer/consumer + mbarrier pipeline (PD=2).** One producer warpgroup
-streams Q/dO/K/V; consumers compute. This is where latency-hiding starts. **Watch eligible-warps.**
-
-**Step 3 — Persistent + atomic scheduler + causal-pair balance.** Bank the 96% L2 mechanism.
-
-**Step 4 — THE decision that beats cuDNN. Pick ONE, budget smem for it from the start:**
-- **(a) 2 CTAs/SM:** shrink the tile/staging to < 114 KB smem (e.g. Br=Bc=32, or D-split staging, or
-  bf16 dQ stage saving 32 KB). Doubling resident CTAs doubles warps/scheduler → the direct fix for
-  the "3 warps, 0.25 eligible" wall. **This is the most promising untried lever.**
-- **(b) Deeper async pipeline at 1 CTA:** PD≥3 Q/dO ring + more in-flight TMA/mbarriers so a consumer
-  has multiple q-tiles queued — emittable latency hiding. Needs the smem PD=3 wanted (freed by (a)-style
-  staging cuts).
-
-**Step 5 — Only if bandwidth-bound after Step 4:** *then* consider shared-Q/dO to cut traffic. Not before.
+**Baseline (Vz1, measured 2026-08-18):** 304.9 ms, 10.8 TFLOPS, correct. Whatever the profile says
+binds *this* kernel is step 1 — we do NOT assume it's tensor cores / TMA / occupancy until the profile
+says so. (Prior: 10.8 TFLOPS with scalar fp32 math strongly suggests tensor-core idle, but *confirm it*.)
 
 **Design rule #2:** after every step, read `sm__throughput` + eligible-warps/scheduler. If SM-busy
-didn't move, the step addressed the wrong axis — revert it.
+didn't move, revert. **Design rule #1 (from §0) still governs any smem spend: budget backward from
+occupancy** — but only spend it when the profile shows occupancy/latency is the binding limiter.
 
 ---
 
