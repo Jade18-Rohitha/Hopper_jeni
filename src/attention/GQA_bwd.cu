@@ -15209,7 +15209,7 @@ gqa_bwd_vz2_wgmma(
 
     __shared__ __align__(128)  bf16  sK_sw[Bc*D], sV_sw[Bc*D], sQ_sw[Br*D], sdO_sw[Br*D];
     __shared__ __align__(1024) bf16  sP[Br*64], sDS[Br*64];
-    __shared__ __align__(1024) float sStage[Br*64];
+    __shared__ __align__(1024) float sStage[2][Br*64];   // double-buffered: both dQ halves deferred
     __shared__ float sLSE[Br], sD[Br];
     __shared__ __align__(8) uint64_t mbar_kv, mbar_qo;
 
@@ -15281,16 +15281,15 @@ gqa_bwd_vz2_wgmma(
         {   float dq[32]; zeroN<32>(dq);
             run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKh0, sQ_sw + 0);
             run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-            if (wtid == 0) tma_bulk_wait0_v43();
+            if (wtid == 0) tma_bulk_wait0_v43();        // drain PREV tile's 2 deferred reduces (overlapped)
             __syncthreads();
-            store_acc_sw128_f32(dq, sStage, wtid, scale);
+            store_acc_sw128_f32(dq, sStage[0], wtid, scale);
             __syncthreads(); fence_proxy_async_shared();
             if (wtid == 0) {
-                tma_reduce_add_2d_v43(&tma_dq_red, sStage,       0,  qRow);
-                tma_reduce_add_2d_v43(&tma_dq_red, sStage+64*32, 32, qRow);
-                tma_store_commit_v34(); tma_bulk_wait0_v43();
+                tma_reduce_add_2d_v43(&tma_dq_red, sStage[0],       0,  qRow);
+                tma_reduce_add_2d_v43(&tma_dq_red, sStage[0]+64*32, 32, qRow);
+                tma_store_commit_v34();   // NO wait — deferred (double-buffered sStage)
             }
-            __syncthreads();
         }
         // half1 dQ: gemm frees sQ/sdO -> PREFETCH next tile, overlapping half1 store+reduce
         {   float dq[32]; zeroN<32>(dq);
@@ -15298,11 +15297,11 @@ gqa_bwd_vz2_wgmma(
             run_gemm_dVdKdQ_te_wait(dv, dk+32, dq);
             __syncthreads();                            // all threads done reading sQ/sdO
             if (it + 1 < nIter) issue(it + 1);          // prefetch next tile into same buffer (overlap)
-            store_acc_sw128_f32(dq, sStage, wtid, scale);
+            store_acc_sw128_f32(dq, sStage[1], wtid, scale);
             __syncthreads(); fence_proxy_async_shared();
             if (wtid == 0) {
-                tma_reduce_add_2d_v43(&tma_dq_red, sStage,       64, qRow);
-                tma_reduce_add_2d_v43(&tma_dq_red, sStage+64*32, 96, qRow);
+                tma_reduce_add_2d_v43(&tma_dq_red, sStage[1],       64, qRow);
+                tma_reduce_add_2d_v43(&tma_dq_red, sStage[1]+64*32, 96, qRow);
                 tma_store_commit_v34();   // NO wait0 — deferred to next tile's half0
             }
         }
