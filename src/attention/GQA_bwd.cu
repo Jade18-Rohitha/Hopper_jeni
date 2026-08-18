@@ -14671,7 +14671,12 @@ gqa_backward_vc8_kv(
     const int PAIRS = WKV / 2;
     auto decodePair = [&](int idx, int& b, int& hkv, int& ktA, uint32_t& rowA, uint32_t& rowB,
                           int& qc0, int& nIter) {
-        const int grp = idx / PAIRS, p = idx % PAIRS;
+        const int grp = idx / PAIRS, pos = idx % PAIRS;
+        // CAUSAL-PAIR THE PAIRS: order pos -> {0, PAIRS-1, 1, PAIRS-2, ...} so consecutive atomic grabs
+        // sum to CONSTANT work (G*(nQTiles-2p) + G*(nQTiles-2(PAIRS-1-p)) = const) -> the 132 CTAs stay
+        // in lockstep, cluster on ~2-3 (b,hkv) groups, hold L2 (Vp1's 96% trick). Each pair is still
+        // adjacent k-tiles {2p,2p+1} -> shared Q/dO intact; only the grab ORDER changes.
+        const int p = (pos & 1) ? (PAIRS - 1 - (pos >> 1)) : (pos >> 1);
         ktA = 2 * p; hkv = grp % Hkv; b = grp / Hkv;
         rowA = (uint32_t)((b * Hkv + hkv) * S + ktA       * Bc);
         rowB = (uint32_t)((b * Hkv + hkv) * S + (ktA + 1) * Bc);
