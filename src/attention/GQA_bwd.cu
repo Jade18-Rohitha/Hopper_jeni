@@ -14759,12 +14759,10 @@ gqa_backward_vc8_kv(
                 const int hqC = hkv * G + gC;
                 const uint32_t crow = (uint32_t)((b * Hq + hqC) * S + qcC * Br);
 
-                // dK (both halves) + dQ. Each wg reduces its OWN k-tile's full-D dQ into its OWN
-                // global accumulator (wg0->tma_dq_red, wg1->tma_dq_red2) -> NO cross-wg barrier and
-                // NO intra-CTA same-address hazard; the convert kernel sums the two accumulators.
-                // h0's reduce is committed but NOT waited, so it overlaps h1's compute; ONE wait0 at
-                // the end drains both, and a per-wg barrier makes all 128 threads honor the drain
-                // before the next q-tile overwrites bh0/bh1 (only thread 0 issues/waits the reduce).
+                // dK (both halves) + dQ, DECOUPLED: each wg reduces its OWN k-tile's full-D dQ into
+                // its OWN accumulator (wg0->tma_dq_red, wg1->tma_dq_red2) -> no cross-wg barrier per
+                // q-tile, no same-address hazard; convert sums the two. h0's reduce overlaps h1's
+                // compute; one wait0 drains both + a per-wg barrier so all threads honor the drain.
                 const CUtensorMap* myred = (wg == 0) ? &tma_dq_red : &tma_dq_red2;
                 float* bh0 = (wg == 0) ? sS[0] : sdP[0];
                 float* bh1 = (wg == 0) ? sS[1] : sdP[1];
@@ -14793,10 +14791,16 @@ gqa_backward_vc8_kv(
                         tma_store_commit_v34(); tma_bulk_wait0_v43();
                     }
                 }
-                if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // all threads honor the drain
+                if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // threads honor the drain
                 git++;
                 if (++qcC == nQTiles) { qcC = qc0; ++gC; }
             }
+
+            // CROSS-WG LOCKSTEP before epilogue: the two wgs drift (no per-q-tile cross-wg barrier),
+            // and the epilogue overwrites sQ_sw (wg0) / sdO_sw (wg1) with staged dV/dK — which the
+            // OTHER wg may still be reading for its last q-tiles' gemms. Sync both wgs here so all
+            // compute finishes before either stages into the shared Q/dO ring. One barrier per PAIR.
+            consumer_sync();
 
             // epilogue: stage dV/dK for THIS wg's k-tile into the (now-free) sQ ring, TMA-store to its rows
             // Each wg stages its FULL [64x128] dV+dK (4x [64x64] tiles = 16384 bf16) into its own
