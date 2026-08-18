@@ -15281,33 +15281,26 @@ gqa_bwd_vz2_wgmma(
         fuse_dS_ldstsm<Bc>(sP, dPacc, sD, sDS, wtid);
         __syncthreads();
 
-        // half0 dQ (deferred drain of prev tile's half1)
-        {   float dq[32]; zeroN<32>(dq);
-            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKh0, sQ_sw + 0);
-            run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-            if (wtid == 0) tma_bulk_wait0_v43();        // drain PREV tile's 2 deferred reduces (overlapped)
-            __syncthreads();
-            store_acc_sw128_f32(dq, sStage[0], wtid, scale);
-            __syncthreads(); fence_proxy_async_shared();
-            if (wtid == 0) {
-                tma_reduce_add_2d_v43(&tma_dq_red, sStage[0],       0,  qRow);
-                tma_reduce_add_2d_v43(&tma_dq_red, sStage[0]+64*32, 32, qRow);
-                tma_store_commit_v34();   // NO wait — deferred (double-buffered sStage)
-            }
-        }
-        // half1 dQ: gemm frees sQ/sdO -> PREFETCH next tile, overlapping half1 store+reduce
-        {   float dq[32]; zeroN<32>(dq);
-            run_gemm_dKdQ_te_issue_ho(dk+32, dq, descDSmn, descDSk, descKh1, sQ_sw + 4096);
-            run_gemm_dVdKdQ_te_wait(dv, dk+32, dq);
-            __syncthreads();                            // all threads done reading sQ/sdO
-            if (it + 1 < nIter) issue(it + 1);          // prefetch next tile into same buffer (overlap)
-            store_acc_sw128_f32(dq, sStage[1], wtid, scale);
-            __syncthreads(); fence_proxy_async_shared();
-            if (wtid == 0) {
-                tma_reduce_add_2d_v43(&tma_dq_red, sStage[1],       64, qRow);
-                tma_reduce_add_2d_v43(&tma_dq_red, sStage[1]+64*32, 96, qRow);
-                tma_store_commit_v34();   // NO wait0 — deferred to next tile's half0
-            }
+        // dQ: issue BOTH dK/dQ D-halves TOGETHER (overlap the two GEMMs), wait once, then store both +
+        // reduce both. Cuts the dQ section from 4 barriers to 2 and overlaps the GEMMs. dq0/dq1 both live.
+        float dq0[32], dq1[32]; zeroN<32>(dq0); zeroN<32>(dq1);
+        run_gemm_dKdQ_te_issue_ho(dk,    dq0, descDSmn, descDSk, descKh0, sQ_sw + 0);
+        run_gemm_dKdQ_te_issue_ho(dk+32, dq1, descDSmn, descDSk, descKh1, sQ_sw + 4096);
+        wgmma_wait0();
+        fence_operandN<32>(dv); fence_operandN<32>(dk); fence_operandN<32>(dk+32);
+        fence_operandN<32>(dq0); fence_operandN<32>(dq1);
+        if (wtid == 0) tma_bulk_wait0_v43();            // drain PREV tile's 2 deferred reduces (overlapped)
+        __syncthreads();
+        if (it + 1 < nIter) issue(it + 1);              // prefetch next tile (sQ/sdO now free)
+        store_acc_sw128_f32(dq0, sStage[0], wtid, scale);
+        store_acc_sw128_f32(dq1, sStage[1], wtid, scale);
+        __syncthreads(); fence_proxy_async_shared();
+        if (wtid == 0) {
+            tma_reduce_add_2d_v43(&tma_dq_red, sStage[0],       0,  qRow);
+            tma_reduce_add_2d_v43(&tma_dq_red, sStage[0]+64*32, 32, qRow);
+            tma_reduce_add_2d_v43(&tma_dq_red, sStage[1],       64, qRow);
+            tma_reduce_add_2d_v43(&tma_dq_red, sStage[1]+64*32, 96, qRow);
+            tma_store_commit_v34();   // NO wait — both deferred to next tile
         }
     }
     if (wtid == 0) tma_bulk_wait0_v43();   // drain the last tile's deferred half1 reduce before epilogue
