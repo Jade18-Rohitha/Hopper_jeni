@@ -122,9 +122,17 @@ naive structure, one optimization. Next step is whatever the Vz2 profile names, 
 - **MEASURED TRUTH: at Br=Bc=64/D=128, stay at 2 CTAs/SM. Do NOT spend smem on rings/producers — the
   2nd resident CTA hides more than any shallow 1-CTA pipeline we can emit.** cuDNN's 1-CTA works only
   via 2 consumer wgs + deep pipeline + un-emittable DEFER_BLOCKING; we can't match that at 1 CTA.
-- **Next (in progress): single-BUFFER software prefetch** — issue next tile's Q/dO TMA into the SAME
-  buffer right after the half1 dK-gemm frees it, overlapping the dQ-reduce (which touches only sStage).
-  No smem, no occupancy loss — attacks long_scoreboard 2.51 at 2 CTAs.
+- **Single-BUFFER software prefetch → 3.29→3.21 ms** (KEEP). Issue next tile's Q/dO TMA into the SAME
+  buffer right after half1 dK-gemm frees it, overlapping the dQ-reduce. Profile: long_scoreboard
+  2.51→1.31 (worked!), barrier rose to 2.72 (now #1).
+- **★ sStage[2] double-buffer, BOTH dQ reduces deferred → 3.21→2.91 ms** (KEEP — BIG win). Key smem
+  math I'd gotten wrong: cap 232,448 / 2 CTAs = 116,224 per CTA, so +16 KB (sStage[2]) still fits 2
+  CTAs (115,216). half0→sStage[0], half1→sStage[1], both committed w/o inline wait0, drained once next
+  tile (overlapped a whole tile). Killed the half0 wait0 that blocked behind barriers.
+- **★★ Vz2 @ 2.91 ms is now our BEST kernel — beats Vp1 (3.08), Vr1 (3.04), V44, V45.** 6% off cuDNN
+  (2.74). Naive-derived, profile-driven, 2 CTAs, single warpgroup. NO ceiling hit — pure stacking.
+  LESSON: recompute occupancy smem budget exactly (cap/nCTA), don't eyeball it — 17 KB of 2-CTA
+  headroom was hiding the biggest lever.
 
 **Design rule #2:** after every step, read `sm__throughput` + eligible-warps/scheduler. If SM-busy
 didn't move, revert. **Design rule #1 (from §0) still governs any smem spend: budget backward from

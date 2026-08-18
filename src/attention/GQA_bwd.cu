@@ -15261,7 +15261,8 @@ gqa_bwd_vz2_wgmma(
         const int g = it / nq_, q = kt + it % nq_, hq = hkv*G + g;
         const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
         mbar_wait_v4(&mbar_qo, qopar); qopar ^= 1;
-        __syncthreads();
+        // NOTE: no post-load barrier — sQ visibility is guaranteed by mbar_wait (TMA completion), and
+        // sLSE/sD were written+published by the PREVIOUS tile's store-barrier (prefetch). One barrier saved.
 
         // S = Q@Kᵀ -> P ; dP = dO@Vᵀ
         float acc[32]; zeroN<32>(acc);
