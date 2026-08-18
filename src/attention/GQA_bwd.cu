@@ -15268,12 +15268,14 @@ gqa_bwd_vz2_wgmma(
         // S(wait)→fused_p→dP(wait) which serialized the two GEMMs. Attacks wait 1.28 + 44%-idle pipe.
         float acc[32];   zeroN<32>(acc);
         float dPacc[32]; zeroN<32>(dPacc);
-        run_gemm_n64_sw2_hoB_issue(acc,   sQ_sw,  descK);
-        run_gemm_n64_sw2_hoB_issue(dPacc, sdO_sw, descV);
-        wgmma_wait0();
-        fence_operandN<32>(acc); fence_operandN<32>(dPacc);
+        run_gemm_n64_sw2_hoB_issue(acc,   sQ_sw,  descK);   // S (group A)
+        run_gemm_n64_sw2_hoB_issue(dPacc, sdO_sw, descV);   // dP (group B)
+        wgmma_wait1();                       // wait S only; dP GEMM keeps running on the tensor pipe
+        fence_operandN<32>(acc);
         if (q == kt) fused_p_stsm<Bc,true >(acc, sP, sLSE, wtid, q*Br, k_row0, scale2);
-        else         fused_p_stsm<Bc,false>(acc, sP, sLSE, wtid, 0, 0, scale2);
+        else         fused_p_stsm<Bc,false>(acc, sP, sLSE, wtid, 0, 0, scale2);  // softmax OVERLAPS dP GEMM
+        wgmma_wait0();                       // now wait dP
+        fence_operandN<32>(dPacc);
         __syncthreads();
 
         run_gemm_dVdK_half_te_issue_hoA(dv,    descP, sdO_sw + 0);
@@ -15281,26 +15283,33 @@ gqa_bwd_vz2_wgmma(
         fuse_dS_ldstsm<Bc>(sP, dPacc, sD, sDS, wtid);
         __syncthreads();
 
-        // dQ: issue BOTH dK/dQ D-halves TOGETHER (overlap the two GEMMs), wait once, then store both +
-        // reduce both. Cuts the dQ section from 4 barriers to 2 and overlaps the GEMMs. dq0/dq1 both live.
-        float dq0[32], dq1[32]; zeroN<32>(dq0); zeroN<32>(dq1);
-        run_gemm_dKdQ_te_issue_ho(dk,    dq0, descDSmn, descDSk, descKh0, sQ_sw + 0);
-        run_gemm_dKdQ_te_issue_ho(dk+32, dq1, descDSmn, descDSk, descKh1, sQ_sw + 4096);
-        wgmma_wait0();
-        fence_operandN<32>(dv); fence_operandN<32>(dk); fence_operandN<32>(dk+32);
-        fence_operandN<32>(dq0); fence_operandN<32>(dq1);
-        if (wtid == 0) tma_bulk_wait0_v43();            // drain PREV tile's 2 deferred reduces (overlapped)
-        __syncthreads();
-        if (it + 1 < nIter) issue(it + 1);              // prefetch next tile (sQ/sdO now free)
-        store_acc_sw128_f32(dq0, sStage[0], wtid, scale);
-        store_acc_sw128_f32(dq1, sStage[1], wtid, scale);
-        __syncthreads(); fence_proxy_async_shared();
-        if (wtid == 0) {
-            tma_reduce_add_2d_v43(&tma_dq_red, sStage[0],       0,  qRow);
-            tma_reduce_add_2d_v43(&tma_dq_red, sStage[0]+64*32, 32, qRow);
-            tma_reduce_add_2d_v43(&tma_dq_red, sStage[1],       64, qRow);
-            tma_reduce_add_2d_v43(&tma_dq_red, sStage[1]+64*32, 96, qRow);
-            tma_store_commit_v34();   // NO wait — both deferred to next tile
+        // dQ split: half0 & half1 kept SEPARATE — half0's committed reduce overlaps half1's GEMM, and the
+        // prefetch overlaps half1's store+reduce. (Combining into one wait0 lost that overlap → slower.)
+        {   float dq[32]; zeroN<32>(dq);
+            run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKh0, sQ_sw + 0);
+            run_gemm_dVdKdQ_te_wait(dv, dk, dq);
+            if (wtid == 0) tma_bulk_wait0_v43();        // drain PREV tile's 2 deferred reduces (overlapped)
+            __syncthreads();
+            store_acc_sw128_f32(dq, sStage[0], wtid, scale);
+            __syncthreads(); fence_proxy_async_shared();
+            if (wtid == 0) {
+                tma_reduce_add_2d_v43(&tma_dq_red, sStage[0],       0,  qRow);
+                tma_reduce_add_2d_v43(&tma_dq_red, sStage[0]+64*32, 32, qRow);
+                tma_store_commit_v34();   // NO wait — deferred (double-buffered sStage)
+            }
+        }
+        {   float dq[32]; zeroN<32>(dq);
+            run_gemm_dKdQ_te_issue_ho(dk+32, dq, descDSmn, descDSk, descKh1, sQ_sw + 4096);
+            run_gemm_dVdKdQ_te_wait(dv, dk+32, dq);
+            __syncthreads();                            // all threads done reading sQ/sdO
+            if (it + 1 < nIter) issue(it + 1);          // prefetch next tile into same buffer (overlap)
+            store_acc_sw128_f32(dq, sStage[1], wtid, scale);
+            __syncthreads(); fence_proxy_async_shared();
+            if (wtid == 0) {
+                tma_reduce_add_2d_v43(&tma_dq_red, sStage[1],       64, qRow);
+                tma_reduce_add_2d_v43(&tma_dq_red, sStage[1]+64*32, 96, qRow);
+                tma_store_commit_v34();   // NO wait0 — deferred to next tile's half0
+            }
         }
     }
     if (wtid == 0) tma_bulk_wait0_v43();   // drain the last tile's deferred half1 reduce before epilogue
