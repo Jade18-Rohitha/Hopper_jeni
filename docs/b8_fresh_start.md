@@ -101,9 +101,14 @@ at the stall they fix. Applying them speculatively is how we re-hit the same wal
 4. Re-profile. If SM-busy didn't move, the change addressed the wrong axis → **revert it.**
 5. Only after the profile flips from one limiter to another do we pick a different tool.
 
-**Baseline (Vz1, measured 2026-08-18):** 304.9 ms, 10.8 TFLOPS, correct. Whatever the profile says
-binds *this* kernel is step 1 — we do NOT assume it's tensor cores / TMA / occupancy until the profile
-says so. (Prior: 10.8 TFLOPS with scalar fp32 math strongly suggests tensor-core idle, but *confirm it*.)
+### Progress log (each step profile-justified)
+| ver | change | time | correct | profile said next |
+|---|---|---|---|---|
+| Vz1 | naive, scalar fp32 matmul, atomicAdd dQ | 304.9 ms | ✓ | smem-LOAD bound (short_scoreboard 9.13, smem-ld pipe 92.68%, DRAM 0.04%, SM 26%) |
+| Vz2 | +wgmma tensor cores (TMA as swizzle enabler); same naive 1-CTA/k-tile, no warp-spec/persistent/pipeline | **3.49 ms** (944 TF) | ✓ | *profiling…* |
+
+Context: Vz2's 3.49 ms is already within 15% of tuned Vp1/Vr1 (3.05) and 27% off cuDNN (2.74) —
+naive structure, one optimization. Next step is whatever the Vz2 profile names, NOT an assumption.
 
 **Design rule #2:** after every step, read `sm__throughput` + eligible-warps/scheduler. If SM-busy
 didn't move, revert. **Design rule #1 (from §0) still governs any smem spend: budget backward from
