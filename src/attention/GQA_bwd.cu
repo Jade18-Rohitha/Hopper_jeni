@@ -15200,11 +15200,10 @@ gqa_bwd_vz2_wgmma(
     const __grid_constant__ CUtensorMap tma_dV_st, const __grid_constant__ CUtensorMap tma_dK_st,
     const __grid_constant__ CUtensorMap tma_dq_red,
     const float* __restrict__ LSE, const float* __restrict__ Drow,
-    int B, int Hq, int Hkv, int G, int S, float scale) {
-    const int kt = blockIdx.x, hkv = blockIdx.y, b = blockIdx.z;
+    int B, int Hq, int Hkv, int G, int S, float scale,
+    int* __restrict__ gWork, int totalW) {
     const int wtid = threadIdx.x;
-    const int nQ = S / Br;
-    const int k_row0 = kt * Bc;
+    const int nQ = S / Br, WKV = S / Bc;
     const float scale2 = scale * LOG2E_V29;
 
     __shared__ __align__(128)  bf16  sK_sw[Bc*D], sV_sw[Bc*D], sQ_sw[Br*D], sdO_sw[Br*D];
@@ -15212,6 +15211,7 @@ gqa_bwd_vz2_wgmma(
     __shared__ __align__(1024) float sStage[2][Br*64];   // double-buffered: both dQ halves deferred
     __shared__ float sLSE[Br], sD[Br];
     __shared__ __align__(8) uint64_t mbar_kv, mbar_qo;
+    __shared__ int s_w;
 
     if (wtid == 0) { mbar_init_v4(&mbar_kv, 1); mbar_init_v4(&mbar_qo, 1); }
     __syncthreads();
@@ -15224,6 +15224,19 @@ gqa_bwd_vz2_wgmma(
     const uint64_t descDSmn = make_desc_sw128_MN(sDS);
     const uint64_t descDSk  = make_desc_sw128_K (sDS);
 
+    uint32_t qopar = 0, kvpar = 0;
+    // PERSISTENT: 132 CTAs pull k-tile work-items from an atomic counter (recovers the ~10% wave-transition
+    // idle of the 2048-CTA grid). Causal-pair k-tile order keeps the concurrent working set L2-resident.
+    while (true) {
+        if (wtid == 0) s_w = atomicAdd(gWork, 1);
+        __syncthreads();
+        const int w = s_w;
+        if (w >= totalW) break;
+        const int grp = w / WKV, pos = w % WKV;
+        const int kt = (pos & 1) ? (WKV - 1 - (pos >> 1)) : (pos >> 1);
+        const int hkv = grp % Hkv, b = grp / Hkv;
+        const int k_row0 = kt * Bc;
+
     const uint32_t kvRow = (uint32_t)((b*Hkv+hkv)*S + k_row0);
     if (wtid == 0) {
         mbar_expect_tx_v4(&mbar_kv, (uint32_t)(Bc*64*sizeof(bf16))*4);
@@ -15232,7 +15245,7 @@ gqa_bwd_vz2_wgmma(
         tma_load_2d_v4(&tma_V, sV_sw,       &mbar_kv, 0,  kvRow);
         tma_load_2d_v4(&tma_V, sV_sw+64*64, &mbar_kv, 64, kvRow);
     }
-    mbar_wait_v4(&mbar_kv, 0);
+    mbar_wait_v4(&mbar_kv, kvpar); kvpar ^= 1;
 
     float dv[64], dk[64];
     zeroN<64>(dv); zeroN<64>(dk);
@@ -15241,29 +15254,20 @@ gqa_bwd_vz2_wgmma(
     // half1 dK-gemm frees sQ/sdO, overlapping the dQ-reduce (which touches only sStage). No ring, no
     // smem cost, 2 CTAs preserved. Attacks long_scoreboard 2.51 (loads were issued-then-immediately-waited).
     const int nq_ = nQ - kt, nIter = G * nq_;
-    // SPLIT prefetch: dO is issued the moment the dV-GEMM frees sdO (half0) so its 32 KB fully hides;
-    // Q is issued after the dK-GEMM frees sQ (half1). One mbar tracks both -> exposed load ≈ Q only.
-    auto issue_dO = [&](int it) {            // arm mbar (total Q+dO) + load dO, LSE, Drow
+    auto issue = [&](int it) {
         const int g = it / nq_, q = kt + it % nq_, hq = hkv*G + g;
         const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
         const long lb = (long)(b*Hq+hq)*S + (long)q*Br;
         if (wtid == 0) {
             mbar_expect_tx_v4(&mbar_qo, (uint32_t)(Br*D*sizeof(bf16))*2);
+            tma_load_2d_v4(&tma_Q,  sQ_sw,        &mbar_qo, 0,  qRow);
+            tma_load_2d_v4(&tma_Q,  sQ_sw+64*64,  &mbar_qo, 64, qRow);
             tma_load_2d_v4(&tma_dO, sdO_sw,       &mbar_qo, 0,  qRow);
             tma_load_2d_v4(&tma_dO, sdO_sw+64*64, &mbar_qo, 64, qRow);
         }
         if (wtid < Br) { sLSE[wtid] = LSE[lb+wtid]; sD[wtid] = Drow[lb+wtid]; }
     };
-    auto issue_Q = [&](int it) {             // load Q (mbar already armed by issue_dO)
-        const int g = it / nq_, q = kt + it % nq_, hq = hkv*G + g;
-        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
-        if (wtid == 0) {
-            tma_load_2d_v4(&tma_Q, sQ_sw,       &mbar_qo, 0,  qRow);
-            tma_load_2d_v4(&tma_Q, sQ_sw+64*64, &mbar_qo, 64, qRow);
-        }
-    };
-    uint32_t qopar = 0;
-    issue_dO(0); issue_Q(0);                            // prologue: full load of tile 0
+    issue(0);                                          // prologue: load tile 0
 
     for (int it = 0; it < nIter; it++) {
         const int g = it / nq_, q = kt + it % nq_, hq = hkv*G + g;
@@ -15297,7 +15301,6 @@ gqa_bwd_vz2_wgmma(
             run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKh0, sQ_sw + 0);
             if (wtid == 0) tma_bulk_wait0_v43();        // drain PREV reduces — moved BEFORE the wgmma wait
             run_gemm_dVdKdQ_te_wait(dv, dk, dq);        //   so thread 0's drain overlaps the dK/dQ GEMM
-            if (it + 1 < nIter) issue_dO(it + 1);       // prefetch next dO — sdO free after dV (early, hides)
             __syncthreads();
             store_acc_sw128_f32(dq, sStage[0], wtid, scale);
             __syncthreads(); fence_proxy_async_shared();
@@ -15310,8 +15313,8 @@ gqa_bwd_vz2_wgmma(
         {   float dq[32]; zeroN<32>(dq);
             run_gemm_dKdQ_te_issue_ho(dk+32, dq, descDSmn, descDSk, descKh1, sQ_sw + 4096);
             run_gemm_dVdKdQ_te_wait(dv, dk+32, dq);
-            __syncthreads();                            // all threads done reading sQ
-            if (it + 1 < nIter) issue_Q(it + 1);        // prefetch next Q — sQ free after dK (late; exposed)
+            __syncthreads();                            // all threads done reading sQ/sdO
+            if (it + 1 < nIter) issue(it + 1);          // prefetch next tile into same buffer (overlap)
             store_acc_sw128_f32(dq, sStage[1], wtid, scale);
             __syncthreads(); fence_proxy_async_shared();
             if (wtid == 0) {
@@ -15338,6 +15341,8 @@ gqa_bwd_vz2_wgmma(
         tma_store_2d_v34(&tma_dK_st, sdO_sw + 4096, 64, kvRow);
         tma_store_commit_v34(); tma_store_wait_v34();
     }
+    __syncthreads();   // work-item boundary
+    }   // end persistent while
 }
 
 template<int Br, int Bc, int D>
@@ -15380,8 +15385,13 @@ void launch_gqa_backward_vz2(
     const int dBlock=256; const long dGrid=(drowN+(dBlock/32)-1)/(dBlock/32);
     compute_drowsum_v22<<<(unsigned)dGrid,dBlock>>>(d_dO,d_O,d_Drow,drowN);
 
-    dim3 GRID(S/Bc, Hkv, B);
-    gqa_bwd_vz2_wgmma<Br,Bc,D><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale);
+    int dev=0; CUDA_CHECK(cudaGetDevice(&dev));
+    int nSM=0; CUDA_CHECK(cudaDeviceGetAttribute(&nSM, cudaDevAttrMultiProcessorCount, dev));
+    const int totalW = B * Hkv * (S / Bc);
+    static int* d_gWork=nullptr;
+    if (!d_gWork) CUDA_CHECK(cudaMalloc(&d_gWork, sizeof(int)));
+    CUDA_CHECK(cudaMemset(d_gWork, 0, sizeof(int)));
+    gqa_bwd_vz2_wgmma<Br,Bc,D><<<(unsigned)nSM,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale,d_gWork,totalW);
 
     const int cB=256; const long dqN4=dqN/4; const int cG=(int)((dqN4+cB-1)/cB);
     convert_dq_accum_to_bf16_v6<<<cG,cB>>>(reinterpret_cast<const float4*>(d_dqa), reinterpret_cast<uint2*>(d_dQ), dqN4);
