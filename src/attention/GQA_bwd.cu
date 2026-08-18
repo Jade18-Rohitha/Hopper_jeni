@@ -1849,17 +1849,6 @@ __global__ void convert_dq_accum_to_bf16_v6(const float4 * __restrict__ in, uint
         out[i] = *reinterpret_cast<const uint2*>(o);
     }
 }
-// Vc8: sum two fp32 dQ accumulators (wg0 + wg1 private) -> bf16, vectorized float4->uint2.
-__global__ void convert_dq_accum2_sum_v6(const float4 * __restrict__ inA, const float4 * __restrict__ inB,
-                                         uint2 * __restrict__ out, long n4) {
-    long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n4) {
-        float4 a = inA[i], b = inB[i];
-        bf16 o[4] = { __float2bfloat16(a.x + b.x), __float2bfloat16(a.y + b.y),
-                      __float2bfloat16(a.z + b.z), __float2bfloat16(a.w + b.w) };
-        out[i] = *reinterpret_cast<const uint2*>(o);
-    }
-}
 
 // ── V5 — fused dQ + dK + dV ──  Grid (B,Hkv,S/Bc), 128 threads (one warpgroup).
 //   Persistent (per K-tile): K swizzled (S=Q·Kᵀ B), K plain (dQ=dS·K B), V swizzled.
@@ -14590,356 +14579,6 @@ void launch_gqa_backward_vp1(
         reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
-template<int Br, int Bc, int D>
-__global__ void __launch_bounds__(384, 1)
-gqa_backward_vc8_kv(
-    const __grid_constant__ CUtensorMap tma_K_sw,
-    const __grid_constant__ CUtensorMap tma_V_sw,
-    const __grid_constant__ CUtensorMap tma_Q_sw,
-    const __grid_constant__ CUtensorMap tma_dO_sw,
-    const __grid_constant__ CUtensorMap tma_dV_st,
-    const __grid_constant__ CUtensorMap tma_dK_st,
-    const __grid_constant__ CUtensorMap tma_dq_red,
-    const __grid_constant__ CUtensorMap tma_dq_red2,   // Vc8: wg1's private dQ accumulator (summed in convert)
-    const float * __restrict__ d_Drow,
-    const float * __restrict__ d_LSE,
-    bf16 * __restrict__ d_dK, bf16 * __restrict__ d_dV,
-    int B, int Hq, int Hkv, int G, int S, float scale,
-    int * __restrict__ gWork, int totalW
-) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "Vp1 requires Br=Bc=64, D=128");
-    constexpr int PD = 2;   // Q/dO ring 3->2 funds double-buffered K/V (net-neutral smem)
-
-    __shared__ __align__(128)  bf16 sK_sw[2][Bc * D];   // double-buffered for in-pair K/V prefetch
-    __shared__ __align__(128)  bf16 sV_sw[2][Bc * D];
-    __shared__ __align__(128)  bf16 sQ_sw [PD][Br * D];
-    __shared__ __align__(128)  bf16 sdO_sw[PD][Br * D];
-    __shared__ __align__(1024) float sS [2][Br * 64];
-    __shared__ __align__(1024) float sdP[2][Br * 64];
-    __shared__ __align__(1024) bf16  sP [2][Br * 64];   // Vc8 combo: per-wg (each wg = own k-tile)
-    __shared__ __align__(1024) bf16  sDS[2][Br * 64];   // Vc8 combo: per-wg dS
-    __shared__                 float sLSE[PD][Br];
-    __shared__                 float sD  [PD][Br];
-    __shared__ __align__(8)    uint64_t mbar_kv[2];
-    __shared__ __align__(8)    uint64_t full   [PD];
-    __shared__ __align__(8)    uint64_t empty  [PD];
-    __shared__ __align__(8)    uint64_t d_ready[PD];
-    __shared__ int s_w;
-
-    const int tid  = threadIdx.x;
-    const int wg   = tid >> 7;
-    const int wtid = tid & 127;
-    const int nQTiles = S / Br;
-    const int WKV     = S / Bc;                 // k-tiles per (b,hkv)
-    const uint32_t bytesTile = (uint32_t)(Br * D * sizeof(bf16));
-    const uint32_t bytesAtom = (uint32_t)(Bc * 64 * sizeof(bf16));
-
-    if (tid == 0) {
-        mbar_init_v4(&mbar_kv[0], 1);
-        mbar_init_v4(&mbar_kv[1], 1);
-        #pragma unroll
-        for (int i = 0; i < PD; i++) {
-            mbar_init_v4(&full[i], 1);
-            mbar_init_v4(&empty[i], 2);          // early-empty: each consumer wg signals independently
-            mbar_init_v4(&d_ready[i], 1);
-        }
-    }
-    __syncthreads();
-
-    // reg budget + wgmma descriptors set ONCE — K/V double-buffered so one descriptor set per buffer.
-    if (wg == 2) reg_dec_producer_v30(); else reg_inc_consumer_v30();
-    const float scale2 = scale * LOG2E_V29;
-    const bool  leader = (tid == 256);
-    const int   pl     = tid - 256;
-    // --- Vc8 COMBO descriptors: each consumer wg owns a WHOLE k-tile in buffer [wg] ---
-    uint64_t descK=0, descV=0, descP=0, descKhalf0=0, descKhalf1=0, descDSmn=0, descDSk=0;
-    if (wg != 2) {
-        descK      = make_desc_sw128_K (sK_sw[wg]);          // S  = Q  @ K^T
-        descV      = make_desc_sw128_K (sV_sw[wg]);          // dP = dO @ V^T
-        descP      = make_desc_sw128_MN(sP[wg]);             // dV = P^T @ dO
-        descKhalf0 = make_desc_sw128_MN(sK_sw[wg]);          // dQ[:,0:64]  = dS @ K[:,0:64]
-        descKhalf1 = make_desc_sw128_MN(sK_sw[wg] + 4096);   // dQ[:,64:128]= dS @ K[:,64:128]
-        descDSmn   = make_desc_sw128_MN(sDS[wg]);            // dK = dS^T @ Q
-        descDSk    = make_desc_sw128_K (sDS[wg]);
-    }
-
-    // ===================== Vc8 COMBO scheduler: ADJACENT k-tile PAIRS =====================
-    // work-item = pair index p -> k-tiles {2p, 2p+1}. wg0 owns 2p (buffers[0]), wg1 owns 2p+1
-    // (buffers[1]). The pair SHARES one Q/dO stream (loaded once) -> halves Q/dO L2 traffic.
-    // Both wgs iterate q in [2p, nQTiles); wg1's diagonal q=2p is causal-masked to zero.
-    // totalW (host) = B*Hkv*(WKV/2) = number of pairs.
-    const int PAIRS = WKV / 2;
-    auto decodePair = [&](int idx, int& b, int& hkv, int& ktA, uint32_t& rowA, uint32_t& rowB,
-                          int& qc0, int& nIter) {
-        const int grp = idx / PAIRS, pos = idx % PAIRS;
-        // CAUSAL-PAIR THE PAIRS: order pos -> {0, PAIRS-1, 1, PAIRS-2, ...} so consecutive atomic grabs
-        // sum to CONSTANT work (G*(nQTiles-2p) + G*(nQTiles-2(PAIRS-1-p)) = const) -> the 132 CTAs stay
-        // in lockstep, cluster on ~2-3 (b,hkv) groups, hold L2 (Vp1's 96% trick). Each pair is still
-        // adjacent k-tiles {2p,2p+1} -> shared Q/dO intact; only the grab ORDER changes.
-        const int p = (pos & 1) ? (PAIRS - 1 - (pos >> 1)) : (pos >> 1);
-        ktA = 2 * p; hkv = grp % Hkv; b = grp / Hkv;
-        rowA = (uint32_t)((b * Hkv + hkv) * S + ktA       * Bc);
-        rowB = (uint32_t)((b * Hkv + hkv) * S + (ktA + 1) * Bc);
-        qc0 = ktA; nIter = G * (nQTiles - qc0);
-    };
-    auto loadPairKV = [&](int idx) {
-        int b_,hkv_,kt_,qc_,ni_; uint32_t rA,rB; decodePair(idx,b_,hkv_,kt_,rA,rB,qc_,ni_);
-        mbar_expect_tx_v4(&mbar_kv[0], bytesAtom * 4);
-        tma_load_2d_v4(&tma_K_sw, sK_sw[0],           &mbar_kv[0], 0,  rA);
-        tma_load_2d_v4(&tma_K_sw, sK_sw[0] + 64 * 64, &mbar_kv[0], 64, rA);
-        tma_load_2d_v4(&tma_V_sw, sV_sw[0],           &mbar_kv[0], 0,  rA);
-        tma_load_2d_v4(&tma_V_sw, sV_sw[0] + 64 * 64, &mbar_kv[0], 64, rA);
-        mbar_expect_tx_v4(&mbar_kv[1], bytesAtom * 4);
-        tma_load_2d_v4(&tma_K_sw, sK_sw[1],           &mbar_kv[1], 0,  rB);
-        tma_load_2d_v4(&tma_K_sw, sK_sw[1] + 64 * 64, &mbar_kv[1], 64, rB);
-        tma_load_2d_v4(&tma_V_sw, sV_sw[1],           &mbar_kv[1], 0,  rB);
-        tma_load_2d_v4(&tma_V_sw, sV_sw[1] + 64 * 64, &mbar_kv[1], 64, rB);
-    };
-    uint32_t kvpar[2] = {0,0};
-    uint32_t epar[PD] = {0}, cpar[PD] = {0}, dpar[PD] = {0};
-    int git = 0;
-
-    while (true) {
-        if (tid == 0) s_w = atomicAdd(gWork, 2);   // Vc8: grab a BALANCED chunk of 2 causal-paired pairs
-        __syncthreads();
-        const int base = s_w;
-        if (base >= totalW) break;
-        for (int cc = 0; cc < 2; cc++) {           // process the chunk's 2 pairs; {base,base+1}={heavy,light}
-        const int w = base + cc;
-        if (w >= totalW) break;
-        int b, hkv, ktA, qc0, nIter; uint32_t rowA, rowB;
-        decodePair(w, b, hkv, ktA, rowA, rowB, qc0, nIter);
-        const int k_row0 = (ktA + wg) * Bc;   // this consumer wg's k-tile row (wg2 unused)
-
-        if (wg == 2) {
-            // -------- PRODUCER: load BOTH k-tiles' K/V once, then shared Q/dO per q-tile --------
-            if (leader) loadPairKV(w);
-            int gP = 0, qcP = qc0;
-            for (int it = 0; it < nIter; it++) {
-                const int s = git % PD;
-                if (git >= PD) { mbar_wait_v4(&empty[s], epar[s]); epar[s] ^= 1; }
-                const int  hqP   = hkv * G + gP;
-                const long dbase = (long)(b * Hq + hqP) * S + (long)qcP * Br;
-                if (leader) {
-                    const uint32_t r = (uint32_t)((b * Hq + hqP) * S + qcP * Br);
-                    mbar_expect_tx_v4(&full[s], bytesTile * 2);
-                    tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s],           &full[s], 0,  r);
-                    tma_load_2d_v4(&tma_Q_sw,  sQ_sw [s] + 64 * 64, &full[s], 64, r);
-                    tma_load_2d_v4(&tma_dO_sw, sdO_sw[s],           &full[s], 0,  r);
-                    tma_load_2d_v4(&tma_dO_sw, sdO_sw[s] + 64 * 64, &full[s], 64, r);
-                }
-                if (pl < Br) { sD[s][pl] = d_Drow[dbase + pl]; sLSE[s][pl] = d_LSE[dbase + pl]; }
-                producer_sync();
-                if (leader) mbar_arrive_v11(&d_ready[s]);
-                git++;
-                if (++qcP == nQTiles) { qcP = qc0; ++gP; }
-            }
-        } else {
-            // -------- CONSUMER: this wg does a FULL flash-bwd for its OWN k-tile (buffer[wg]) --------
-            mbar_wait_v4(&mbar_kv[wg], kvpar[wg]); kvpar[wg] ^= 1;
-            float dv[64]; zeroN<64>(dv);
-            float dk[64]; zeroN<64>(dk);
-            int gC = 0, qcC = qc0;
-            for (int it = 0; it < nIter; it++) {
-                const int s = git % PD;
-                const int q_row0 = qcC * Br;
-                mbar_wait_v4(&full[s], cpar[s]); cpar[s] ^= 1;
-                mbar_wait_v4(&d_ready[s], dpar[s]); dpar[s] ^= 1;
-
-                // S = Q @ K_my^T  (masked per this wg's k-tile) ; dP = dO @ V_my^T
-                float acc[32]; zeroN<32>(acc);
-                run_gemm_n64_sw2_hoB(acc, sQ_sw[s], descK);
-                // diagonal/masked whenever q-tile <= THIS wg's own k-tile (ktA+wg); wg1's diagonal is at
-                // qcC=2p+1, NOT qc0=2p — the true-mask also fully-masks the qcC<mykt (wg1 q=2p) tile.
-                if (qcC <= ktA + wg) fused_p_stsm<Bc, true >(acc, sP[wg], sLSE[s], wtid, q_row0, k_row0, scale2);
-                else                 fused_p_stsm<Bc, false>(acc, sP[wg], sLSE[s], wtid, 0,       0,      scale2);
-                float dPacc[32]; zeroN<32>(dPacc);
-                run_gemm_n64_sw2_hoB(dPacc, sdO_sw[s], descV);
-                if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-
-                // dV += P^T @ dO  (both D-halves, 2x m64n64)
-                run_gemm_dVdK_half_te_issue_hoA(dv,      descP, sdO_sw[s] + 0);
-                run_gemm_dVdK_half_te_issue_hoA(dv + 32, descP, sdO_sw[s] + 4096);
-                // dS = P .* (dP - D) -> sDS[wg]
-                fuse_dS_ldstsm<Bc>(sP[wg], dPacc, sD[s], sDS[wg], wtid);
-                if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-
-                const int hqC = hkv * G + gC;
-                const uint32_t crow = (uint32_t)((b * Hq + hqC) * S + qcC * Br);
-
-                // dK (both halves) + dQ, DECOUPLED: each wg reduces its OWN k-tile's full-D dQ into
-                // its OWN accumulator (wg0->tma_dq_red, wg1->tma_dq_red2) -> no cross-wg barrier per
-                // q-tile, no same-address hazard; convert sums the two. h0's reduce overlaps h1's
-                // compute; one wait0 drains both + a per-wg barrier so all threads honor the drain.
-                const CUtensorMap* myred = (wg == 0) ? &tma_dq_red : &tma_dq_red2;
-                float* bh0 = (wg == 0) ? sS[0] : sdP[0];
-                float* bh1 = (wg == 0) ? sS[1] : sdP[1];
-                {   float dq[32]; zeroN<32>(dq);
-                    run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKhalf0, sQ_sw[s] + 0);
-                    run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-                    store_acc_sw128_f32(dq, bh0, wtid, scale);
-                    if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-                    fence_proxy_async_shared();
-                    if (wtid == 0) {   // commit, DON'T wait — overlap with h1's compute
-                        tma_reduce_add_2d_v43(myred, bh0,           0,  crow);
-                        tma_reduce_add_2d_v43(myred, bh0 + 64 * 32, 32, crow);
-                        tma_store_commit_v34();
-                    }
-                }
-                {   float dq[32]; zeroN<32>(dq);
-                    run_gemm_dKdQ_te_issue_ho(dk + 32, dq, descDSmn, descDSk, descKhalf1, sQ_sw[s] + 4096);
-                    run_gemm_dVdKdQ_te_wait(dv, dk + 32, dq);
-                    if (wtid == 0) mbar_arrive_v11(&empty[s]);   // slot's last use by this wg
-                    store_acc_sw128_f32(dq, bh1, wtid, scale);
-                    if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-                    fence_proxy_async_shared();
-                    if (wtid == 0) {   // commit h1, then drain BOTH h0+h1 reduces
-                        tma_reduce_add_2d_v43(myred, bh1,           64, crow);
-                        tma_reduce_add_2d_v43(myred, bh1 + 64 * 32, 96, crow);
-                        tma_store_commit_v34(); tma_bulk_wait0_v43();
-                    }
-                }
-                if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();   // threads honor the drain
-                git++;
-                if (++qcC == nQTiles) { qcC = qc0; ++gC; }
-            }
-
-            // CROSS-WG LOCKSTEP before epilogue: the two wgs drift (no per-q-tile cross-wg barrier),
-            // and the epilogue overwrites sQ_sw (wg0) / sdO_sw (wg1) with staged dV/dK — which the
-            // OTHER wg may still be reading for its last q-tiles' gemms. Sync both wgs here so all
-            // compute finishes before either stages into the shared Q/dO ring. One barrier per PAIR.
-            consumer_sync();
-
-            // epilogue: stage dV/dK for THIS wg's k-tile into the (now-free) sQ ring, TMA-store to its rows
-            // Each wg stages its FULL [64x128] dV+dK (4x [64x64] tiles = 16384 bf16) into its own
-            // half of the now-free Q/dO ring: wg0->sQ ring, wg1->sdO ring (no cross-wg collision).
-            bf16 *base   = (wg == 0) ? reinterpret_cast<bf16*>(&sQ_sw[0][0])
-                                     : reinterpret_cast<bf16*>(&sdO_sw[0][0]);
-            bf16 *dv_h0 = base + 0,    *dv_h1 = base + 4096;
-            bf16 *dk_h0 = base + 8192, *dk_h1 = base + 12288;
-            fence_operandN<64>(dv);
-            stage_acc_bf16_s<64, 64>(dv,      dv_h0, wtid, 1.0f);
-            stage_acc_bf16_s<64, 64>(dv + 32, dv_h1, wtid, 1.0f);
-            fence_operandN<64>(dk);
-            stage_acc_bf16_s<64, 64>(dk,      dk_h0, wtid, scale);
-            stage_acc_bf16_s<64, 64>(dk + 32, dk_h1, wtid, scale);
-            if (wg == 0) consumer_sync_wg0(); else consumer_sync_wg1();
-            fence_proxy_async_shared();
-            if (wtid == 0) {
-                const uint32_t myrow = (wg == 0) ? rowA : rowB;
-                tma_store_2d_v34(&tma_dV_st, dv_h0, 0,  myrow);
-                tma_store_2d_v34(&tma_dV_st, dv_h1, 64, myrow);
-                tma_store_2d_v34(&tma_dK_st, dk_h0, 0,  myrow);
-                tma_store_2d_v34(&tma_dK_st, dk_h1, 64, myrow);
-                tma_store_commit_v34(); tma_store_wait_v34();
-            }
-        }   // end CONSUMER branch
-        __syncthreads();   // pair boundary rendezvous (frees K/V + sQ ring for next pair)
-        }   // end chunk-of-2 loop
-    }       // end persistent while
-}
-
-
-template<int Br, int Bc, int D>
-void launch_gqa_backward_vc8(
-    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
-    const bf16 *d_dO, const float *d_LSE,
-    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
-    int B, int Hq, int Hkv, int G, int S, float scale
-) {
-    static_assert(Br == 64 && Bc == 64 && D == 128, "Vp1 requires Br=Bc=64, D=128");
-    auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
-        CUtensorMap desc{};
-        uint64_t gSize[2]   = {(uint64_t)D, total_rows};
-        uint64_t gStride[1] = {(uint64_t)D * sizeof(bf16)};
-        uint32_t box[2]     = {64u, tile_rows};
-        uint32_t eStride[2] = {1, 1};
-        CUresult r = cuTensorMapEncodeTiled(
-            &desc, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)ptr,
-            gSize, gStride, box, eStride,
-            CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
-            CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if (r != CUDA_SUCCESS) { const char* e; cuGetErrorString(r, &e);
-            fprintf(stderr, "cuTensorMapEncodeTiled(sw128) vc8: %s\n", e); exit(1); }
-        return desc;
-    };
-    const uint64_t Rq  = (uint64_t)B * Hq  * S;
-    const uint64_t Rkv = (uint64_t)B * Hkv * S;
-    CUtensorMap tma_K_sw  = make_tma_sw128(d_K,  Rkv, Bc);
-    CUtensorMap tma_V_sw  = make_tma_sw128(d_V,  Rkv, Bc);
-    CUtensorMap tma_Q_sw  = make_tma_sw128(d_Q,  Rq,  Br);
-    CUtensorMap tma_dO_sw = make_tma_sw128(d_dO, Rq,  Br);
-    auto make_tma_out = [&](const bf16* ptr, uint64_t rows) {
-        CUtensorMap desc{};
-        uint64_t gSize[2]={(uint64_t)D, rows}; uint64_t gStride[1]={(uint64_t)D*sizeof(bf16)};
-        uint32_t box[2]={64u,64u}; uint32_t eStride[2]={1,1};
-        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)ptr,gSize,gStride,box,eStride,
-            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_out vc8: %s\n",e);exit(1);} return desc; };
-    CUtensorMap tma_dV_st = make_tma_out(d_dV, Rkv);
-    CUtensorMap tma_dK_st = make_tma_out(d_dK, Rkv);
-    auto make_tma_red = [&](const float* ptr, uint64_t rows) {
-        CUtensorMap desc{};
-        uint64_t gSize[2]={(uint64_t)D, rows}; uint64_t gStride[1]={(uint64_t)D*sizeof(float)};
-        uint32_t box[2]={32u,64u}; uint32_t eStride[2]={1,1};
-        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gSize,gStride,box,eStride,
-            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"tma_red vc8: %s\n",e);exit(1);} return desc; };
-
-    const long drowN = (long)B * Hq * S;
-    static float* d_Drow  = nullptr;
-    static long   drow_cap = 0;
-    if (drowN > drow_cap) {
-        if (d_Drow) CUDA_CHECK(cudaFree(d_Drow));
-        CUDA_CHECK(cudaMalloc(&d_Drow, drowN * sizeof(float)));
-        drow_cap = drowN;
-    }
-    const long dqN = (long)B * Hq * S * D;
-    static float* d_dq_accum = nullptr;
-    static long   dq_cap     = 0;
-    if (dqN > dq_cap) {
-        if (d_dq_accum) CUDA_CHECK(cudaFree(d_dq_accum));
-        CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float)));
-        dq_cap = dqN;
-    }
-    static float* d_dq_accum2 = nullptr;   // Vc8: wg1's private dQ accumulator
-    static long   dq_cap2     = 0;
-    if (dqN > dq_cap2) {
-        if (d_dq_accum2) CUDA_CHECK(cudaFree(d_dq_accum2));
-        CUDA_CHECK(cudaMalloc(&d_dq_accum2, dqN * sizeof(float)));
-        dq_cap2 = dqN;
-    }
-    CUDA_CHECK(cudaMemset(d_dq_accum,  0, dqN * sizeof(float)));
-    CUDA_CHECK(cudaMemset(d_dq_accum2, 0, dqN * sizeof(float)));
-    CUtensorMap tma_dq_red  = make_tma_red(d_dq_accum,  (uint64_t)B * Hq * S);
-    CUtensorMap tma_dq_red2 = make_tma_red(d_dq_accum2, (uint64_t)B * Hq * S);
-
-    const int  dBlock = 256;
-    const long dGrid  = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
-    compute_drowsum_v22<<<(unsigned)dGrid, dBlock>>>(d_dO, d_O, d_Drow, drowN);
-
-    // Persistent: launch one wave = SM count; CTAs pull (b,hkv)-major work-items from a dynamic atomic
-    // counter (gWork) so the concurrent working set stays L2-resident (cuDNN's tile-scheduler pattern).
-    int dev = 0; CUDA_CHECK(cudaGetDevice(&dev));
-    int nSM = 0; CUDA_CHECK(cudaDeviceGetAttribute(&nSM, cudaDevAttrMultiProcessorCount, dev));
-    const int totalW = B * Hkv * (S / Bc) / 2;   // Vc8: number of adjacent k-tile PAIRS
-    static int* d_gWork = nullptr;
-    if (!d_gWork) CUDA_CHECK(cudaMalloc(&d_gWork, sizeof(int)));
-    CUDA_CHECK(cudaMemset(d_gWork, 0, sizeof(int)));
-    constexpr dim3 BLOCK(384);
-    gqa_backward_vc8_kv<Br,Bc,D><<<(unsigned)nSM, BLOCK>>>(
-        tma_K_sw, tma_V_sw, tma_Q_sw, tma_dO_sw, tma_dV_st, tma_dK_st, tma_dq_red, tma_dq_red2,
-        d_Drow, d_LSE, d_dK, d_dV, B, Hq, Hkv, G, S, scale, d_gWork, totalW);
-
-    const int  convBlock = 256;
-    const long dqN4      = dqN / 4;   // D=128 -> dqN always divisible by 4; vectorized float4->4xbf16 convert
-    const int  convGrid  = (int)((dqN4 + convBlock - 1) / convBlock);
-    convert_dq_accum2_sum_v6<<<convGrid, convBlock>>>(
-        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<const float4*>(d_dq_accum2),
-        reinterpret_cast<uint2*>(d_dQ), dqN4);
-}
-
-
 // ===== Vw1 = Vp1 + 4D TMA on Q/dO producer loads (cuDNN UTMALDG.4D) — producer-throughput test =====
 // ===== base Vp1 = PERSISTENT V44 via a DYNAMIC atomic work-counter (cuDNN's actual structure) =====
 // Confirmed 2026-08-14 by 3-way ncu (V44/Vp1/cuDNN @4x12): long_scoreboard is a monotonic function of
@@ -15546,6 +15185,121 @@ void launch_gqa_backward_v45(
 // ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ==================== Vz1 — NAIVE B=8 baseline (mission fresh-start 2026-08-18) ====================
+// Grid (S/Bc, Hkv, B), 256 thr. ONE CTA per (b,hkv,k-tile). No TMA / no warp-spec / no wgmma — plain
+// global loads, smem-resident fp32 tiles, thread-per-element matmuls, register dK/dV accum, atomicAdd
+// dQ. Correct, simple, SLOW. The SM-busy baseline the Vz series stacks optimizations onto. Layout:
+// Q/dO/LSE/Drow [B,Hq,S,(D)]; K/V/dK/dV [B,Hkv,S,D]. dS=P*(dP-Drow); scale on dQ,dK not dV.
+template<int Br, int Bc, int D>
+__global__ void gqa_bwd_vz1_naive(
+    const bf16* __restrict__ Q,  const bf16* __restrict__ K,  const bf16* __restrict__ V,
+    const bf16* __restrict__ dO, const float* __restrict__ LSE, const float* __restrict__ Drow,
+    float* __restrict__ dQ_accum, bf16* __restrict__ dK, bf16* __restrict__ dV,
+    int B, int Hq, int Hkv, int G, int S, float scale) {
+    const int kt = blockIdx.x, hkv = blockIdx.y, b = blockIdx.z;
+    const int tid = threadIdx.x;
+    const int nQ = S / Br;
+    const int k_row0 = kt * Bc;
+
+    __shared__ float sK[Bc][D], sV[Bc][D], sQ[Br][D], sdO[Br][D];
+    __shared__ float sS[Br][Bc], sT[Br][Bc];
+    __shared__ float sLSE[Br], sD[Br];
+
+    constexpr int NPT = Bc * D / 256;         // dK/dV register elements per thread (=32)
+    float dvr[NPT], dkr[NPT];
+    #pragma unroll
+    for (int k = 0; k < NPT; k++) { dvr[k] = 0.f; dkr[k] = 0.f; }
+
+    const long kvbase = ((long)(b * Hkv + hkv) * S + k_row0) * D;
+    for (int i = tid; i < Bc * D; i += 256) {
+        sK[i / D][i % D] = __bfloat162float(K[kvbase + i]);
+        sV[i / D][i % D] = __bfloat162float(V[kvbase + i]);
+    }
+    __syncthreads();
+
+    for (int g = 0; g < G; g++) {
+        const int hq = hkv * G + g;
+        for (int q = kt; q < nQ; q++) {                          // causal: q-tile >= k-tile
+            const long qbase = ((long)(b * Hq + hq) * S + (long)q * Br) * D;
+            const long lbase =  (long)(b * Hq + hq) * S + (long)q * Br;
+            for (int i = tid; i < Br * D; i += 256) {
+                sQ [i / D][i % D] = __bfloat162float(Q [qbase + i]);
+                sdO[i / D][i % D] = __bfloat162float(dO[qbase + i]);
+            }
+            if (tid < Br) { sLSE[tid] = LSE[lbase + tid]; sD[tid] = Drow[lbase + tid]; }
+            __syncthreads();
+
+            for (int idx = tid; idx < Br * Bc; idx += 256) {     // S=scale*QKᵀ ; P=exp(S-LSE) causal
+                const int r = idx / Bc, c = idx % Bc;
+                float acc = 0.f;
+                for (int d = 0; d < D; d++) acc += sQ[r][d] * sK[c][d];
+                const int qg = q * Br + r, kg = k_row0 + c;
+                sS[r][c] = (kg <= qg) ? __expf(acc * scale - sLSE[r]) : 0.f;
+            }
+            for (int idx = tid; idx < Br * Bc; idx += 256) {     // dP=dO@Vᵀ ; dS=P*(dP-Drow)
+                const int r = idx / Bc, c = idx % Bc;
+                float acc = 0.f;
+                for (int d = 0; d < D; d++) acc += sdO[r][d] * sV[c][d];
+                sT[r][c] = sS[r][c] * (acc - sD[r]);
+            }
+            __syncthreads();
+
+            #pragma unroll
+            for (int k = 0; k < NPT; k++) {                      // dV+=Pᵀ·dO ; dK+=dSᵀ·Q (reg accum)
+                const int idx = tid + k * 256, c = idx / D, d = idx % D;
+                float av = 0.f, ak = 0.f;
+                for (int r = 0; r < Br; r++) { av += sS[r][c] * sdO[r][d]; ak += sT[r][c] * sQ[r][d]; }
+                dvr[k] += av; dkr[k] += ak;
+            }
+            for (int idx = tid; idx < Br * D; idx += 256) {      // dQ += scale·dS·K  (atomic accum)
+                const int r = idx / D, d = idx % D;
+                float aq = 0.f;
+                for (int c = 0; c < Bc; c++) aq += sT[r][c] * sK[c][d];
+                atomicAdd(&dQ_accum[qbase + r * D + d], aq * scale);
+            }
+            __syncthreads();
+        }
+    }
+    #pragma unroll
+    for (int k = 0; k < NPT; k++) {                              // store dK(×scale), dV
+        const int idx = tid + k * 256;
+        dK[kvbase + idx] = __float2bfloat16(dkr[k] * scale);
+        dV[kvbase + idx] = __float2bfloat16(dvr[k]);
+    }
+}
+
+template<int Br, int Bc, int D>
+void launch_gqa_backward_vz1(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale) {
+    const long drowN = (long)B * Hq * S;
+    static float* d_Drow = nullptr; static long drow_cap = 0;
+    if (drowN > drow_cap) { if (d_Drow) CUDA_CHECK(cudaFree(d_Drow));
+        CUDA_CHECK(cudaMalloc(&d_Drow, drowN * sizeof(float))); drow_cap = drowN; }
+    const long dqN = (long)B * Hq * S * D;
+    static float* d_dq_accum = nullptr; static long dq_cap = 0;
+    if (dqN > dq_cap) { if (d_dq_accum) CUDA_CHECK(cudaFree(d_dq_accum));
+        CUDA_CHECK(cudaMalloc(&d_dq_accum, dqN * sizeof(float))); dq_cap = dqN; }
+    CUDA_CHECK(cudaMemset(d_dq_accum, 0, dqN * sizeof(float)));
+
+    const int dBlock = 256;
+    const long dGrid = (drowN + (dBlock / 32) - 1) / (dBlock / 32);
+    compute_drowsum_v22<<<(unsigned)dGrid, dBlock>>>(d_dO, d_O, d_Drow, drowN);
+
+    dim3 GRID(S / Bc, Hkv, B);
+    gqa_bwd_vz1_naive<Br, Bc, D><<<GRID, 256>>>(
+        d_Q, d_K, d_V, d_dO, d_LSE, d_Drow, d_dq_accum, d_dK, d_dV, B, Hq, Hkv, G, S, scale);
+
+    const int  convBlock = 256;
+    const long dqN4 = dqN / 4;
+    const int  convGrid = (int)((dqN4 + convBlock - 1) / convBlock);
+    convert_dq_accum_to_bf16_v6<<<convGrid, convBlock>>>(
+        reinterpret_cast<const float4*>(d_dq_accum), reinterpret_cast<uint2*>(d_dQ), dqN4);
+}
+
 int main(){
     std::cout << "GQA Backward — precision test  [Hopper SM_90 / H200]\n";
     std::cout << "Prerequisite: python precision/baseline_gqa.py\n\n";
@@ -15818,9 +15572,9 @@ int main(){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── Vp1 Br=64 Bc=64 PERSISTENT V44 warm-bridge (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_vc8<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    launch_gqa_backward_vz1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── Vc8 Br=64 Bc=64 COMBO one-full-k-tile-per-wg shared Q/dO (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── Vz1 NAIVE baseline (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_vr1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -16165,10 +15919,10 @@ int main(){
     }
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_vc8<Br2,Bc2,D>(
+            [&](){ launch_gqa_backward_vz1<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd Vc8 COMBO one-full-k-tile-per-wg shared Q/dO  (Hopper SM_90)", s);
+        displayStats("GQA bwd Vz1 NAIVE baseline  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(
