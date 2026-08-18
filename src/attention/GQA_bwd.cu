@@ -15264,13 +15264,16 @@ gqa_bwd_vz2_wgmma(
         // NOTE: no post-load barrier — sQ visibility is guaranteed by mbar_wait (TMA completion), and
         // sLSE/sD were written+published by the PREVIOUS tile's store-barrier (prefetch). One barrier saved.
 
-        // S = Q@Kᵀ -> P ; dP = dO@Vᵀ
-        float acc[32]; zeroN<32>(acc);
-        run_gemm_n64_sw2_hoB(acc, sQ_sw, descK);
+        // S = Q@Kᵀ and dP = dO@Vᵀ ISSUED TOGETHER (overlap on the tensor pipe), waited once — instead of
+        // S(wait)→fused_p→dP(wait) which serialized the two GEMMs. Attacks wait 1.28 + 44%-idle pipe.
+        float acc[32];   zeroN<32>(acc);
+        float dPacc[32]; zeroN<32>(dPacc);
+        run_gemm_n64_sw2_hoB_issue(acc,   sQ_sw,  descK);
+        run_gemm_n64_sw2_hoB_issue(dPacc, sdO_sw, descV);
+        wgmma_wait0();
+        fence_operandN<32>(acc); fence_operandN<32>(dPacc);
         if (q == kt) fused_p_stsm<Bc,true >(acc, sP, sLSE, wtid, q*Br, k_row0, scale2);
         else         fused_p_stsm<Bc,false>(acc, sP, sLSE, wtid, 0, 0, scale2);
-        float dPacc[32]; zeroN<32>(dPacc);
-        run_gemm_n64_sw2_hoB(dPacc, sdO_sw, descV);
         __syncthreads();
 
         run_gemm_dVdK_half_te_issue_hoA(dv,    descP, sdO_sw + 0);
