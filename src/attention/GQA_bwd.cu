@@ -15287,8 +15287,8 @@ gqa_bwd_vz2_wgmma(
         // prefetch overlaps half1's store+reduce. (Combining into one wait0 lost that overlap → slower.)
         {   float dq[32]; zeroN<32>(dq);
             run_gemm_dKdQ_te_issue_ho(dk, dq, descDSmn, descDSk, descKh0, sQ_sw + 0);
-            run_gemm_dVdKdQ_te_wait(dv, dk, dq);
-            if (wtid == 0) tma_bulk_wait0_v43();        // drain PREV tile's 2 deferred reduces (overlapped)
+            if (wtid == 0) tma_bulk_wait0_v43();        // drain PREV reduces — moved BEFORE the wgmma wait
+            run_gemm_dVdKdQ_te_wait(dv, dk, dq);        //   so thread 0's drain overlaps the dK/dQ GEMM
             __syncthreads();
             store_acc_sw128_f32(dq, sStage[0], wtid, scale);
             __syncthreads(); fence_proxy_async_shared();
