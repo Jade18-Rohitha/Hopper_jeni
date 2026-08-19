@@ -15379,19 +15379,21 @@ void launch_gqa_backward_vz2(
 }
 
 
-// ===== Vz3 = Vz2 + PERSISTENT (264 CTAs = 2/SM): kill wave-transition SM-idle at full occupancy =====
+// ===== Vj1 = clone of Vz2 (champion baseline) — the fresh kernel we stack NEW levers onto =====
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(128, 1)
-gqa_bwd_vz3_persist(
+gqa_bwd_vj1(
     const __grid_constant__ CUtensorMap tma_K,  const __grid_constant__ CUtensorMap tma_V,
     const __grid_constant__ CUtensorMap tma_Q,  const __grid_constant__ CUtensorMap tma_dO,
     const __grid_constant__ CUtensorMap tma_dV_st, const __grid_constant__ CUtensorMap tma_dK_st,
     const __grid_constant__ CUtensorMap tma_dq_red,
     const float* __restrict__ LSE, const float* __restrict__ Drow,
-    int B, int Hq, int Hkv, int G, int S, float scale,
-    int* __restrict__ gWork, int totalW) {
+    int B, int Hq, int Hkv, int G, int S, float scale) {
+    const int kt = blockIdx.x, hq = blockIdx.y, b = blockIdx.z;
+    const int hkv = hq / G;
     const int wtid = threadIdx.x;
-    const int nQ = S / Br, WKV = S / Bc;
+    const int nQ = S / Br;
+    const int k_row0 = kt * Bc;
     const float scale2 = scale * LOG2E_V29;
 
     __shared__ __align__(128)  bf16  sK_sw[Bc*D], sV_sw[Bc*D], sQ_sw[Br*D], sdO_sw[Br*D];
@@ -15399,7 +15401,6 @@ gqa_bwd_vz3_persist(
     __shared__ __align__(1024) float sStage[2][Br*64];   // double-buffered: both dQ halves deferred
     __shared__ float sLSE[Br], sD[Br];
     __shared__ __align__(8) uint64_t mbar_kv, mbar_qo;
-    __shared__ int s_w;
 
     if (wtid == 0) { mbar_init_v4(&mbar_kv, 1); mbar_init_v4(&mbar_qo, 1); }
     __syncthreads();
@@ -15412,18 +15413,6 @@ gqa_bwd_vz3_persist(
     const uint64_t descDSmn = make_desc_sw128_MN(sDS);
     const uint64_t descDSk  = make_desc_sw128_K (sDS);
 
-    uint32_t qopar = 0, kvpar = 0;
-    // PERSISTENT (264 CTAs = 2/SM): recover the ~10% wave-transition SM-idle while keeping 2 CTAs/SM.
-    while (true) {
-        if (wtid == 0) s_w = atomicAdd(gWork, 1);
-        __syncthreads();
-        const int w = s_w;
-        if (w >= totalW) break;
-        const int grp = w / WKV, pos = w % WKV;
-        const int kt = (pos & 1) ? (WKV - 1 - (pos >> 1)) : (pos >> 1);
-        const int hkv = grp % Hkv, b = grp / Hkv;
-        const int k_row0 = kt * Bc;
-
     const uint32_t kvRow = (uint32_t)((b*Hkv+hkv)*S + k_row0);
     if (wtid == 0) {
         mbar_expect_tx_v4(&mbar_kv, (uint32_t)(Bc*64*sizeof(bf16))*4);
@@ -15432,7 +15421,7 @@ gqa_bwd_vz3_persist(
         tma_load_2d_v4(&tma_V, sV_sw,       &mbar_kv, 0,  kvRow);
         tma_load_2d_v4(&tma_V, sV_sw+64*64, &mbar_kv, 64, kvRow);
     }
-    mbar_wait_v4(&mbar_kv, kvpar); kvpar ^= 1;
+    mbar_wait_v4(&mbar_kv, 0);
 
     float dv[64], dk[64];
     zeroN<64>(dv); zeroN<64>(dk);
@@ -15440,9 +15429,9 @@ gqa_bwd_vz3_persist(
     // SINGLE-BUFFER SOFTWARE PREFETCH: issue tile it+1's Q/dO TMA into the SAME buffer right after the
     // half1 dK-gemm frees sQ/sdO, overlapping the dQ-reduce (which touches only sStage). No ring, no
     // smem cost, 2 CTAs preserved. Attacks long_scoreboard 2.51 (loads were issued-then-immediately-waited).
-    const int nq_ = nQ - kt, nIter = G * nq_;
+    const int nq_ = nQ - kt, nIter = nq_;   // Vj1 per-hq: ONE query head per CTA
     auto issue = [&](int it) {
-        const int g = it / nq_, q = kt + it % nq_, hq = hkv*G + g;
+        const int q = kt + it;
         const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
         const long lb = (long)(b*Hq+hq)*S + (long)q*Br;
         if (wtid == 0) {
@@ -15454,10 +15443,11 @@ gqa_bwd_vz3_persist(
         }
         if (wtid < Br) { sLSE[wtid] = LSE[lb+wtid]; sD[wtid] = Drow[lb+wtid]; }
     };
+    uint32_t qopar = 0;
     issue(0);                                          // prologue: load tile 0
 
     for (int it = 0; it < nIter; it++) {
-        const int g = it / nq_, q = kt + it % nq_, hq = hkv*G + g;
+        const int q = kt + it;
         const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
         mbar_wait_v4(&mbar_qo, qopar); qopar ^= 1;
         // NOTE: no post-load barrier — sQ visibility is guaranteed by mbar_wait (TMA completion), and
@@ -15521,19 +15511,18 @@ gqa_bwd_vz3_persist(
     stage_acc_bf16_s<64,64>(dk,    sdO_sw + 0,    wtid, scale);
     stage_acc_bf16_s<64,64>(dk+32, sdO_sw + 4096, wtid, scale);
     __syncthreads(); fence_proxy_async_shared();
+    const uint32_t hqRow = (uint32_t)((b*Hq+hq)*S + k_row0);   // Vj1: per-hq partial dV/dK row
     if (wtid == 0) {
-        tma_store_2d_v34(&tma_dV_st, sQ_sw + 0,    0,  kvRow);
-        tma_store_2d_v34(&tma_dV_st, sQ_sw + 4096, 64, kvRow);
-        tma_store_2d_v34(&tma_dK_st, sdO_sw + 0,    0,  kvRow);
-        tma_store_2d_v34(&tma_dK_st, sdO_sw + 4096, 64, kvRow);
+        tma_store_2d_v34(&tma_dV_st, sQ_sw + 0,    0,  hqRow);
+        tma_store_2d_v34(&tma_dV_st, sQ_sw + 4096, 64, hqRow);
+        tma_store_2d_v34(&tma_dK_st, sdO_sw + 0,    0,  hqRow);
+        tma_store_2d_v34(&tma_dK_st, sdO_sw + 4096, 64, hqRow);
         tma_store_commit_v34(); tma_store_wait_v34();
     }
-    __syncthreads();
-    }   // end persistent while
 }
 
 template<int Br, int Bc, int D>
-void launch_gqa_backward_vz3(
+void launch_gqa_backward_vj1(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
     const bf16 *d_dO, const float *d_LSE,
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
@@ -15560,7 +15549,11 @@ void launch_gqa_backward_vz3(
     const uint64_t Rq=(uint64_t)B*Hq*S, Rkv=(uint64_t)B*Hkv*S;
     CUtensorMap tK=make_tma_sw128(d_K,Rkv,Bc), tV=make_tma_sw128(d_V,Rkv,Bc);
     CUtensorMap tQ=make_tma_sw128(d_Q,Rq,Br),  tdO=make_tma_sw128(d_dO,Rq,Br);
-    CUtensorMap tdV=make_tma_out(d_dV,Rkv), tdK=make_tma_out(d_dK,Rkv);
+    // Vj1 per-hq: main kernel writes PARTIAL dK/dV [B,Hq,S,D]; greduce sums the G heads -> [B,Hkv,S,D]
+    const long partN=(long)B*Hq*S*D; static bf16 *d_dKp=nullptr,*d_dVp=nullptr; static long pcap=0;
+    if(partN>pcap){ if(d_dKp)CUDA_CHECK(cudaFree(d_dKp)); if(d_dVp)CUDA_CHECK(cudaFree(d_dVp));
+        CUDA_CHECK(cudaMalloc(&d_dKp,partN*sizeof(bf16))); CUDA_CHECK(cudaMalloc(&d_dVp,partN*sizeof(bf16))); pcap=partN; }
+    CUtensorMap tdV=make_tma_out(d_dVp,Rq), tdK=make_tma_out(d_dKp,Rq);
 
     const long drowN=(long)B*Hq*S; static float* d_Drow=nullptr; static long drc=0;
     if(drowN>drc){ if(d_Drow)CUDA_CHECK(cudaFree(d_Drow)); CUDA_CHECK(cudaMalloc(&d_Drow,drowN*sizeof(float))); drc=drowN; }
@@ -15572,13 +15565,11 @@ void launch_gqa_backward_vz3(
     const int dBlock=256; const long dGrid=(drowN+(dBlock/32)-1)/(dBlock/32);
     compute_drowsum_v22<<<(unsigned)dGrid,dBlock>>>(d_dO,d_O,d_Drow,drowN);
 
-    int dev=0; CUDA_CHECK(cudaGetDevice(&dev));
-    int nSM=0; CUDA_CHECK(cudaDeviceGetAttribute(&nSM, cudaDevAttrMultiProcessorCount, dev));
-    const int totalW = B * Hkv * (S / Bc);
-    static int* d_gWork=nullptr;
-    if (!d_gWork) CUDA_CHECK(cudaMalloc(&d_gWork, sizeof(int)));
-    CUDA_CHECK(cudaMemset(d_gWork, 0, sizeof(int)));
-    gqa_bwd_vz3_persist<Br,Bc,D><<<(unsigned)(nSM*2),128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale,d_gWork,totalW);
+    dim3 GRID(S/Bc, Hq, B);   // Vj1 per-hq: 3x the CTAs (Hq not Hkv) to fill the GPU at low B
+    gqa_bwd_vj1<Br,Bc,D><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale);
+    dim3 grGRID(S/8, Hkv, B);
+    gqa_dkdv_greduce<<<grGRID,128>>>(d_dVp, d_dV, Hq, Hkv, G, S);
+    gqa_dkdv_greduce<<<grGRID,128>>>(d_dKp, d_dK, Hq, Hkv, G, S);
 
     const int cB=256; const long dqN4=dqN/4; const int cG=(int)((dqN4+cB-1)/cB);
     convert_dq_accum_to_bf16_v6<<<cG,cB>>>(reinterpret_cast<const float4*>(d_dqa), reinterpret_cast<uint2*>(d_dQ), dqN4);
@@ -15589,8 +15580,8 @@ int main(int argc, char** argv){
     std::cout << "GQA Backward — precision test  [Hopper SM_90 / H200]\n";
     std::cout << "Prerequisite: python precision/baseline_gqa.py\n\n";
 
-    const int B   = argc > 1 ? atoi(argv[1]) : 8;    // shape from argv (default 8x12x4) -> sweep-friendly
-    const int Hq  = argc > 2 ? atoi(argv[2]) : 12;
+    const int B   = argc > 1 ? atoi(argv[1]) : 4;    // shape from argv (default 8x12x4) -> sweep-friendly
+    const int Hq  = argc > 2 ? atoi(argv[2]) : 16;
     const int Hkv = argc > 3 ? atoi(argv[3]) : 4;
     const int G   = Hq / Hkv;
     std::cout << "  shape: B=" << B << " Hq=" << Hq << " Hkv=" << Hkv << " (G=" << G << ")\n\n";
@@ -15857,21 +15848,13 @@ int main(int argc, char** argv){
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_vp1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
-    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── Vp1 Br=64 Bc=64 PERSISTENT V44 warm-bridge (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
-
     launch_gqa_backward_vz2<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     check("── Vz2 wgmma tensor cores (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
-    launch_gqa_backward_vz3<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    launch_gqa_backward_vj1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── Vz3 persistent 264-CTA (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
-
-    launch_gqa_backward_vr1<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
-    CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    check("── Vr1 Br=64 Bc=64 per-hq main + cuDNN G-head reduce dQ (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
+    check("── Vj1 clone of Vz2 + levers (Hopper SM_90) ──", Nq, Nkv, d_dQ, d_dK, d_dV);
 
     launch_gqa_backward_v45<Br2,Bc2,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
@@ -16205,13 +16188,6 @@ int main(int argc, char** argv){
     }
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_vp1<Br2,Bc2,D>(
-                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
-            100, 10, bwd_flops);
-        displayStats("GQA bwd Vp1 Br=64, Bc=64  PERSISTENT V44 warm-bridge  (Hopper SM_90)", s);
-    }
-    {
-        KernelStats s = benchmarkKernel(
             [&](){ launch_gqa_backward_vz2<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
@@ -16219,17 +16195,10 @@ int main(int argc, char** argv){
     }
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_vz3<Br2,Bc2,D>(
+            [&](){ launch_gqa_backward_vj1<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd Vz3 persistent 264-CTA  (Hopper SM_90)", s);
-    }
-    {
-        KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_vr1<Br2,Bc2,D>(
-                d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
-            100, 10, bwd_flops);
-        displayStats("GQA bwd Vr1 Br=64, Bc=64  per-hq main + cuDNN G-head reduce  (Hopper SM_90)", s);
+        displayStats("GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)", s);
     }
     {
         KernelStats s = benchmarkKernel(

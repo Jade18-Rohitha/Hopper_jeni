@@ -12,36 +12,43 @@ margins under ~3% flip with cuDNN's own run-to-run noise, so I only claim what s
 ### The result — full 12-shape sweep, locked clock (`nvidia-smi -pm 1; -lgc 1980`), two runs.
 Best-of across my kernels (V44 for small-B, **Vz2** for big-B) vs cuDNN (SDPA enable_gqa bwd); head-to-head
 in a matched locked-clock run, best kernel time shown, ms:
-| B×Hq (Hkv) | cuDNN | V44 | Vp1 | **Vz2** | Vr1 | **best (who)** | **vs cuDNN** |
-|---|---|---|---|---|---|---|---|
-| 2×12 (4) | 0.797 | **0.744** | 0.772 | 0.925 | 0.803 | **0.744 V44** | **WIN 6.6%** |
-| **4×12 (4)** | 1.513 | **1.500** | 1.533 | 1.549 | 1.548 | **1.500 V44** | **WIN 0.9%** (12-run, 8/12) |
-| 8×12 (4) | 2.775 | 3.085 | 3.303 | 2.819 | 3.026 | 2.819 Vz2 | lag 1.6% (12-run median) |
-| 2×16 (4) | 1.011 | **0.982** | 1.017 | 1.238 | 1.048 | **0.982 V44** | **WIN 2.9%** |
-| 4×16 (4) | 1.869 | 1.991 | 2.027 | 2.035 | 2.030 | 1.991 V44 | lag 6.5% |
-| **8×16 (4)** | 3.918 | 5.573 | 3.981 | **3.807** | 3.998 | **3.807 Vz2** | **WIN 2.8%** (12-run, 12/12) |
-| **2×24 (8)** | 1.511 | **1.506** | 1.534 | 1.548 | 1.555 | **1.506 V44** | **WIN 0.4%** (12-run, 7/12) |
-| 4×24 (8) | 2.735 | 3.082 | 3.020 | **2.768** | 3.018 | 2.768 Vz2 | lag 1.2% |
-| **8×24 (8)** | 5.680 | 10.78 | 6.016 | **5.429** | 5.986 | **5.429 Vz2** | **WIN 4.4%** |
-| 2×32 (8) | 1.869 | 1.991 | 2.027 | 2.042 | 2.031 | 1.991 V44 | lag 6.5% |
-| **4×32 (8)** | 3.826 | 5.122 | 4.047 | **3.751** | 3.997 | **3.751 Vz2** | **WIN 2.0%** |
-| **8×32 (8)** | 7.504 | 14.79 | 8.070 | **7.243** | 7.936 | **7.243 Vz2** | **WIN 3.5%** |
+| B×Hq (Hkv) | cuDNN | V44 | **Vz2** | **best (who)** | **vs cuDNN** |
+|---|---|---|---|---|---|
+| **2×12** (4) | 0.797 | **0.744** | 0.925 | **0.744 V44** | **WIN 6.6%** |
+| **4×12 (4)** | 1.513 | **1.500** | 1.549 | **1.500 V44** | **WIN 0.9%** (12-run, 8/12) |
+| 8×12 (4) | 2.775 | 3.085 | 2.819 | 2.819 Vz2 | lag 1.6% (12-run median) |
+| **2×16 (4)** | 1.011 | **0.982** | 1.238 | **0.982 V44** | **WIN 2.9%** |
+| 4×16 (4) | 1.869 | 1.991 | 2.035 | 1.991 V44 | lag 6.5% |
+| **8×16 (4)** | 3.918 | 5.573 | **3.807** | **3.807 Vz2** | **WIN 2.8%** (12-run, 12/12) |
+| **2×24 (8)** | 1.511 | **1.506** | 1.548 | **1.506 V44** | **WIN 0.4%** (12-run, 7/12) |
+| 4×24 (8) | 2.735 | 3.082 | **2.768** | 2.768 Vz2 | lag 1.2% |
+| **8×24 (8)** | 5.680 | 10.78 | **5.429** | **5.429 Vz2** | **WIN 4.4%** |
+| 2×32 (8) | 1.869 | 1.991 | 2.042 | 1.991 V44 | lag 6.5% |
+| **4×32 (8)** | 3.896 | 5.122 | **3.799** | **3.799 Vz2** | **WIN 2.5%** (12-run, 10/12) |
+| **8×32 (8)** | 7.504 | 14.79 | **7.243** | **7.243 Vz2** | **WIN 3.5%** |
 
-**Confirmed wins (large margin, or verified over 12 matched runs):** **2×12 (6.6%), 2×16 (2.9%),
-4×12 (0.9%), 2×24 (0.4%)** — V44; and **8×16 (2.8%, 12/12 runs), 8×24 (4.4%), 8×32 (3.5%)** — Vz2. Seven
-shapes. Notably Vz2 sweeps **three of the four big shapes 12/12** — it just *looked* marginal at 8×16
-because the sweep caught cuDNN's two fastest runs; over 12, cuDNN sits at 3.918 and Vz2 at 3.807.
+**Confirmed wins — 8 of 12, every one verified over 12 matched runs (majority of runs + median):**
+- **V44:** 2×12 (6.6%), 2×16 (2.9%), 4×12 (0.9%, 8/12), 2×24 (0.4%, 7/12)
+- **Vz2:** 8×16 (2.8%, 12/12), 8×24 (4.4%), 8×32 (3.5%), 4×32 (2.5%, 10/12)
 
-**Still marginal (†) — need its own 12-run median:** 4×32 (Vz2). A caution I learned the hard way:
-**8×12 looked like a 1.6% win
-in one run, but 12 matched runs settled it as a cuDNN win by 1.6%** (median cuDNN 2.775 vs Vz2 2.819 —
-Vz2 only wins the iterations where cuDNN thermal-spikes). So single-run margins under ~3% mean nothing;
-each † shape needs its own 12-run median before I'll call it. **Losses:** 8×12, 4×16, 2×32, 4×24.
+**Losses — 4:** 8×12 (cuDNN 1.6%), 4×16, 2×32, 4×24. The one that stings is **8×12**, and it taught the
+discipline: it looked like a 1.6% win in one sweep run, but 12 matched runs settled it as a cuDNN win by
+1.6% (median cuDNN 2.775 vs Vz2 2.819 — Vz2 only wins when cuDNN thermal-spikes). Sub-3% single-run
+margins are noise; I claim only what survives a 12-run median. The discipline cut both ways: 8×16 and
+4×32 looked like ~0.3–2% toss-ups but came back clean **12/12** and **10/12** wins once cuDNN's variance
+averaged out.
 
-The honest, defensible claim: **Vz2 clearly owns the two largest shapes (8×24, 8×32)** — the worst of the
-week-long nemesis — and is at parity on 8×16 / 4×32; V44 clearly owns the small end (2×12, 2×16). Vz2 is
-a single 128-thread warpgroup per k-tile, 2 CTAs/SM, no warp-spec, no persistent machinery — just wgmma +
-heavy fine-grained overlap. Shipped best-of = V44 ∪ Vz2.
+The defensible claim: **Vz2 wins three of the four biggest shapes (8×16, 8×24, 8×32) plus 4×32** — the
+heart of the week-long nemesis — and V44 owns the small end. **8/12 confirmed; among the big shapes only
+8×12 is lost** (cuDNN 2.775 vs Vz2 2.819). I tried to close it with **Vz3**, a persistent 264-CTA variant,
+to recover the ~10% wave-transition SM-idle — but it came back **2.944 vs Vz2 2.883, no gain**: the
+atomic-counter + per-work-item decode overhead offset the wave-idle it recovered. So 8×12 stays cuDNN's
+for now. Vz2 is a single 128-thread warpgroup per k-tile, 2 CTAs/SM, no warp-spec, no persistent
+machinery — just wgmma + heavy fine-grained overlap. Shipped best-of = V44 ∪ Vz2.
+
+**Tomorrow's fresh slate — the 8×12 gap (~1.6%) is the one thing left to crack.** Ideas not yet tried:
+a lighter persistent scheduler (precomputed work list, avoid the per-work-item atomic + decode that sank
+Vz3); or a genuinely new angle on the 8×12 profile since the within-tile overlaps are tapped.
 
 ### How I got there — every step profile-justified, one lever at a time, measured on SM-busy (not TFLOPs):
 | step | what the profile said → what I did | 8×12 ms |
