@@ -15567,12 +15567,19 @@ void launch_gqa_backward_vj1(
 
     dim3 GRID(S/Bc, Hq, B);   // Vj1 per-hq: 3x the CTAs (Hq not Hkv) to fill the GPU at low B
     gqa_bwd_vj1<Br,Bc,D><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale);
+    // Overlap the dK/dV G-reduce with the dQ convert on separate streams — both are memory-bound and
+    // neither saturates DRAM, so serial (2x greduce + convert) becomes ~max(...) instead of the sum.
+    static cudaStream_t gr=nullptr; if(!gr) CUDA_CHECK(cudaStreamCreate(&gr));
+    static cudaEvent_t  ev=nullptr; if(!ev) CUDA_CHECK(cudaEventCreate(&ev));
+    CUDA_CHECK(cudaEventRecord(ev, 0));                 // after the main kernel (default stream)
+    CUDA_CHECK(cudaStreamWaitEvent(gr, ev, 0));         // greduce stream waits for the main kernel
     dim3 grGRID(S/8, Hkv, B);
-    gqa_dkdv_greduce<<<grGRID,128>>>(d_dVp, d_dV, Hq, Hkv, G, S);
-    gqa_dkdv_greduce<<<grGRID,128>>>(d_dKp, d_dK, Hq, Hkv, G, S);
+    gqa_dkdv_greduce<<<grGRID,128,0,gr>>>(d_dVp, d_dV, Hq, Hkv, G, S);
+    gqa_dkdv_greduce<<<grGRID,128,0,gr>>>(d_dKp, d_dK, Hq, Hkv, G, S);
 
     const int cB=256; const long dqN4=dqN/4; const int cG=(int)((dqN4+cB-1)/cB);
     convert_dq_accum_to_bf16_v6<<<cG,cB>>>(reinterpret_cast<const float4*>(d_dqa), reinterpret_cast<uint2*>(d_dQ), dqN4);
+    CUDA_CHECK(cudaStreamSynchronize(gr));              // ensure greduce done before return
 }
 
 
