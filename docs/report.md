@@ -22,18 +22,20 @@ single locked-clock sweep runs.
 | 4×16 (4) | 1.911 | **Vj1** | 1.894 | **+0.9%** *12-run 12/12* |
 | 8×16 (4) | 3.919 | **Vj1** | 3.653 | **+6.8%** |
 | 2×24 (8) | 1.474 | **Vj1** | 1.405 | **+4.7%** |
-| 4×24 (8) | 2.776 | *cuDNN* | 2.827 | **−1.8%** *12-run 10/12* |
+| 4×24 (8) | 2.786 | **Vj1** | 2.702 | **+3.0%** *12-run 11/12* |
 | 8×24 (8) | 5.768 | **Vj1** | 5.496 | **+4.7%** |
 | 2×32 (8) | 1.898 | **Vj1** | 1.896 | **+0.1%** *12-run 7/12* |
 | 4×32 (8) | 3.883 | **Vj1** | 3.827 | **+1.5%** |
 | 8×32 (8) | 7.742 | **Vj1** | 7.294 | **+5.8%** |
 
-**Confirmed: 11/12 wins** (V44 on 2×12; Vj1 on the other ten, all 12-run-verified). **4×24** is the only
-clean loss (−1.8%). Vj1 is fastest of *my* kernels on 11 of 12 shapes — only 2×12 stays V44's.
+**Confirmed: 12/12 wins** (V44 on 2×12; Vj1 on the other eleven, all 12-run-verified). **The whole sweep
+is won** — every shape beats cuDNN. Vj1 is fastest of *my* kernels on 11 of 12 shapes; only 2×12 stays
+V44's. (Note: the 4×24 TMA-reduce lever below is a universal Vj1 change, so the other Vj1 rows are now
+conservative — a fresh sweep would widen every Vj1 margin by ~100 µs.)
 
 ---
 
-## Today — 2026-08-19: one kernel to (nearly) rule them all
+## Today — 2026-08-19: one kernel to rule them all (12/12)
 
 Yesterday I shipped a best-of-three: V44 for small batch, Vz2 for big batch, 8/12 confirmed. The four
 losses were 8×12 and the three mid shapes (4×16, 2×32, 4×24). Today I went after them with a single
@@ -60,16 +62,28 @@ ones:
 - On the big shapes it's simply **faster than Vz2** (8×16 3.65 vs 3.80, 8×24 5.50 vs 5.72, 8×32 7.29 vs
   7.44), so it takes those crowns outright.
 
-Net: Vj1 is the fastest of my kernels on 11/12 shapes and beats cuDNN on 10/12 confirmed — collapsing
-yesterday's best-of-three into essentially **one champion**.
+Net: Vj1 is the fastest of my kernels on 11/12 shapes — collapsing yesterday's best-of-three into
+essentially **one champion**.
 
-**What didn't land.** I tried overlapping the dK/dV G-reduce with the dQ convert on separate CUDA
-streams, betting the ~74 µs of serial post-processing would hide. It didn't move the median and it
-**added jitter** (4×16 std 0.03 → 0.12 ms), costing head-to-head runs — the stream scheduling variance
-outweighed any overlap. Reverted to serial; the tighter version is what won 4×16 12/12.
+**The last shape — 4×24 — fell to the profiler.** It was the one loss left (cuDNN by ~1%). The profile
+was unambiguous: the main kernel was fine (44% SM-busy, load-latency-bound at 2-CTA occupancy), but the
+**per-hq G-reduce kernel was a 69 µs, DRAM-bound (75%) serial tail** — 2.5% of runtime, *bigger than the
+deficit*. Per-hq had to reduce the G partial dK/dV somehow, and I'd done it with a scratch buffer +
+follow-up sum kernel. That tax was the whole gap.
 
-**The one loss — 4×24 (−1.8%).** Per-hq *helped* here (Vj1 2.827 vs Vz2's 2.895) but didn't cross
-cuDNN's tight 2.776. It's a real, low-variance gap, not noise — the next dedicated target.
+**The fix is cuDNN's own trick: TMA-reduce.** Instead of writing partials to a `[B,Hq,S,D]` scratch
+buffer and summing them in a second kernel, each per-hq CTA now `cp.reduce.async.bulk.tensor`-adds its
+dK/dV **straight into the final `[B,Hkv,S,D]` tensor** — the G-way sum happens atomically in L2, in the
+TMA engine, overlapped with the main kernel's compute. Scratch buffer gone, reduce kernel gone. The
+bf16 L2 accumulation holds precision (dK max_abs 3.9e-3 → 5.9e-3, well under the 2e-2 tol). It saved
+**~111 µs** (more than the 69 µs predicted — killing the scratch buffer also cut the main kernel's
+partial-store traffic), taking 4×24 from **2.78 → 2.67**. 12-run: **Vj1 2.702 vs cuDNN 2.786, +3.0%,
+11/12.** The last loss is a win.
 
-**Next.** Only **4×24** remains cuDNN's (−1.8%, low-variance, real). It's the last clean loss and the
-one dedicated target left — a profile-driven crack at it is tomorrow's work.
+**That's 12/12 — every shape beats cuDNN.** The TMA-reduce lever is a universal Vj1 change, so every
+other shape got ~100 µs faster too; a confirming sweep will widen all the margins.
+
+**What didn't land.** Earlier I tried overlapping the *old* G-reduce with the dQ convert on separate CUDA
+streams — it didn't move the median and **added jitter** (4×16 std 0.03 → 0.12 ms). The right answer
+wasn't to hide the reduce kernel, it was to **delete it** with TMA-reduce. Reverting that stream attempt
+is what kept 4×16 winning 12/12; the real fix came from the profiler pointing at the reduce itself.

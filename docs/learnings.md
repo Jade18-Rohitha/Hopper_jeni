@@ -79,11 +79,33 @@ work instead of three (a shorter chain, so it finishes and frees up faster). Eac
 result, and a tiny follow-up kernel adds the partials together.
 
 That one change re-filled the GPU **at every batch size** — not just the mid ones I was aiming at. Vj1
-turned out to be the **fastest of all my kernels on 11 of the 12 shapes**, and it beats cuDNN on 11 of
+turned out to be the **fastest of all my kernels on 11 of the 12 shapes**, and it beat cuDNN on 11 of
 12 — including **8×12, the one shape I had never beaten all week.** It collapsed my previous
 "use-kernel-A-here, kernel-B-there" patchwork into essentially **one kernel that wins almost everywhere.**
 
-The only shape still cuDNN's is 4×24, by about 1–2% — a small, steady gap that's the next target.
+## The last shape — deleting the tax
+
+One shape, 4×24, still lost by about 1%. This time I didn't guess — I profiled. And the profiler pointed
+somewhere I wasn't looking: not at the main kernel (which was fine), but at the **little helper kernel**
+I'd added to make the per-head trick work.
+
+Remember, per-head means several blocks each compute *part* of the same key/value gradient, and something
+has to add those parts together. I'd done it the obvious way: each block writes its part to a scratch
+buffer, then a second kernel reads them all back and sums them. The profiler showed that little sum
+kernel was taking **69 microseconds and was memory-bound** — and the gap to cuDNN was only ~16
+microseconds. **The tax I'd added to make per-head work was four times bigger than the gap.** I'd been
+about to go optimize the main kernel, which wasn't even the problem.
+
+The fix was to stop summing in a separate kernel and instead have each block **add its part directly into
+the final answer as it finishes** — using a hardware feature (TMA-reduce) that does the addition inside
+the memory system, overlapped with the real work, no scratch buffer and no second kernel at all. (This is,
+it turns out, exactly how cuDNN does it.) It saved ~111 microseconds — *more* than the sum kernel cost,
+because I also stopped writing the scratch buffer in the first place. 4×24 went from a 1% loss to a **3%
+win.**
+
+**That was the twelfth shape. Every single shape now beats cuDNN.** The thing that finally closed it
+wasn't a cleverer kernel — it was *measuring* where the time actually went and deleting a step I never
+needed to add.
 
 ## The things I'll carry forward
 
@@ -105,3 +127,10 @@ The only shape still cuDNN's is 4×24, by about 1–2% — a small, steady gap t
    to wins.
 7. **Start from naive when you're stuck.** The single best decision of the week was throwing away days
    of sophisticated work and rebuilding from the dumbest correct version, letting the profiler lead.
+8. **Profile the whole pipeline, not just the star kernel.** The final win was hiding in a tiny helper
+   kernel I'd stopped thinking about. The main kernel was the obvious suspect and the wrong one. Time
+   the *entire* launch sequence — the setup, the cleanup, the little glue steps — because the bottleneck
+   loves to hide in the part you've mentally filed as "done."
+9. **The cheapest step is the one you delete.** I closed the last gap not by making something faster but
+   by removing a step entirely — the scratch-buffer-then-sum became a reduce-as-you-go. When a step is
+   the bottleneck, ask whether it needs to exist before you ask how to speed it up.

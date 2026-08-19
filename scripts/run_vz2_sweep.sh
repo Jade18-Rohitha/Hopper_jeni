@@ -41,16 +41,20 @@ sudo nvidia-smi -rgc >/dev/null || true
 
 echo ""
 echo "== sweep complete -> $LOG =="
-echo "== per-shape medians (cuDNN / V44 / Vj1) — Vj1 is champion on all but the smallest shape =="
+echo "== per-shape best-of (cuDNN / V44 / Vj1) — champion = faster of V44,Vj1; margin vs cuDNN =="
+echo "==   shapes flagged [MARGINAL <1%] need a 12-run median-of-medians before the win is claimed. =="
 awk '
-  /^# SHAPE/                         { shape=$0; sub(/^# /,"",shape) }
+  /^# SHAPE/                         { shape=$0; sub(/^# SHAPE  /,"",shape); sub(/  \(G.*/,"",shape) }
   /SDPA bwd \(enable_gqa\)/          { cudnn=$4 }
   /Benchmark: GQA bwd V44/           { k="v44" }
   /Benchmark: GQA bwd Vj1/           { k="vj1" }
   /Median Time:/ && k=="v44"         { v44=$3; k="" }
   /Median Time:/ && k=="vj1"         { vj1=$3; k="";
-                                       printf "%-40s cuDNN %s  V44 %s  Vj1 %s\n", shape, cudnn, v44, vj1 }
+      best=(v44<vj1)?v44:vj1; who=(v44<vj1)?"V44":"Vj1";
+      marg=(cudnn-best)/cudnn*100.0; tag=(marg>=0)?"WIN":"LOSS";
+      flag=(marg<1.0 && marg>-1.0)?"  [MARGINAL <1% -> 12-run]":"";
+      printf "%-20s cuDNN %-7s V44 %-7s Vj1 %-7s | %s %+5.1f%% (%s)%s\n",
+             shape, cudnn, v44, vj1, tag, marg, who, flag }
 ' "$LOG" || true
 echo ""
-echo "== policy: yesterday'\''s per-shape best is LOCKED IN. Only swap the champion for a"
-echo "==         shape if THIS run'\''s median is strictly faster; otherwise keep yesterday'\''s. =="
+echo "== 12/12 board is locked. This is the confirming sweep: re-verify only the [MARGINAL] shapes. =="
