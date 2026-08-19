@@ -41,5 +41,16 @@ sudo nvidia-smi -rgc >/dev/null || true
 
 echo ""
 echo "== sweep complete -> $LOG =="
-echo "== Vz2 lines: =="
-grep -A6 'Vz2 wgmma' "$LOG" | grep -E 'SHAPE|Median|Vz2' || true
+echo "== per-shape medians (cuDNN / Vz2 / Vj1) — pick the faster of Vz2/Vj1 per shape =="
+awk '
+  /^# SHAPE/                         { shape=$0; sub(/^# /,"",shape) }
+  /SDPA bwd \(enable_gqa\)/          { cudnn=$4 }
+  /Benchmark: GQA bwd Vz2/           { k="vz2" }
+  /Benchmark: GQA bwd Vj1/           { k="vj1" }
+  /Median Time:/ && k=="vz2"         { vz2=$3; k="" }
+  /Median Time:/ && k=="vj1"         { vj1=$3; k="";
+                                       printf "%-40s cuDNN %s  Vz2 %s  Vj1 %s\n", shape, cudnn, vz2, vj1 }
+' "$LOG" || true
+echo ""
+echo "== policy: yesterday'\''s per-shape best is LOCKED IN. Only swap the champion for a"
+echo "==         shape if THIS run'\''s median is strictly faster; otherwise keep yesterday'\''s. =="
