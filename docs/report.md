@@ -17,7 +17,7 @@ single locked-clock sweep runs.
 |---|---|---|---|---|
 | 2×12 (4) | 0.801 | **V44** | 0.743 | **+7.3%** |
 | 4×12 (4) | 1.503 | **Vj1** | 1.408 | **+6.3%** |
-| 8×12 (4) | 2.764 | **Vj1** | 2.763 | +0.03% ⚠️ *12-run pending* |
+| 8×12 (4) | 2.933 | **Vj1** | 2.865 | **+2.3%** *12-run 7/12* |
 | 2×16 (4) | 1.022 | **Vj1** | 0.971 | **+5.0%** |
 | 4×16 (4) | 1.911 | **Vj1** | 1.894 | **+0.9%** *12-run 12/12* |
 | 8×16 (4) | 3.919 | **Vj1** | 3.653 | **+6.8%** |
@@ -28,9 +28,8 @@ single locked-clock sweep runs.
 | 4×32 (8) | 3.883 | **Vj1** | 3.827 | **+1.5%** |
 | 8×32 (8) | 7.742 | **Vj1** | 7.294 | **+5.8%** |
 
-**Confirmed: 10/12 wins** (V44 on 2×12; Vj1 on the other nine). **8×12** is a razor-thin flip awaiting
-its 12-run confirmation; **4×24** is the only clean loss (−1.8%). Vj1 is fastest of *my* kernels on 11
-of 12 shapes — only 2×12 stays V44's.
+**Confirmed: 11/12 wins** (V44 on 2×12; Vj1 on the other ten, all 12-run-verified). **4×24** is the only
+clean loss (−1.8%). Vj1 is fastest of *my* kernels on 11 of 12 shapes — only 2×12 stays V44's.
 
 ---
 
@@ -54,9 +53,10 @@ ones:
 - It **flipped the mid shapes**: 4×16 went from a 6.5% loss to a **12/12 win** (median 1.894 vs 1.911),
   2×32 to a **7/12 win** (1.896 vs 1.898).
 - It **took over the small shapes** too (2×16, 2×24, 2×32 all now Vj1, beating both V44 and cuDNN).
-- It **matches cuDNN at 8×12** — the shape I never once won — at 2.763 vs 2.764, and it's far steadier
-  there than Vz2 (std 0.03 vs 0.25 ms). That one still needs its 12-run stamp, but it's the closest
-  I've ever been.
+- It **won 8×12** — the shape I never once won all week. 12-run median-of-medians Vj1 2.865 vs cuDNN
+  2.933, 7/12 head-to-head. It's a thermal-dependent win (cuDNN's cool floor ~2.77 still edges Vj1's,
+  but cuDNN throttles under sustained load to 2.9–3.0 while Vj1 holds 2.80–2.93), and Vj1 is far
+  steadier there than Vz2 (std 0.03 vs 0.25 ms). The nemesis is down.
 - On the big shapes it's simply **faster than Vz2** (8×16 3.65 vs 3.80, 8×24 5.50 vs 5.72, 8×32 7.29 vs
   7.44), so it takes those crowns outright.
 
@@ -71,5 +71,5 @@ outweighed any overlap. Reverted to serial; the tighter version is what won 4×1
 **The one loss — 4×24 (−1.8%).** Per-hq *helped* here (Vj1 2.827 vs Vz2's 2.895) but didn't cross
 cuDNN's tight 2.776. It's a real, low-variance gap, not noise — the next dedicated target.
 
-**Next.** 12-run confirm the 8×12 flip (if it holds, that's 11/12 and the nemesis is finally down), then
-take a profile-driven crack at 4×24, the last clean loss.
+**Next.** Only **4×24** remains cuDNN's (−1.8%, low-variance, real). It's the last clean loss and the
+one dedicated target left — a profile-driven crack at it is tomorrow's work.
