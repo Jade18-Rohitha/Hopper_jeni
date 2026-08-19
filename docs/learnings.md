@@ -107,6 +107,16 @@ win.**
 wasn't a cleverer kernel — it was *measuring* where the time actually went and deleting a step I never
 needed to add.
 
+## What ships
+
+The whole week started as a pile of specialized kernels, each good at one corner of the problem, and
+ended as **one kernel that wins everywhere.** The final deliverable is a single standalone file — the
+per-head kernel — that beats cuDNN on all twelve shapes. The one kernel it *doesn't* strictly dominate
+is at the smallest shape, where an older three-warpgroup design (V44) is 0.6% faster; but even there the
+per-head kernel beats cuDNN by 8%, so it wasn't worth shipping two kernels and a chooser to reclaim that
+sliver. Simpler and universal beat marginally-faster-but-two-pieces. That felt like the right call for a
+*deliverable*, not just a benchmark: one file, one kernel, correct and fastest across the board.
+
 ## The things I'll carry forward
 
 1. **Measure the bottleneck, don't guess it.** SM-busy% and "are there eligible warps to run" tell the

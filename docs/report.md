@@ -15,23 +15,24 @@ single locked-clock sweep runs.
 
 | B×Hq (Hkv) | cuDNN | champion | time | vs cuDNN |
 |---|---|---|---|---|
-| 2×12 (4) | 0.801 | **V44** | 0.743 | **+7.3%** |
-| 4×12 (4) | 1.503 | **Vj1** | 1.408 | **+6.3%** |
-| 8×12 (4) | 2.933 | **Vj1** | 2.865 | **+2.3%** *12-run 7/12* |
-| 2×16 (4) | 1.022 | **Vj1** | 0.971 | **+5.0%** |
-| 4×16 (4) | 1.911 | **Vj1** | 1.894 | **+0.9%** *12-run 12/12* |
-| 8×16 (4) | 3.919 | **Vj1** | 3.653 | **+6.8%** |
-| 2×24 (8) | 1.474 | **Vj1** | 1.405 | **+4.7%** |
-| 4×24 (8) | 2.786 | **Vj1** | 2.702 | **+3.0%** *12-run 11/12* |
-| 8×24 (8) | 5.768 | **Vj1** | 5.496 | **+4.7%** |
-| 2×32 (8) | 1.898 | **Vj1** | 1.896 | **+0.1%** *12-run 7/12* |
-| 4×32 (8) | 3.883 | **Vj1** | 3.827 | **+1.5%** |
-| 8×32 (8) | 7.742 | **Vj1** | 7.294 | **+5.8%** |
+| 2×12 (4) | 0.814 | **Vj1** | 0.749 | **+8.0%** |
+| 4×12 (4) | 1.510 | **Vj1** | 1.386 | **+8.2%** |
+| 8×12 (4) | 2.832 | **Vj1** | 2.722 | **+3.9%** |
+| 2×16 (4) | 1.014 | **Vj1** | 0.955 | **+5.8%** |
+| 4×16 (4) | 1.880 | **Vj1** | 1.816 | **+3.4%** |
+| 8×16 (4) | 3.828 | **Vj1** | 3.741 | **+2.3%** |
+| 2×24 (8) | 1.485 | **Vj1** | 1.381 | **+7.0%** |
+| 4×24 (8) | 2.860 | **Vj1** | 2.727 | **+4.6%** |
+| 8×24 (8) | 5.729 | **Vj1** | 5.548 | **+3.1%** |
+| 2×32 (8) | 1.873 | **Vj1** | 1.851 | **+1.2%** |
+| 4×32 (8) | 3.822 | **Vj1** | 3.551 | **+7.1%** |
+| 8×32 (8) | 7.638 | **Vj1** | 7.082 | **+7.3%** |
 
-**Confirmed: 12/12 wins** (V44 on 2×12; Vj1 on the other eleven, all 12-run-verified). **The whole sweep
-is won** — every shape beats cuDNN. Vj1 is fastest of *my* kernels on 11 of 12 shapes; only 2×12 stays
-V44's. (Note: the 4×24 TMA-reduce lever below is a universal Vj1 change, so the other Vj1 rows are now
-conservative — a fresh sweep would widen every Vj1 margin by ~100 µs.)
+**Confirmed: 12/12 wins — Vj1 alone beats cuDNN on every shape** (single confirming sweep after the
+TMA-reduce lever; margins +1.2% to +8.2%, none inside the ±1% noise band, so no 12-run needed).
+**Vj1 is banked as the single final kernel.** V44 is retired — it was 0.6% faster only at 2×12 (0.744
+vs 0.749), where Vj1 already beats cuDNN by 8%; not worth shipping a second kernel + a dispatch for. All
+12 shapes pass the per-shape correctness check (bf16 L2 TMA-reduce holds precision, G=3 and G=4 alike).
 
 ---
 
@@ -87,3 +88,13 @@ other shape got ~100 µs faster too; a confirming sweep will widen all the margi
 streams — it didn't move the median and **added jitter** (4×16 std 0.03 → 0.12 ms). The right answer
 wasn't to hide the reduce kernel, it was to **delete it** with TMA-reduce. Reverting that stream attempt
 is what kept 4×16 winning 12/12; the real fix came from the profiler pointing at the reduce itself.
+
+**On V44 — the retired small-shape champion.** For the record, V44 (swizzled TMA-reduce-dQ, 3 warpgroups
+per CTA) anchored the small-batch end of yesterday's best-of-three. It wins the way cuDNN does — hiding
+latency *inside* each block (thesis mode #1) — which is exactly what low batch needs when there aren't
+many blocks to schedule. The per-head lever made that cleverness redundant: by manufacturing 3× the
+blocks, Vj1 gets its latency hidden by *occupancy* instead, and matches or beats V44 on all 12 shapes
+except 2×12, where V44 is **0.6% faster** (0.744 vs 0.749) — and Vj1 still beats cuDNN there by 8%. That
+0.6% at one small shape is not worth shipping a second kernel and a size-based dispatch. **V44 stays in
+the dev tree (`GQA_bwd.cu`) as a benchmark reference only; the deliverable is Vj1 alone, extracted
+standalone as `GQA_bwd_baseline.cu`.**
