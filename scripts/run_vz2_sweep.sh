@@ -41,15 +41,15 @@ sudo nvidia-smi -rgc >/dev/null || true
 
 echo ""
 echo "== sweep complete -> $LOG =="
-echo "== per-shape medians (cuDNN / Vz2 / Vj1) — pick the faster of Vz2/Vj1 per shape =="
+echo "== per-shape medians (cuDNN / V44 / Vj1) — Vj1 is champion on all but the smallest shape =="
 awk '
   /^# SHAPE/                         { shape=$0; sub(/^# /,"",shape) }
   /SDPA bwd \(enable_gqa\)/          { cudnn=$4 }
-  /Benchmark: GQA bwd Vz2/           { k="vz2" }
+  /Benchmark: GQA bwd V44/           { k="v44" }
   /Benchmark: GQA bwd Vj1/           { k="vj1" }
-  /Median Time:/ && k=="vz2"         { vz2=$3; k="" }
+  /Median Time:/ && k=="v44"         { v44=$3; k="" }
   /Median Time:/ && k=="vj1"         { vj1=$3; k="";
-                                       printf "%-40s cuDNN %s  Vz2 %s  Vj1 %s\n", shape, cudnn, vz2, vj1 }
+                                       printf "%-40s cuDNN %s  V44 %s  Vj1 %s\n", shape, cudnn, v44, vj1 }
 ' "$LOG" || true
 echo ""
 echo "== policy: yesterday'\''s per-shape best is LOCKED IN. Only swap the champion for a"
