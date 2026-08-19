@@ -13670,6 +13670,15 @@ __device__ __forceinline__ void tma_reduce_add_2d_v43(const void* tma_desc, cons
         "cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group [%0, {%1, %2}], [%3];\n"
         :: "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(src) : "memory");
 }
+// Vj1: bf16 2-D TMA-reduce (add) — per-hq dK/dV partials reduced DIRECTLY into the final [B,Hkv,S,D]
+// tensor (SWIZZLE_NONE bf16 desc), replacing the scratch buffer + DRAM-bound greduce kernel. The G CTAs
+// of a KV-group add into the same tile; the sum is L2-atomic (like red.global), overlapped with compute.
+__device__ __forceinline__ void tma_reduce_add_2d_bf16(const void* tma_desc, const bf16* smem, uint32_t cx, uint32_t cy) {
+    uint32_t src = (uint32_t)__cvta_generic_to_shared(smem);
+    asm volatile(
+        "cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group [%0, {%1, %2}], [%3];\n"
+        :: "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(src) : "memory");
+}
 // V4d: 3D de-alias TMA-reduce. coords {col, bg=row>>3, a=row&7}; descriptor box{32,8,8} strides{8D,D}.
 __device__ __forceinline__ void tma_reduce_add_3d_v4d(const void* tma_desc, const float* smem, uint32_t c0, uint32_t c1, uint32_t c2) {
     uint32_t src = (uint32_t)__cvta_generic_to_shared(smem);
@@ -15511,12 +15520,13 @@ gqa_bwd_vj1(
     stage_acc_bf16_s<64,64>(dk,    sdO_sw + 0,    wtid, scale);
     stage_acc_bf16_s<64,64>(dk+32, sdO_sw + 4096, wtid, scale);
     __syncthreads(); fence_proxy_async_shared();
-    const uint32_t hqRow = (uint32_t)((b*Hq+hq)*S + k_row0);   // Vj1: per-hq partial dV/dK row
+    // Vj1: TMA-REDUCE (add) each per-hq dV/dK straight into the FINAL [B,Hkv,S,D] at kvRow. The G query
+    // heads of this KV-group (separate CTAs, same kvRow) sum in L2 — no scratch buffer, no greduce kernel.
     if (wtid == 0) {
-        tma_store_2d_v34(&tma_dV_st, sQ_sw + 0,    0,  hqRow);
-        tma_store_2d_v34(&tma_dV_st, sQ_sw + 4096, 64, hqRow);
-        tma_store_2d_v34(&tma_dK_st, sdO_sw + 0,    0,  hqRow);
-        tma_store_2d_v34(&tma_dK_st, sdO_sw + 4096, 64, hqRow);
+        tma_reduce_add_2d_bf16(&tma_dV_st, sQ_sw + 0,    0,  kvRow);
+        tma_reduce_add_2d_bf16(&tma_dV_st, sQ_sw + 4096, 64, kvRow);
+        tma_reduce_add_2d_bf16(&tma_dK_st, sdO_sw + 0,    0,  kvRow);
+        tma_reduce_add_2d_bf16(&tma_dK_st, sdO_sw + 4096, 64, kvRow);
         tma_store_commit_v34(); tma_store_wait_v34();
     }
 }
@@ -15549,11 +15559,12 @@ void launch_gqa_backward_vj1(
     const uint64_t Rq=(uint64_t)B*Hq*S, Rkv=(uint64_t)B*Hkv*S;
     CUtensorMap tK=make_tma_sw128(d_K,Rkv,Bc), tV=make_tma_sw128(d_V,Rkv,Bc);
     CUtensorMap tQ=make_tma_sw128(d_Q,Rq,Br),  tdO=make_tma_sw128(d_dO,Rq,Br);
-    // Vj1 per-hq: main kernel writes PARTIAL dK/dV [B,Hq,S,D]; greduce sums the G heads -> [B,Hkv,S,D]
-    const long partN=(long)B*Hq*S*D; static bf16 *d_dKp=nullptr,*d_dVp=nullptr; static long pcap=0;
-    if(partN>pcap){ if(d_dKp)CUDA_CHECK(cudaFree(d_dKp)); if(d_dVp)CUDA_CHECK(cudaFree(d_dVp));
-        CUDA_CHECK(cudaMalloc(&d_dKp,partN*sizeof(bf16))); CUDA_CHECK(cudaMalloc(&d_dVp,partN*sizeof(bf16))); pcap=partN; }
-    CUtensorMap tdV=make_tma_out(d_dVp,Rq), tdK=make_tma_out(d_dKp,Rq);
+    // Vj1 per-hq: main kernel TMA-reduce-adds dK/dV DIRECTLY into the final [B,Hkv,S,D] (the G heads sum
+    // in L2), so d_dK/d_dV must start zeroed. No scratch buffer, no greduce kernel — that 69us DRAM-bound
+    // serial reduce (2.5% of runtime) is gone; the reduction now overlaps the main kernel's compute.
+    CUDA_CHECK(cudaMemset(d_dV,0,(size_t)Rkv*D*sizeof(bf16)));
+    CUDA_CHECK(cudaMemset(d_dK,0,(size_t)Rkv*D*sizeof(bf16)));
+    CUtensorMap tdV=make_tma_out(d_dV,Rkv), tdK=make_tma_out(d_dK,Rkv);
 
     const long drowN=(long)B*Hq*S; static float* d_Drow=nullptr; static long drc=0;
     if(drowN>drc){ if(d_Drow)CUDA_CHECK(cudaFree(d_Drow)); CUDA_CHECK(cudaMalloc(&d_Drow,drowN*sizeof(float))); drc=drowN; }
@@ -15567,9 +15578,7 @@ void launch_gqa_backward_vj1(
 
     dim3 GRID(S/Bc, Hq, B);   // Vj1 per-hq: 3x the CTAs (Hq not Hkv) to fill the GPU at low B
     gqa_bwd_vj1<Br,Bc,D><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale);
-    dim3 grGRID(S/8, Hkv, B);
-    gqa_dkdv_greduce<<<grGRID,128>>>(d_dVp, d_dV, Hq, Hkv, G, S);
-    gqa_dkdv_greduce<<<grGRID,128>>>(d_dKp, d_dK, Hq, Hkv, G, S);
+    // dK/dV reduced in-kernel via TMA-reduce — greduce kernel removed.
 
     const int cB=256; const long dqN4=dqN/4; const int cG=(int)((dqN4+cB-1)/cB);
     convert_dq_accum_to_bf16_v6<<<cG,cB>>>(reinterpret_cast<const float4*>(d_dqa), reinterpret_cast<uint2*>(d_dQ), dqN4);
