@@ -578,6 +578,7 @@ void launch_gqa_backward_vj1(
 // ============================================================================
 //  Driver: load the PyTorch reference, run Vj1, verify dQ/dK/dV, benchmark.
 // ============================================================================
+#ifndef VJ1_NO_MAIN   // define VJ1_NO_MAIN to reuse the kernel/launch from another TU (e.g. a probe)
 int main(int argc, char** argv){
     std::cout << "GQA Backward (Vj1) — standalone deliverable  [Hopper SM_90a / H200]\n";
     std::cout << "Prerequisite: python precision/baseline_gqa.py B Hq Hkv\n\n";
@@ -672,3 +673,4 @@ int main(int argc, char** argv){
     CUDA_CHECK(cudaFree(d_dQ)); CUDA_CHECK(cudaFree(d_dK)); CUDA_CHECK(cudaFree(d_dV));
     return 0;
 }
+#endif // VJ1_NO_MAIN
