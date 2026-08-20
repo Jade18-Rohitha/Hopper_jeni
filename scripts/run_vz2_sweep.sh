@@ -41,20 +41,20 @@ sudo nvidia-smi -rgc >/dev/null || true
 
 echo ""
 echo "== sweep complete -> $LOG =="
-echo "== per-shape: cuDNN vs Vj1 (banked, bf16 reduce) and Vj1p (precise fp32 dK/dV). +=win -=loss =="
+echo "== per-shape: cuDNN vs Vj1 (banked, bf16 atomic reduce) and Vj1d (deterministic, bit-identical dK/dV). +=win -=loss =="
 echo "==   [MRG] = margin <1%, needs a 12-run median-of-medians before the win is claimed. =="
 awk '
   /^# SHAPE/                         { shape=$0; sub(/^# SHAPE  /,"",shape); sub(/  \(G.*/,"",shape) }
   /SDPA bwd \(enable_gqa\)/          { cudnn=$4 }
   /Benchmark: GQA bwd Vj1 /          { k="vj1" }
-  /Benchmark: GQA bwd Vj1p/          { k="vj1p" }
+  /Benchmark: GQA bwd Vj1d/          { k="vj1d" }
   /Median Time:/ && k=="vj1"         { vj1=$3; k="" }
-  /Median Time:/ && k=="vj1p"        { vj1p=$3; k="";
+  /Median Time:/ && k=="vj1d"        { vj1d=$3; k="";
       mj=(cudnn-vj1)/cudnn*100.0;  tj=(mj>=0)?"WIN":"LOSS";
-      mp=(cudnn-vj1p)/cudnn*100.0; tp=(mp>=0)?"WIN":"LOSS";
+      mp=(cudnn-vj1d)/cudnn*100.0; tp=(mp>=0)?"WIN":"LOSS";
       fj=(mj<1.0&&mj>-1.0)?" [MRG]":"";  fp=(mp<1.0&&mp>-1.0)?" [MRG]":"";
-      printf "%-20s cuDNN %-7s | Vj1 %-7s %s %+5.1f%%%-6s | Vj1p %-7s %s %+5.1f%%%s\n",
-             shape, cudnn, vj1, tj, mj, fj, vj1p, tp, mp, fp }
+      printf "%-20s cuDNN %-7s | Vj1 %-7s %s %+5.1f%%%-6s | Vj1d %-7s %s %+5.1f%%%s\n",
+             shape, cudnn, vj1, tj, mj, fj, vj1d, tp, mp, fp }
 ' "$LOG" || true
 echo ""
-echo "== Vj1 = deliverable (bf16 reduce, ~1 ULP dK/dV wobble). Vj1p = precise fp32 dK/dV (cuDNN-quality, slower). =="
+echo "== Vj1 = deliverable (bf16 reduce, ~1 ULP dK/dV wobble). Vj1d = deterministic bit-identical dK/dV (fixed-order greduce, slower). =="
