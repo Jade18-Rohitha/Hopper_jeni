@@ -41,20 +41,20 @@ sudo nvidia-smi -rgc >/dev/null || true
 
 echo ""
 echo "== sweep complete -> $LOG =="
-echo "== per-shape best-of (cuDNN / V44 / Vj1) — champion = faster of V44,Vj1; margin vs cuDNN =="
-echo "==   shapes flagged [MARGINAL <1%] need a 12-run median-of-medians before the win is claimed. =="
+echo "== per-shape: cuDNN vs Vj1 (banked, bf16 reduce) and Vj1p (precise fp32 dK/dV). +=win -=loss =="
+echo "==   [MRG] = margin <1%, needs a 12-run median-of-medians before the win is claimed. =="
 awk '
   /^# SHAPE/                         { shape=$0; sub(/^# SHAPE  /,"",shape); sub(/  \(G.*/,"",shape) }
   /SDPA bwd \(enable_gqa\)/          { cudnn=$4 }
-  /Benchmark: GQA bwd V44/           { k="v44" }
-  /Benchmark: GQA bwd Vj1/           { k="vj1" }
-  /Median Time:/ && k=="v44"         { v44=$3; k="" }
-  /Median Time:/ && k=="vj1"         { vj1=$3; k="";
-      best=(v44<vj1)?v44:vj1; who=(v44<vj1)?"V44":"Vj1";
-      marg=(cudnn-best)/cudnn*100.0; tag=(marg>=0)?"WIN":"LOSS";
-      flag=(marg<1.0 && marg>-1.0)?"  [MARGINAL <1% -> 12-run]":"";
-      printf "%-20s cuDNN %-7s V44 %-7s Vj1 %-7s | %s %+5.1f%% (%s)%s\n",
-             shape, cudnn, v44, vj1, tag, marg, who, flag }
+  /Benchmark: GQA bwd Vj1 /          { k="vj1" }
+  /Benchmark: GQA bwd Vj1p/          { k="vj1p" }
+  /Median Time:/ && k=="vj1"         { vj1=$3; k="" }
+  /Median Time:/ && k=="vj1p"        { vj1p=$3; k="";
+      mj=(cudnn-vj1)/cudnn*100.0;  tj=(mj>=0)?"WIN":"LOSS";
+      mp=(cudnn-vj1p)/cudnn*100.0; tp=(mp>=0)?"WIN":"LOSS";
+      fj=(mj<1.0&&mj>-1.0)?" [MRG]":"";  fp=(mp<1.0&&mp>-1.0)?" [MRG]":"";
+      printf "%-20s cuDNN %-7s | Vj1 %-7s %s %+5.1f%%%-6s | Vj1p %-7s %s %+5.1f%%%s\n",
+             shape, cudnn, vj1, tj, mj, fj, vj1p, tp, mp, fp }
 ' "$LOG" || true
 echo ""
-echo "== 12/12 board is locked. This is the confirming sweep: re-verify only the [MARGINAL] shapes. =="
+echo "== Vj1 = deliverable (bf16 reduce, ~1 ULP dK/dV wobble). Vj1p = precise fp32 dK/dV (cuDNN-quality, slower). =="
