@@ -1,21 +1,24 @@
 // ============================================================================
-//  GQA_bwd_baseline.cu  —  STANDALONE DELIVERABLE
+//  GQA_bwd_baseline.cu  —  STANDALONE DELIVERABLE  (deterministic, bit-identical dK/dV)
 //
 //  Grouped-Query-Attention flash-attention BACKWARD kernel for Hopper (H200, sm_90a).
-//  This file contains ONLY the final kernel, "Vj1": a per-query-head, wgmma,
-//  2-CTA/SM design whose dK/dV are reduced across the G query heads of each KV
-//  group directly in L2 via cp.reduce.async.bulk.tensor (TMA-reduce) — no scratch
-//  buffer, no separate reduction kernel. At locked clock (1980 MHz) it beats the
-//  cuDNN reference (PyTorch SDPA enable_gqa bwd) on all 12 shapes of the sweep
-//  {B in 2,4,8} x {Hq/Hkv in 12/4,16/4,24/8,32/8}, S=4096, D=128, bf16, causal.
+//  Contains ONLY the final kernel, "Vj1d": a per-query-head, wgmma, 2-CTA/SM design.
+//  Each CTA writes a one-writer bf16 PARTIAL dK/dV to [B,Hq,S,D]; a fixed-order
+//  reduction kernel (gqa_dkdv_greduce, NO atomics) sums the G query heads of each KV
+//  group DETERMINISTICALLY, so dK/dV are BIT-IDENTICAL run-to-run — matching cuDNN's
+//  one-writer reproducibility (measured max|Δ|=0 over repeated runs). dQ is reduced
+//  across K-tiles and is non-deterministic at ~3e-5, exactly like cuDNN's dQ.
+//
+//  (A faster variant, "Vj1", replaces the fixed-order greduce with an atomic TMA-reduce
+//   — ~69us faster but dK/dV then wobble ~1 bf16 ULP run-to-run. It lives in GQA_bwd.cu.
+//   This baseline ships the deterministic Vj1d.)
 //
 //  Build:  nvcc -gencode arch=compute_90a,code=sm_90a -Iinclude \
-//               src/attention/GQA_bwd_baseline.cu -o gqa_bwd_baseline
-//  Run:    python precision/baseline_gqa.py B Hq Hkv   # writes data/gqa_*.bin
-//          ./gqa_bwd_baseline B Hq Hkv                 # correctness + latency
+//               src/attention/GQA_bwd_baseline.cu -o gqa_bwd_baseline -lcuda
+//  Run:    python precision/baseline_gqa.py B Hq Hkv    # writes data/gqa_*.bin
+//          ./gqa_bwd_baseline B Hq Hkv                  # correctness + latency
 //
-//  Only Vj1 lives here; the full experiment log (V1..V45, Vz2, V44) stays in
-//  GQA_bwd.cu.  See docs/report.md and docs/learnings.md for the derivation.
+//  See docs/report.md and docs/learnings.md for the derivation.
 // ============================================================================
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -99,6 +102,12 @@ __device__ __forceinline__ void tma_load_2d_v4(
         :: "r"(dst), "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(mb) : "memory");
 }
 
+__device__ __forceinline__ void tma_store_2d_v34(const void* tma_desc, const bf16* smem, uint32_t cx, uint32_t cy) {
+    uint32_t src = (uint32_t)__cvta_generic_to_shared(smem);
+    asm volatile(
+        "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%0, {%1, %2}], [%3];\n"
+        :: "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(src) : "memory");
+}
 __device__ __forceinline__ void tma_store_commit_v34() { asm volatile("cp.async.bulk.commit_group;\n" ::: "memory"); }
 __device__ __forceinline__ void tma_store_wait_v34()   { asm volatile("cp.async.bulk.wait_group 0;\n" ::: "memory"); }
 
@@ -355,13 +364,6 @@ __device__ __forceinline__ void tma_reduce_add_2d_v43(const void* tma_desc, cons
         :: "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(src) : "memory");
 }
 
-__device__ __forceinline__ void tma_reduce_add_2d_bf16(const void* tma_desc, const bf16* smem, uint32_t cx, uint32_t cy) {
-    uint32_t src = (uint32_t)__cvta_generic_to_shared(smem);
-    asm volatile(
-        "cp.reduce.async.bulk.tensor.2d.global.shared::cta.add.tile.bulk_group [%0, {%1, %2}], [%3];\n"
-        :: "l"((uint64_t)tma_desc), "r"(cx), "r"(cy), "r"(src) : "memory");
-}
-
 __device__ __forceinline__ void store_acc_sw128_f32(const float* d, float* base, int tid, float scl) {
     int w = tid >> 5, lane = tid & 31;
     int r0 = w * 16 + (lane >> 2), r1 = r0 + 8, cc = (lane & 3) * 2;
@@ -380,9 +382,29 @@ __device__ __forceinline__ void store_acc_sw128_f32(const float* d, float* base,
     }
 }
 
+__global__ void gqa_dkdv_greduce(const bf16* __restrict__ partial, bf16* __restrict__ out,
+                                 int Hq, int Hkv, int G, int S) {
+    constexpr int Dd = 128, RPB = 8;
+    int b = blockIdx.z, hkv = blockIdx.y, s0 = blockIdx.x * RPB;
+    int t = threadIdx.x, row = t >> 4, dg = t & 15;          // 128 thr = 8 rows x 16 uint4-groups
+    int s = s0 + row;
+    float acc[8] = {0,0,0,0,0,0,0,0};
+    for (int g = 0; g < G; g++) {
+        const bf16* p = partial + (((long)(b * Hq + hkv * G + g) * S + s) * Dd + dg * 8);
+        uint4 v = *reinterpret_cast<const uint4*>(p);
+        const bf16* vb = reinterpret_cast<const bf16*>(&v);
+        #pragma unroll
+        for (int k = 0; k < 8; k++) acc[k] += __bfloat162float(vb[k]);
+    }
+    bf16 o[8];
+    #pragma unroll
+    for (int k = 0; k < 8; k++) o[k] = __float2bfloat16(acc[k]);
+    *reinterpret_cast<uint4*>(out + (((long)(b * Hkv + hkv) * S + s) * Dd + dg * 8)) = *reinterpret_cast<const uint4*>(o);
+}
+
 template<int Br, int Bc, int D>
 __global__ void __launch_bounds__(128, 1)
-gqa_bwd_vj1(
+gqa_bwd_vj1d(
     const __grid_constant__ CUtensorMap tma_K,  const __grid_constant__ CUtensorMap tma_V,
     const __grid_constant__ CUtensorMap tma_Q,  const __grid_constant__ CUtensorMap tma_dO,
     const __grid_constant__ CUtensorMap tma_dV_st, const __grid_constant__ CUtensorMap tma_dK_st,
@@ -511,19 +533,21 @@ gqa_bwd_vj1(
     stage_acc_bf16_s<64,64>(dk,    sdO_sw + 0,    wtid, scale);
     stage_acc_bf16_s<64,64>(dk+32, sdO_sw + 4096, wtid, scale);
     __syncthreads(); fence_proxy_async_shared();
-    // Vj1: TMA-REDUCE (add) each per-hq dV/dK straight into the FINAL [B,Hkv,S,D] at kvRow. The G query
-    // heads of this KV-group (separate CTAs, same kvRow) sum in L2 — no scratch buffer, no greduce kernel.
+    // Vj1d: one-writer bf16 PARTIAL store to [B,Hq,S,D] at hqRow (each per-hq CTA owns its own slot),
+    // then a fixed-order greduce sums the G heads DETERMINISTICALLY (no atomics) -> bit-identical dK/dV
+    // run-to-run, matching cuDNN's one-writer reproducibility. Price = the ~69us greduce pass.
+    const uint32_t hqRow = (uint32_t)((b*Hq+hq)*S + k_row0);
     if (wtid == 0) {
-        tma_reduce_add_2d_bf16(&tma_dV_st, sQ_sw + 0,    0,  kvRow);
-        tma_reduce_add_2d_bf16(&tma_dV_st, sQ_sw + 4096, 64, kvRow);
-        tma_reduce_add_2d_bf16(&tma_dK_st, sdO_sw + 0,    0,  kvRow);
-        tma_reduce_add_2d_bf16(&tma_dK_st, sdO_sw + 4096, 64, kvRow);
+        tma_store_2d_v34(&tma_dV_st, sQ_sw + 0,    0,  hqRow);
+        tma_store_2d_v34(&tma_dV_st, sQ_sw + 4096, 64, hqRow);
+        tma_store_2d_v34(&tma_dK_st, sdO_sw + 0,    0,  hqRow);
+        tma_store_2d_v34(&tma_dK_st, sdO_sw + 4096, 64, hqRow);
         tma_store_commit_v34(); tma_store_wait_v34();
     }
 }
 
 template<int Br, int Bc, int D>
-void launch_gqa_backward_vj1(
+void launch_gqa_backward_vj1d(
     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
     const bf16 *d_dO, const float *d_LSE,
     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
@@ -550,12 +574,12 @@ void launch_gqa_backward_vj1(
     const uint64_t Rq=(uint64_t)B*Hq*S, Rkv=(uint64_t)B*Hkv*S;
     CUtensorMap tK=make_tma_sw128(d_K,Rkv,Bc), tV=make_tma_sw128(d_V,Rkv,Bc);
     CUtensorMap tQ=make_tma_sw128(d_Q,Rq,Br),  tdO=make_tma_sw128(d_dO,Rq,Br);
-    // Vj1 per-hq: main kernel TMA-reduce-adds dK/dV DIRECTLY into the final [B,Hkv,S,D] (the G heads sum
-    // in L2), so d_dK/d_dV must start zeroed. No scratch buffer, no greduce kernel — that 69us DRAM-bound
-    // serial reduce (2.5% of runtime) is gone; the reduction now overlaps the main kernel's compute.
-    CUDA_CHECK(cudaMemset(d_dV,0,(size_t)Rkv*D*sizeof(bf16)));
-    CUDA_CHECK(cudaMemset(d_dK,0,(size_t)Rkv*D*sizeof(bf16)));
-    CUtensorMap tdV=make_tma_out(d_dV,Rkv), tdK=make_tma_out(d_dK,Rkv);
+    // Vj1d: one-writer bf16 PARTIAL dK/dV [B,Hq,S,D]; a fixed-order greduce (no atomics) sums the G heads
+    // DETERMINISTICALLY -> bit-identical dK/dV. Trade vs Vj1: the ~69us greduce pass instead of the atomic reduce.
+    const long partN=(long)B*Hq*S*D; static bf16 *d_dKp=nullptr,*d_dVp=nullptr; static long pcap=0;
+    if(partN>pcap){ if(d_dKp)CUDA_CHECK(cudaFree(d_dKp)); if(d_dVp)CUDA_CHECK(cudaFree(d_dVp));
+        CUDA_CHECK(cudaMalloc(&d_dKp,partN*sizeof(bf16))); CUDA_CHECK(cudaMalloc(&d_dVp,partN*sizeof(bf16))); pcap=partN; }
+    CUtensorMap tdV=make_tma_out(d_dVp,Rq), tdK=make_tma_out(d_dKp,Rq);
 
     const long drowN=(long)B*Hq*S; static float* d_Drow=nullptr; static long drc=0;
     if(drowN>drc){ if(d_Drow)CUDA_CHECK(cudaFree(d_Drow)); CUDA_CHECK(cudaMalloc(&d_Drow,drowN*sizeof(float))); drc=drowN; }
@@ -568,19 +592,21 @@ void launch_gqa_backward_vj1(
     compute_drowsum_v22<<<(unsigned)dGrid,dBlock>>>(d_dO,d_O,d_Drow,drowN);
 
     dim3 GRID(S/Bc, Hq, B);   // Vj1 per-hq: 3x the CTAs (Hq not Hkv) to fill the GPU at low B
-    gqa_bwd_vj1<Br,Bc,D><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale);
-    // dK/dV reduced in-kernel via TMA-reduce — greduce kernel removed.
-
+    gqa_bwd_vj1d<Br,Bc,D><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale);
+    // fixed-order deterministic G-head reduction (no atomics) -> bit-identical dK/dV.
+    dim3 grGRID(S/8, Hkv, B);
+    gqa_dkdv_greduce<<<grGRID,128>>>(d_dVp, d_dV, Hq, Hkv, G, S);
+    gqa_dkdv_greduce<<<grGRID,128>>>(d_dKp, d_dK, Hq, Hkv, G, S);
     const int cB=256; const long dqN4=dqN/4; const int cG=(int)((dqN4+cB-1)/cB);
     convert_dq_accum_to_bf16_v6<<<cG,cB>>>(reinterpret_cast<const float4*>(d_dqa), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
 // ============================================================================
-//  Driver: load the PyTorch reference, run Vj1, verify dQ/dK/dV, benchmark.
+//  Driver: load the PyTorch reference, run Vj1d, verify dQ/dK/dV, benchmark.
 // ============================================================================
-#ifndef VJ1_NO_MAIN   // define VJ1_NO_MAIN to reuse the kernel/launch from another TU (e.g. a probe)
+#ifndef VJ1_NO_MAIN
 int main(int argc, char** argv){
-    std::cout << "GQA Backward (Vj1) — standalone deliverable  [Hopper SM_90a / H200]\n";
+    std::cout << "GQA Backward (Vj1d, deterministic dK/dV) — standalone  [Hopper SM_90a / H200]\n";
     std::cout << "Prerequisite: python precision/baseline_gqa.py B Hq Hkv\n\n";
 
     const int B   = argc > 1 ? atoi(argv[1]) : 4;
@@ -597,11 +623,9 @@ int main(int argc, char** argv){
 
     std::vector<__nv_bfloat16> h_Q(Nq), h_K(Nkv), h_V(Nkv), h_O(Nq), h_dO(Nq);
     std::vector<float>         h_LSE(Nlse), h_dQ_ref(Nq), h_dK_ref(Nkv), h_dV_ref(Nkv);
-
     auto fileSz = [](const char *p, size_t n) -> bool {
         FILE *f = fopen(p, "rb"); if (!f) return false;
-        fseek(f, 0, SEEK_END); size_t b = (size_t)ftell(f); fclose(f);
-        return b == n * sizeof(float);
+        fseek(f, 0, SEEK_END); size_t b = (size_t)ftell(f); fclose(f); return b == n * sizeof(float);
     };
     auto loadBF16 = [](const char *p, std::vector<__nv_bfloat16> &dst, size_t n){
         std::vector<float> tmp(n); loadBin(p, tmp.data(), n);
@@ -611,8 +635,7 @@ int main(int argc, char** argv){
         !fileSz("data/gqa_o.bin",Nq)||!fileSz("data/gqa_do.bin",Nq)||!fileSz("data/gqa_lse.bin",Nlse)||
         !fileSz("data/gqa_dq.bin",Nq)||!fileSz("data/gqa_dk.bin",Nkv)||!fileSz("data/gqa_dv.bin",Nkv)){
         std::cerr << "ERROR: reference files not found. Run: python precision/baseline_gqa.py "
-                  << B << " " << Hq << " " << Hkv << "\n";
-        return 1;
+                  << B << " " << Hq << " " << Hkv << "\n"; return 1;
     }
     loadBF16("data/gqa_q.bin",h_Q,Nq);   loadBF16("data/gqa_k.bin",h_K,Nkv);
     loadBF16("data/gqa_v.bin",h_V,Nkv);  loadBF16("data/gqa_o.bin",h_O,Nq);
@@ -636,8 +659,7 @@ int main(int argc, char** argv){
     CUDA_CHECK(cudaMemcpy(d_dO,h_dO.data(),Nq*sizeof(bf16),cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_LSE,h_LSE.data(),Nlse*sizeof(float),cudaMemcpyHostToDevice));
 
-    // ---- correctness ----
-    launch_gqa_backward_vj1<Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
+    launch_gqa_backward_vj1d<Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale);
     CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     {
         std::vector<__nv_bfloat16> hQ(Nq),hK(Nkv),hV(Nkv);
@@ -648,7 +670,7 @@ int main(int argc, char** argv){
         for(size_t i=0;i<Nq;++i)  qf[i]=__bfloat162float(hQ[i]);
         for(size_t i=0;i<Nkv;++i) kf[i]=__bfloat162float(hK[i]);
         for(size_t i=0;i<Nkv;++i) vf[i]=__bfloat162float(hV[i]);
-        std::cout << "-- Vj1 (per-hq, TMA-reduce dK/dV) --\n";
+        std::cout << "-- Vj1d (per-hq, fixed-order greduce -> bit-identical dK/dV) --\n";
         reportPrecision("  dQ", h_dQ_ref.data(), qf.data(), Nq);
         reportPrecision("  dK", h_dK_ref.data(), kf.data(), Nkv);
         reportPrecision("  dV", h_dV_ref.data(), vf.data(), Nkv);
@@ -657,17 +679,14 @@ int main(int argc, char** argv){
         std::cout << "  dV: "; checkResult(h_dV_ref.data(), vf.data(), Nkv, 2e-2f, 2e-2f);
         std::cout << "\n";
     }
-
-    // ---- latency (FLOP convention matches baseline_gqa.py) ----
     const long long bwd_flops = 16LL * B * Hq * (long long)S * S * D;
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_vj1<Br,Bc,D>(
+            [&](){ launch_gqa_backward_vj1d<Br,Bc,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
-        displayStats("GQA bwd Vj1  (per-hq, TMA-reduce dK/dV)  (Hopper SM_90a)", s);
+        displayStats("GQA bwd Vj1d  (per-hq, deterministic bit-identical dK/dV)  (Hopper SM_90a)", s);
     }
-
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
     CUDA_CHECK(cudaFree(d_dQ)); CUDA_CHECK(cudaFree(d_dK)); CUDA_CHECK(cudaFree(d_dV));

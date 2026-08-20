@@ -104,12 +104,20 @@ across blocks, both wobble at ~1e-5. On **dK/dV** we trade reproducibility cuDNN
 accumulates the query heads in-register (one writer → bit-exact), whereas Vj1's per-hq split turned
 dK/dV into a cross-CTA **bf16** reduce whose atomic order flips the last bf16 bit — the 3.1e-2 on dV is
 exactly one bf16 ULP at dV's larger magnitudes. It's within the correctness envelope (2e-2 relative,
-mean_abs ~1e-5) and irrelevant for training, but the asymmetry is real: **cuDNN's dK/dV are exact; ours
-are reproducible only to ~1 ULP** — the price of the per-hq speed. Mitigation if ever needed: reduce
-dK/dV in an fp32 accumulator + one convert (shrinks the wobble toward dQ's ~1e-5, most elements become
-bit-identical) at the cost of a scratch buffer and a few µs — i.e. trading the per-hq speed back. We keep
-the bf16 reduce because gradients don't need bit-reproducibility — the same reason cuDNN's fast path is
-non-deterministic on dQ at all.
+mean_abs ~1e-5) and irrelevant for training, but the asymmetry is real: **cuDNN's dK/dV are exact; Vj1's
+are reproducible only to ~1 ULP** — the price of the per-hq speed.
+
+**If bit-identical dK/dV is required, use Vj1d.** The wobble comes from the *atomic* cross-CTA reduce, so
+making it fp32 only shrinks it (~1e-4), never to zero — any atomic reduce is order-dependent. The fix is
+to drop atomics entirely: Vj1d writes one-writer per-hq partials and sums the G heads with a **fixed-order
+`greduce`** (no atomics). Measured: **dK/dV bit-identical, max|Δ| = 0 across 8 runs**, dQ still
+non-deterministic at ~3e-5 — i.e. *exactly* cuDNN's determinism profile. Cost: the ~69 µs greduce pass
+(the tax Vj1 removed), so Vj1d wins the roomy shapes and loses the tightest ~1–2%. Two supported modes:
+**Vj1d** — bit-identical dK/dV like cuDNN, ~69 µs slower — and **Vj1** — fastest (12/12), dK/dV wobble
+~1 ULP. **We ship Vj1d as the standalone baseline (`GQA_bwd_baseline.cu`)**: for a *reference*
+deliverable, cuDNN-grade reproducibility is worth ~2%, and Vj1d matches cuDNN's determinism profile
+exactly (dK/dV bit-identical, dQ non-deterministic). **Vj1** stays in `GQA_bwd.cu` as the max-speed
+alternative for anyone who wants the last 2% and doesn't need bit-reproducible gradients.
 
 **On V44 — the retired small-shape champion.** For the record, V44 (swizzled TMA-reduce-dQ, 3 warpgroups
 per CTA) anchored the small-batch end of yesterday's best-of-three. It wins the way cuDNN does — hiding
@@ -118,5 +126,6 @@ many blocks to schedule. The per-head lever made that cleverness redundant: by m
 blocks, Vj1 gets its latency hidden by *occupancy* instead, and matches or beats V44 on all 12 shapes
 except 2×12, where V44 is **0.6% faster** (0.744 vs 0.749) — and Vj1 still beats cuDNN there by 8%. That
 0.6% at one small shape is not worth shipping a second kernel and a size-based dispatch. **V44 stays in
-the dev tree (`GQA_bwd.cu`) as a benchmark reference only; the deliverable is Vj1 alone, extracted
-standalone as `GQA_bwd_baseline.cu`.**
+the dev tree (`GQA_bwd.cu`) as a benchmark reference only; the standalone deliverable
+`GQA_bwd_baseline.cu` ships **Vj1d** (deterministic bit-identical dK/dV), with the faster **Vj1** kept
+in `GQA_bwd.cu` as the max-speed alternative.**
