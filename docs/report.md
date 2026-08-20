@@ -89,6 +89,28 @@ streams — it didn't move the median and **added jitter** (4×16 std 0.03 → 0
 wasn't to hide the reduce kernel, it was to **delete it** with TMA-reduce. Reverting that stream attempt
 is what kept 4×16 winning 12/12; the real fix came from the profiler pointing at the reduce itself.
 
+**Determinism — measured, and an honest asymmetry.** I checked whether the TMA-reduces cost run-to-run
+reproducibility versus cuDNN, by running each backward 8× on byte-identical inputs
+(`precision/check_cudnn_determinism.py` for cuDNN, `precision/vj1_determinism_probe.cu` for Vj1):
+
+| gradient | cuDNN max\|Δ\| | Vj1 max\|Δ\| |
+|---|---|---|
+| dQ | 7.6e-6 (non-det) | ~6e-5 (non-det) |
+| dK | **0 — bit-identical** | 4.9e-4 – 7.8e-3 (non-det) |
+| dV | **0 — bit-identical** | 3.9e-3 – 3.1e-2 (non-det) |
+
+So it is **not** a symmetric trade. On **dQ** we make the *identical* trade cuDNN does — both reduce dQ
+across blocks, both wobble at ~1e-5. On **dK/dV** we trade reproducibility cuDNN *keeps*: cuDNN
+accumulates the query heads in-register (one writer → bit-exact), whereas Vj1's per-hq split turned
+dK/dV into a cross-CTA **bf16** reduce whose atomic order flips the last bf16 bit — the 3.1e-2 on dV is
+exactly one bf16 ULP at dV's larger magnitudes. It's within the correctness envelope (2e-2 relative,
+mean_abs ~1e-5) and irrelevant for training, but the asymmetry is real: **cuDNN's dK/dV are exact; ours
+are reproducible only to ~1 ULP** — the price of the per-hq speed. Mitigation if ever needed: reduce
+dK/dV in an fp32 accumulator + one convert (shrinks the wobble toward dQ's ~1e-5, most elements become
+bit-identical) at the cost of a scratch buffer and a few µs — i.e. trading the per-hq speed back. We keep
+the bf16 reduce because gradients don't need bit-reproducibility — the same reason cuDNN's fast path is
+non-deterministic on dQ at all.
+
 **On V44 — the retired small-shape champion.** For the record, V44 (swizzled TMA-reduce-dQ, 3 warpgroups
 per CTA) anchored the small-batch end of yesterday's best-of-three. It wins the way cuDNN does — hiding
 latency *inside* each block (thesis mode #1) — which is exactly what low batch needs when there aren't
