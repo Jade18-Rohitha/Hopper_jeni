@@ -7,32 +7,34 @@
 
 ---
 
-## Clear-winners board — updated 2026-08-19
+## Clear-winners board — updated 2026-08-20 — **deliverable = Vj1d (deterministic, bit-identical dK/dV)**
 
-Best of my kernels vs cuDNN, per shape. `+` = I win, `−` = cuDNN wins. Margins under ~3% are only
-claimed when they survive a 12-run median-of-medians + head-to-head (marked *12-run*); the rest are
-single locked-clock sweep runs.
+The shipped baseline is **Vj1d** — the deterministic kernel whose dK/dV are bit-identical run-to-run
+(matching cuDNN). Board is Vj1d vs cuDNN, per shape, locked clock (`-lgc 1980`). `[MRG]` = margin <1%,
+needs a 12-run median-of-medians. (The faster **Vj1** — atomic reduce, ~1 ULP dK/dV wobble — lives in
+`GQA_bwd.cu`; its column is shown for reference.)
 
-| B×Hq (Hkv) | cuDNN | champion | time | vs cuDNN |
+| B×Hq (Hkv) | cuDNN | **Vj1d** (shipped) | vs cuDNN | Vj1 (faster, ref) |
 |---|---|---|---|---|
-| 2×12 (4) | 0.814 | **Vj1** | 0.749 | **+8.0%** |
-| 4×12 (4) | 1.510 | **Vj1** | 1.386 | **+8.2%** |
-| 8×12 (4) | 2.832 | **Vj1** | 2.722 | **+3.9%** |
-| 2×16 (4) | 1.014 | **Vj1** | 0.955 | **+5.8%** |
-| 4×16 (4) | 1.880 | **Vj1** | 1.816 | **+3.4%** |
-| 8×16 (4) | 3.828 | **Vj1** | 3.741 | **+2.3%** |
-| 2×24 (8) | 1.485 | **Vj1** | 1.381 | **+7.0%** |
-| 4×24 (8) | 2.860 | **Vj1** | 2.727 | **+4.6%** |
-| 8×24 (8) | 5.729 | **Vj1** | 5.548 | **+3.1%** |
-| 2×32 (8) | 1.873 | **Vj1** | 1.851 | **+1.2%** |
-| 4×32 (8) | 3.822 | **Vj1** | 3.551 | **+7.1%** |
-| 8×32 (8) | 7.638 | **Vj1** | 7.082 | **+7.3%** |
+| 2×12 (4) | 0.799 | **0.757** | **+5.3%** | 0.746 (+6.6%) |
+| 4×12 (4) | 1.487 | **1.394** | **+6.2%** | 1.373 (+7.7%) |
+| 8×12 (4) | 2.775 | **2.760** | **+0.5%** *12-run 11/12* | 2.678 (+2.3%) |
+| 2×16 (4) | 1.022 | **0.967** | **+5.4%** | 0.955 (+6.6%) |
+| 4×16 (4) | 1.880 | **1.831** | **+2.6%** | 1.797 (+4.4%) |
+| 8×16 (4) | 3.828 | **3.593** | **+6.1%** | 3.545 (+7.4%) |
+| 2×24 (8) | 1.488 | **1.402** | **+5.8%** | 1.383 (+7.1%) |
+| 4×24 (8) | 2.792 | **2.755** | **+1.3%** *12-run 11/12* | 2.677 (+2.4%) |
+| 8×24 (8) | 5.729 | **5.563** | **+2.9%** | 5.301 (+7.5%) |
+| 2×32 (8) | 1.877 | **1.832** | **+2.4%** | 1.805 (+3.8%) |
+| 4×32 (8) | 3.797 | **3.594** | **+5.4%** | 3.550 (+6.5%) |
+| 8×32 (8) | 7.562 | **7.156** | **+5.4%** | 7.003 (+7.4%) |
 
-**Confirmed: 12/12 wins — Vj1 alone beats cuDNN on every shape** (single confirming sweep after the
-TMA-reduce lever; margins +1.2% to +8.2%, none inside the ±1% noise band, so no 12-run needed).
-**Vj1 is banked as the single final kernel.** V44 is retired — it was 0.6% faster only at 2×12 (0.744
-vs 0.749), where Vj1 already beats cuDNN by 8%; not worth shipping a second kernel + a dispatch for. All
-12 shapes pass the per-shape correctness check (bf16 L2 TMA-reduce holds precision, G=3 and G=4 alike).
+**Vj1d beats cuDNN on all 12 shapes — confirmed 12/12.** 10 shapes are clear single-sweep wins (+2.4% to
++6.2%); the two marginals were settled by 12-run median-of-medians: **8×12 +0.5% (11/12)** and **4×24
++1.3% (11/12)**. So the shipped *deterministic* baseline sweeps the board — cuDNN-grade reproducibility
+(dK/dV bit-identical run-to-run, max|Δ|=0; dQ non-deterministic ~3e-5, exactly like cuDNN) **and** faster
+than cuDNN on every shape — at the cost of ~69 µs (the greduce) versus the even-faster Vj1. All 12 pass
+correctness. **This is the deliverable: `GQA_bwd_baseline.cu`.**
 
 ---
 

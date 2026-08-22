@@ -17,9 +17,9 @@ Triton vs SDPA bf16   max_abs=5.029e-01  mean_abs=5.701e-03
 === Latency  (2x12x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         0.1988    0.1972    0.2031     1036.76
-SDPA bf16 (compiled)           0.1975    0.1960    0.2019     1043.65
-Triton flash (GQA)             0.6832    0.6787    0.6870      301.77
+SDPA bf16 (enable_gqa)         0.1997    0.1981    0.2042     1032.44
+SDPA bf16 (compiled)           0.1995    0.1976    0.2039     1033.60
+Triton flash (GQA)             0.6847    0.6799    0.6888      301.08
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.641e-06  max_rel=3.300e+01
@@ -29,9 +29,9 @@ Triton flash (GQA)             0.6832    0.6787    0.6870      301.77
 === Backward latency  (2x12x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          0.8144    0.7984    0.8411     1012.61
-SDPA bwd (compiled)            0.8017    0.7995    0.8043     1028.61
-Triton flash bwd (GQA)         1.6446    1.6408    1.6504      501.42
+SDPA bwd (enable_gqa)          0.7991    0.7972    0.8024     1031.97
+SDPA bwd (compiled)            0.8036    0.8015    0.8065     1026.15
+Triton flash bwd (GQA)         1.6445    1.6406    1.6500      501.45
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -66,7 +66,15 @@ Loaded PyTorch reference from data/gqa_*.bin
 ── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
   dQ  max_abs=9.766e-04  mean_abs=1.182e-05  max_rel=2.247e+01
   dK  max_abs=3.906e-03  mean_abs=2.084e-05  max_rel=1.500e+01
-  dV  max_abs=3.125e-02  mean_abs=3.820e-05  max_rel=9.000e+00
+  dV  max_abs=3.125e-02  mean_abs=3.816e-05  max_rel=9.000e+00
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=9.766e-04  mean_abs=1.182e-05  max_rel=2.247e+01
+  dK  max_abs=3.906e-03  mean_abs=1.916e-05  max_rel=1.875e+01
+  dV  max_abs=7.812e-03  mean_abs=1.469e-06  max_rel=8.000e+00
   dQ: [32mValues match!
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
@@ -84,56 +92,67 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      0.8637 ms
-Median Time:       0.8637 ms
-Std Dev:           0.0008 ms
-Min Time:          0.8621 ms
-Max Time:          0.8662 ms
-Performance:     954.7533 TFLOPS
+Average Time:      0.8646 ms
+Median Time:       0.8647 ms
+Std Dev:           0.0005 ms
+Min Time:          0.8631 ms
+Max Time:          0.8663 ms
+Performance:     953.7506 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      0.7442 ms
-Median Time:       0.7440 ms
-Std Dev:           0.0012 ms
-Min Time:          0.7419 ms
-Max Time:          0.7472 ms
-Performance:    1108.0396 TFLOPS
+Average Time:      0.7451 ms
+Median Time:       0.7452 ms
+Std Dev:           0.0011 ms
+Min Time:          0.7431 ms
+Max Time:          0.7480 ms
+Performance:    1106.6708 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      0.9328 ms
-Median Time:       0.9297 ms
-Std Dev:           0.0138 ms
-Min Time:          0.9031 ms
-Max Time:          0.9705 ms
-Performance:     884.0247 TFLOPS
+Average Time:      0.9304 ms
+Median Time:       0.9293 ms
+Std Dev:           0.0145 ms
+Min Time:          0.8890 ms
+Max Time:          0.9653 ms
+Performance:     886.2994 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      0.7501 ms
-Median Time:       0.7489 ms
-Std Dev:           0.0108 ms
-Min Time:          0.7253 ms
-Max Time:          0.7729 ms
-Performance:    1099.3372 TFLOPS
+Average Time:      0.7461 ms
+Median Time:       0.7463 ms
+Std Dev:           0.0068 ms
+Min Time:          0.7296 ms
+Max Time:          0.7616 ms
+Performance:    1105.2181 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      0.7562 ms
+Median Time:       0.7570 ms
+Std Dev:           0.0070 ms
+Min Time:          0.7426 ms
+Max Time:          0.7711 ms
+Performance:    1090.5268 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      0.7638 ms
-Median Time:       0.7636 ms
-Std Dev:           0.0011 ms
-Min Time:          0.7616 ms
-Max Time:          0.7670 ms
-Performance:    1079.6539 TFLOPS
+Average Time:      0.7586 ms
+Median Time:       0.7585 ms
+Std Dev:           0.0009 ms
+Min Time:          0.7570 ms
+Max Time:          0.7603 ms
+Performance:    1087.1125 TFLOPS
 ----------------------------------------------------------
 
 ############################################################
@@ -154,9 +173,9 @@ Triton vs SDPA bf16   max_abs=5.090e-01  mean_abs=5.671e-03
 === Latency  (4x12x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         0.3577    0.3526    0.3627     1152.70
-SDPA bf16 (compiled)           0.3619    0.3581    0.3654     1139.35
-Triton flash (GQA)             1.3560    1.3490    1.3645      304.08
+SDPA bf16 (enable_gqa)         0.3591    0.3535    0.3743     1148.34
+SDPA bf16 (compiled)           0.3595    0.3550    0.3668     1146.80
+Triton flash (GQA)             1.3586    1.3520    1.3642      303.48
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.221e-03  mean_abs=9.644e-06  max_rel=1.221e+02
@@ -166,9 +185,9 @@ Triton flash (GQA)             1.3560    1.3490    1.3645      304.08
 === Backward latency  (4x12x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          1.5103    1.4465    1.5171     1092.03
-SDPA bwd (compiled)            1.4758    1.4524    1.5142     1117.56
-Triton flash bwd (GQA)         2.9812    2.9750    3.0017      553.23
+SDPA bwd (enable_gqa)          1.4865    1.4452    1.4968     1109.52
+SDPA bwd (compiled)            1.4880    1.4547    1.5122     1108.34
+Triton flash bwd (GQA)         2.9788    2.9736    3.0057      553.67
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -208,6 +227,14 @@ Loaded PyTorch reference from data/gqa_*.bin
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
 [0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.188e-05  max_rel=3.332e+01
+  dK  max_abs=3.906e-03  mean_abs=1.906e-05  max_rel=2.750e+01
+  dV  max_abs=7.812e-03  mean_abs=1.489e-06  max_rel=1.067e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
 ── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
   dQ  max_abs=1.953e-03  mean_abs=1.188e-05  max_rel=3.332e+01
   dK  max_abs=3.906e-03  mean_abs=1.849e-05  max_rel=2.125e+01
@@ -221,56 +248,67 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.7139 ms
-Median Time:       1.7139 ms
-Std Dev:           0.0014 ms
-Min Time:          1.7117 ms
-Max Time:          1.7166 ms
-Performance:     962.2810 TFLOPS
+Average Time:      1.7147 ms
+Median Time:       1.7140 ms
+Std Dev:           0.0020 ms
+Min Time:          1.7118 ms
+Max Time:          1.7215 ms
+Performance:     961.8564 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.5054 ms
-Median Time:       1.5182 ms
-Std Dev:           0.0194 ms
-Min Time:          1.4698 ms
-Max Time:          1.5232 ms
-Performance:    1095.5659 TFLOPS
+Average Time:      1.4822 ms
+Median Time:       1.4839 ms
+Std Dev:           0.0048 ms
+Min Time:          1.4740 ms
+Max Time:          1.4954 ms
+Performance:    1112.7339 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.5533 ms
-Median Time:       1.5520 ms
-Std Dev:           0.0229 ms
-Min Time:          1.5016 ms
-Max Time:          1.6156 ms
-Performance:    1061.7830 TFLOPS
+Average Time:      1.5546 ms
+Median Time:       1.5565 ms
+Std Dev:           0.0209 ms
+Min Time:          1.5044 ms
+Max Time:          1.5955 ms
+Performance:    1060.8785 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.3860 ms
-Median Time:       1.3862 ms
-Std Dev:           0.0082 ms
-Min Time:          1.3671 ms
-Max Time:          1.4049 ms
-Performance:    1189.9058 TFLOPS
+Average Time:      1.3724 ms
+Median Time:       1.3725 ms
+Std Dev:           0.0066 ms
+Min Time:          1.3550 ms
+Max Time:          1.3912 ms
+Performance:    1201.7115 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.3937 ms
+Median Time:       1.3944 ms
+Std Dev:           0.0065 ms
+Min Time:          1.3777 ms
+Max Time:          1.4086 ms
+Performance:    1183.4037 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.5316 ms
-Median Time:       1.5378 ms
-Std Dev:           0.0150 ms
-Min Time:          1.5120 ms
-Max Time:          1.5544 ms
-Performance:    1076.8457 TFLOPS
+Average Time:      1.5107 ms
+Median Time:       1.5139 ms
+Std Dev:           0.0069 ms
+Min Time:          1.5016 ms
+Max Time:          1.5219 ms
+Performance:    1091.7365 TFLOPS
 ----------------------------------------------------------
 
 ############################################################
@@ -291,9 +329,9 @@ Triton vs SDPA bf16   max_abs=5.117e-01  mean_abs=5.605e-03
 === Latency  (8x12x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         0.7035    0.6615    0.7109     1172.21
-SDPA bf16 (compiled)           0.6994    0.6928    0.7121     1179.02
-Triton flash (GQA)             2.6538    2.6489    2.6866      310.74
+SDPA bf16 (enable_gqa)         0.6658    0.6598    0.7006     1238.52
+SDPA bf16 (compiled)           0.6984    0.6932    0.7070     1180.75
+Triton flash (GQA)             2.6535    2.6494    2.6747      310.77
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.653e-06  max_rel=5.569e+01
@@ -303,9 +341,9 @@ Triton flash (GQA)             2.6538    2.6489    2.6866      310.74
 === Backward latency  (8x12x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          2.8320    2.7443    2.8401     1164.72
-SDPA bwd (compiled)            2.8761    2.7720    2.9475     1146.88
-Triton flash bwd (GQA)         5.6524    5.6467    5.6860      583.56
+SDPA bwd (enable_gqa)          2.7406    2.7389    2.7442     1203.58
+SDPA bwd (compiled)            2.9007    2.7573    2.9091     1137.15
+Triton flash bwd (GQA)         5.6625    5.6579    5.6768      582.52
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -340,7 +378,15 @@ Loaded PyTorch reference from data/gqa_*.bin
 ── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
   dQ  max_abs=1.953e-03  mean_abs=1.185e-05  max_rel=3.991e+01
   dK  max_abs=5.859e-03  mean_abs=2.094e-05  max_rel=2.567e+01
-  dV  max_abs=3.125e-02  mean_abs=3.890e-05  max_rel=1.625e+01
+  dV  max_abs=3.125e-02  mean_abs=3.892e-05  max_rel=1.625e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.185e-05  max_rel=3.991e+01
+  dK  max_abs=7.812e-03  mean_abs=1.919e-05  max_rel=2.600e+01
+  dV  max_abs=7.812e-03  mean_abs=1.486e-06  max_rel=1.625e+01
   dQ: [32mValues match!
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
@@ -358,56 +404,67 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.3975 ms
-Median Time:       3.3976 ms
-Std Dev:           0.0000 ms
-Min Time:          3.3951 ms
-Max Time:          3.3997 ms
-Performance:     970.8798 TFLOPS
+Average Time:      3.4027 ms
+Median Time:       3.4014 ms
+Std Dev:           0.0041 ms
+Min Time:          3.3954 ms
+Max Time:          3.4121 ms
+Performance:     969.3983 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.0911 ms
-Median Time:       3.0916 ms
-Std Dev:           0.0287 ms
-Min Time:          2.9995 ms
-Max Time:          3.1344 ms
-Performance:    1067.1120 TFLOPS
+Average Time:      3.1534 ms
+Median Time:       3.0644 ms
+Std Dev:           0.2990 ms
+Min Time:          2.9503 ms
+Max Time:          4.2442 ms
+Performance:    1046.0174 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.1765 ms
-Median Time:       3.2516 ms
-Std Dev:           0.2152 ms
-Min Time:          2.8150 ms
-Max Time:          3.4500 ms
-Performance:    1038.4028 TFLOPS
+Average Time:      2.7897 ms
+Median Time:       2.7906 ms
+Std Dev:           0.0208 ms
+Min Time:          2.7394 ms
+Max Time:          2.8396 ms
+Performance:    1182.4097 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      2.7266 ms
-Median Time:       2.7223 ms
-Std Dev:           0.0288 ms
-Min Time:          2.6788 ms
-Max Time:          2.7892 ms
-Performance:    1209.7461 TFLOPS
+Average Time:      2.6761 ms
+Median Time:       2.6776 ms
+Std Dev:           0.0179 ms
+Min Time:          2.6350 ms
+Max Time:          2.7140 ms
+Performance:    1232.5819 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.7182 ms
+Median Time:       2.7219 ms
+Std Dev:           0.0200 ms
+Min Time:          2.6693 ms
+Max Time:          2.7535 ms
+Performance:    1213.4879 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.1409 ms
-Median Time:       3.1417 ms
-Std Dev:           0.0120 ms
-Min Time:          3.1180 ms
-Max Time:          3.2163 ms
-Performance:    1050.1894 TFLOPS
+Average Time:      3.1407 ms
+Median Time:       3.1425 ms
+Std Dev:           0.0122 ms
+Min Time:          3.1156 ms
+Max Time:          3.1604 ms
+Performance:    1050.2478 TFLOPS
 ----------------------------------------------------------
 
 ############################################################
@@ -428,9 +485,9 @@ Triton vs SDPA bf16   max_abs=5.039e-01  mean_abs=5.618e-03
 === Latency  (2x16x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         0.2495    0.2476    0.2539     1101.56
-SDPA bf16 (compiled)           0.2500    0.2483    0.2542     1099.72
-Triton flash (GQA)             0.8934    0.8891    0.9001      307.69
+SDPA bf16 (enable_gqa)         0.2524    0.2506    0.2567     1088.99
+SDPA bf16 (compiled)           0.2525    0.2504    0.2566     1088.50
+Triton flash (GQA)             0.8944    0.8902    0.8982      307.33
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.221e-03  mean_abs=9.659e-06  max_rel=2.763e+01
@@ -440,9 +497,9 @@ Triton flash (GQA)             0.8934    0.8891    0.9001      307.69
 === Backward latency  (2x16x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          1.0140    1.0096    1.0331     1084.30
-SDPA bwd (compiled)            1.0320    1.0188    1.0378     1065.42
-Triton flash bwd (GQA)         2.1320    2.1255    2.1408      515.71
+SDPA bwd (enable_gqa)          1.0223    1.0131    1.0414     1075.57
+SDPA bwd (compiled)            1.0307    1.0186    1.0401     1066.77
+Triton flash bwd (GQA)         2.1414    2.1328    2.1485      513.45
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -476,8 +533,16 @@ Loaded PyTorch reference from data/gqa_*.bin
 [0m
 ── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
   dQ  max_abs=1.038e-03  mean_abs=1.183e-05  max_rel=4.058e+01
-  dK  max_abs=3.906e-03  mean_abs=2.591e-05  max_rel=3.100e+01
-  dV  max_abs=6.250e-02  mean_abs=6.650e-05  max_rel=1.180e+01
+  dK  max_abs=3.906e-03  mean_abs=2.590e-05  max_rel=3.100e+01
+  dV  max_abs=6.250e-02  mean_abs=6.628e-05  max_rel=3.100e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.038e-03  mean_abs=1.183e-05  max_rel=4.058e+01
+  dK  max_abs=3.906e-03  mean_abs=2.245e-05  max_rel=3.300e+01
+  dV  max_abs=1.562e-02  mean_abs=1.990e-06  max_rel=8.000e+00
   dQ: [32mValues match!
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
@@ -495,56 +560,67 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.1427 ms
-Median Time:       1.1428 ms
-Std Dev:           0.0014 ms
-Min Time:          1.1398 ms
-Max Time:          1.1462 ms
-Performance:     962.1678 TFLOPS
+Average Time:      1.1454 ms
+Median Time:       1.1433 ms
+Std Dev:           0.0041 ms
+Min Time:          1.1404 ms
+Max Time:          1.1538 ms
+Performance:     959.9076 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      0.9831 ms
-Median Time:       0.9830 ms
-Std Dev:           0.0013 ms
-Min Time:          0.9805 ms
-Max Time:          0.9859 ms
-Performance:    1118.3938 TFLOPS
+Average Time:      0.9837 ms
+Median Time:       0.9838 ms
+Std Dev:           0.0010 ms
+Min Time:          0.9812 ms
+Max Time:          0.9864 ms
+Performance:    1117.7104 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.2487 ms
-Median Time:       1.2478 ms
-Std Dev:           0.0232 ms
-Min Time:          1.1778 ms
-Max Time:          1.2962 ms
-Performance:     880.5335 TFLOPS
+Average Time:      1.2444 ms
+Median Time:       1.2430 ms
+Std Dev:           0.0224 ms
+Min Time:          1.2047 ms
+Max Time:          1.2896 ms
+Performance:     883.5468 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      0.9545 ms
-Median Time:       0.9547 ms
-Std Dev:           0.0067 ms
-Min Time:          0.9391 ms
-Max Time:          0.9662 ms
-Performance:    1151.9477 TFLOPS
+Average Time:      0.9546 ms
+Median Time:       0.9551 ms
+Std Dev:           0.0057 ms
+Min Time:          0.9379 ms
+Max Time:          0.9660 ms
+Performance:    1151.8175 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      0.9670 ms
+Median Time:       0.9669 ms
+Std Dev:           0.0063 ms
+Min Time:          0.9518 ms
+Max Time:          0.9807 ms
+Performance:    1137.0271 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.0017 ms
-Median Time:       1.0013 ms
-Std Dev:           0.0016 ms
-Min Time:          0.9989 ms
-Max Time:          1.0083 ms
-Performance:    1097.6923 TFLOPS
+Average Time:      1.0028 ms
+Median Time:       1.0027 ms
+Std Dev:           0.0011 ms
+Min Time:          0.9998 ms
+Max Time:          1.0059 ms
+Performance:    1096.4923 TFLOPS
 ----------------------------------------------------------
 
 ############################################################
@@ -565,9 +641,9 @@ Triton vs SDPA bf16   max_abs=5.039e-01  mean_abs=5.665e-03
 === Latency  (4x16x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         0.4707    0.4550    0.4776     1167.90
-SDPA bf16 (compiled)           0.4762    0.4688    0.4841     1154.41
-Triton flash (GQA)             1.7586    1.7536    1.7726      312.61
+SDPA bf16 (enable_gqa)         0.4621    0.4571    0.4717     1189.70
+SDPA bf16 (compiled)           0.4717    0.4627    0.4749     1165.37
+Triton flash (GQA)             1.7609    1.7556    1.7683      312.21
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.644e-06  max_rel=5.401e+01
@@ -577,9 +653,9 @@ Triton flash (GQA)             1.7586    1.7536    1.7726      312.61
 === Backward latency  (4x16x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          1.8796    1.8778    1.8818     1169.95
-SDPA bwd (compiled)            1.9573    1.8757    1.9875     1123.48
-Triton flash bwd (GQA)         3.9167    3.9060    3.9685      561.45
+SDPA bwd (enable_gqa)          1.8795    1.8761    1.9351     1170.03
+SDPA bwd (compiled)            1.8864    1.8817    1.9690     1165.71
+Triton flash bwd (GQA)         3.9154    3.9108    3.9235      561.64
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -613,8 +689,16 @@ Loaded PyTorch reference from data/gqa_*.bin
 [0m
 ── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
   dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
-  dK  max_abs=7.812e-03  mean_abs=2.593e-05  max_rel=4.900e+01
-  dV  max_abs=3.125e-02  mean_abs=6.661e-05  max_rel=3.100e+01
+  dK  max_abs=7.812e-03  mean_abs=2.592e-05  max_rel=4.900e+01
+  dV  max_abs=3.125e-02  mean_abs=6.660e-05  max_rel=3.100e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.246e-05  max_rel=3.850e+01
+  dV  max_abs=7.812e-03  mean_abs=1.991e-06  max_rel=8.000e+00
   dQ: [32mValues match!
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
@@ -632,56 +716,67 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      2.2699 ms
-Median Time:       2.2696 ms
-Std Dev:           0.0033 ms
-Min Time:          2.2652 ms
-Max Time:          2.2756 ms
-Performance:     968.7692 TFLOPS
+Average Time:      2.2712 ms
+Median Time:       2.2715 ms
+Std Dev:           0.0012 ms
+Min Time:          2.2665 ms
+Max Time:          2.2748 ms
+Performance:     968.2245 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.9896 ms
-Median Time:       1.9938 ms
-Std Dev:           0.0128 ms
-Min Time:          1.9467 ms
-Max Time:          2.0001 ms
-Performance:    1105.2474 TFLOPS
+Average Time:      1.9688 ms
+Median Time:       1.9712 ms
+Std Dev:           0.0161 ms
+Min Time:          1.9479 ms
+Max Time:          1.9941 ms
+Performance:    1116.9091 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      2.0532 ms
-Median Time:       2.0540 ms
-Std Dev:           0.0242 ms
-Min Time:          1.9979 ms
-Max Time:          2.1169 ms
-Performance:    1071.0175 TFLOPS
+Average Time:      2.0563 ms
+Median Time:       2.0562 ms
+Std Dev:           0.0267 ms
+Min Time:          1.9899 ms
+Max Time:          2.1198 ms
+Performance:    1069.3823 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.8356 ms
-Median Time:       1.8160 ms
-Std Dev:           0.0454 ms
-Min Time:          1.7714 ms
-Max Time:          1.9161 ms
-Performance:    1197.9814 TFLOPS
+Average Time:      1.7969 ms
+Median Time:       1.7971 ms
+Std Dev:           0.0110 ms
+Min Time:          1.7693 ms
+Max Time:          1.8232 ms
+Performance:    1223.7801 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.8302 ms
+Median Time:       1.8305 ms
+Std Dev:           0.0091 ms
+Min Time:          1.8057 ms
+Max Time:          1.8526 ms
+Performance:    1201.5488 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      2.2103 ms
-Median Time:       2.2053 ms
-Std Dev:           0.0158 ms
-Min Time:          2.2004 ms
-Max Time:          2.2632 ms
-Performance:     994.8978 TFLOPS
+Average Time:      2.2091 ms
+Median Time:       2.2090 ms
+Std Dev:           0.0038 ms
+Min Time:          2.2023 ms
+Max Time:          2.2200 ms
+Performance:     995.4422 TFLOPS
 ----------------------------------------------------------
 
 ############################################################
@@ -702,9 +797,9 @@ Triton vs SDPA bf16   max_abs=5.039e-01  mean_abs=5.682e-03
 === Latency  (8x16x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         0.9293    0.8627    0.9417     1183.15
-SDPA bf16 (compiled)           0.9237    0.9138    0.9330     1190.38
-Triton flash (GQA)             3.4668    3.4613    3.4979      317.15
+SDPA bf16 (enable_gqa)         0.9228    0.8673    0.9294     1191.52
+SDPA bf16 (compiled)           0.9202    0.9070    0.9259     1194.83
+Triton flash (GQA)             3.4736    3.4692    3.4978      316.53
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.636e-06  max_rel=6.142e+01
@@ -714,9 +809,9 @@ Triton flash (GQA)             3.4668    3.4613    3.4979      317.15
 === Backward latency  (8x16x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          3.8280    3.6897    3.8618     1148.91
-SDPA bwd (compiled)            3.8655    3.7536    3.8768     1137.78
-Triton flash bwd (GQA)         7.4727    7.4671    7.4902      588.55
+SDPA bwd (enable_gqa)          3.8275    3.7370    3.8354     1149.07
+SDPA bwd (compiled)            3.7539    3.6796    3.8433     1171.60
+Triton flash bwd (GQA)         7.4713    7.4678    7.4892      588.66
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -751,7 +846,15 @@ Loaded PyTorch reference from data/gqa_*.bin
 ── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
   dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.062e+01
   dK  max_abs=5.859e-03  mean_abs=2.582e-05  max_rel=4.167e+01
-  dV  max_abs=6.250e-02  mean_abs=6.630e-05  max_rel=1.948e+01
+  dV  max_abs=6.250e-02  mean_abs=6.633e-05  max_rel=1.948e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.062e+01
+  dK  max_abs=3.906e-03  mean_abs=2.244e-05  max_rel=4.067e+01
+  dV  max_abs=1.562e-02  mean_abs=2.022e-06  max_rel=1.800e+01
   dQ: [32mValues match!
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
@@ -769,56 +872,67 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      4.5051 ms
-Median Time:       4.5050 ms
-Std Dev:           0.0020 ms
-Min Time:          4.5025 ms
-Max Time:          4.5074 ms
-Performance:     976.2323 TFLOPS
+Average Time:      4.5086 ms
+Median Time:       4.5087 ms
+Std Dev:           0.0000 ms
+Min Time:          4.5060 ms
+Max Time:          4.5106 ms
+Performance:     975.4716 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      5.2886 ms
-Median Time:       5.3207 ms
-Std Dev:           0.5294 ms
-Min Time:          4.2366 ms
-Max Time:          6.2037 ms
-Performance:     831.6118 TFLOPS
+Average Time:      5.4251 ms
+Median Time:       5.6375 ms
+Std Dev:           0.5412 ms
+Min Time:          4.2468 ms
+Max Time:          6.3455 ms
+Performance:     810.6902 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.7826 ms
-Median Time:       3.7850 ms
-Std Dev:           0.0322 ms
-Min Time:          3.6974 ms
-Max Time:          3.8585 ms
-Performance:    1162.7071 TFLOPS
+Average Time:      3.7294 ms
+Median Time:       3.7279 ms
+Std Dev:           0.0266 ms
+Min Time:          3.6672 ms
+Max Time:          3.7882 ms
+Performance:    1179.2880 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.8076 ms
-Median Time:       3.7409 ms
-Std Dev:           0.1820 ms
-Min Time:          3.4705 ms
-Max Time:          4.0856 ms
-Performance:    1155.0613 TFLOPS
+Average Time:      3.5383 ms
+Median Time:       3.5445 ms
+Std Dev:           0.0263 ms
+Min Time:          3.4496 ms
+Max Time:          3.5790 ms
+Performance:    1242.9836 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.6036 ms
+Median Time:       3.5932 ms
+Std Dev:           0.0726 ms
+Min Time:          3.5141 ms
+Max Time:          3.8719 ms
+Performance:    1220.4534 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      4.1616 ms
-Median Time:       4.1650 ms
-Std Dev:           0.0136 ms
-Min Time:          4.1371 ms
-Max Time:          4.1985 ms
-Performance:    1056.8203 TFLOPS
+Average Time:      4.2072 ms
+Median Time:       4.1748 ms
+Std Dev:           0.1059 ms
+Min Time:          4.1353 ms
+Max Time:          4.7620 ms
+Performance:    1045.3555 TFLOPS
 ----------------------------------------------------------
 
 ############################################################
@@ -839,9 +953,9 @@ Triton vs SDPA bf16   max_abs=5.090e-01  mean_abs=5.671e-03
 === Latency  (2x24x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         0.3638    0.3528    0.3690     1133.34
-SDPA bf16 (compiled)           0.3647    0.3613    0.3681     1130.45
-Triton flash (GQA)             1.3571    1.3504    1.3639      303.82
+SDPA bf16 (enable_gqa)         0.3579    0.3549    0.3724     1151.98
+SDPA bf16 (compiled)           0.3641    0.3566    0.3698     1132.54
+Triton flash (GQA)             1.3582    1.3545    1.3641      303.57
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.221e-03  mean_abs=9.644e-06  max_rel=1.221e+02
@@ -851,9 +965,9 @@ Triton flash (GQA)             1.3571    1.3504    1.3639      303.82
 === Backward latency  (2x24x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          1.4851    1.4462    1.5253     1110.53
-SDPA bwd (compiled)            1.4760    1.4548    1.5052     1117.41
-Triton flash bwd (GQA)         2.9805    2.9748    2.9998      553.36
+SDPA bwd (enable_gqa)          1.4883    1.4541    1.4960     1108.19
+SDPA bwd (compiled)            1.4972    1.4559    1.5030     1101.60
+Triton flash bwd (GQA)         2.9835    2.9784    3.0043      552.80
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -893,6 +1007,14 @@ Loaded PyTorch reference from data/gqa_*.bin
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
 [0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.188e-05  max_rel=3.332e+01
+  dK  max_abs=3.906e-03  mean_abs=1.906e-05  max_rel=2.750e+01
+  dV  max_abs=7.812e-03  mean_abs=1.489e-06  max_rel=1.067e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
 ── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
   dQ  max_abs=1.953e-03  mean_abs=1.188e-05  max_rel=3.332e+01
   dK  max_abs=3.906e-03  mean_abs=1.849e-05  max_rel=2.125e+01
@@ -906,56 +1028,67 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.7135 ms
-Median Time:       1.7135 ms
-Std Dev:           0.0010 ms
-Min Time:          1.7115 ms
-Max Time:          1.7160 ms
-Performance:     962.5264 TFLOPS
+Average Time:      1.7219 ms
+Median Time:       1.7256 ms
+Std Dev:           0.0066 ms
+Min Time:          1.7125 ms
+Max Time:          1.7306 ms
+Performance:     957.7921 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.4873 ms
-Median Time:       1.4836 ms
-Std Dev:           0.0138 ms
-Min Time:          1.4690 ms
-Max Time:          1.5091 ms
-Performance:    1108.8826 TFLOPS
+Average Time:      1.4876 ms
+Median Time:       1.4942 ms
+Std Dev:           0.0104 ms
+Min Time:          1.4712 ms
+Max Time:          1.5066 ms
+Performance:    1108.6654 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.5489 ms
-Median Time:       1.5504 ms
-Std Dev:           0.0223 ms
-Min Time:          1.5001 ms
-Max Time:          1.5996 ms
-Performance:    1064.7681 TFLOPS
+Average Time:      1.5517 ms
+Median Time:       1.5509 ms
+Std Dev:           0.0216 ms
+Min Time:          1.4901 ms
+Max Time:          1.5927 ms
+Performance:    1062.9053 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.3808 ms
-Median Time:       1.3811 ms
-Std Dev:           0.0079 ms
-Min Time:          1.3589 ms
-Max Time:          1.3973 ms
-Performance:    1194.4252 TFLOPS
+Average Time:      1.3826 ms
+Median Time:       1.3827 ms
+Std Dev:           0.0089 ms
+Min Time:          1.3609 ms
+Max Time:          1.4088 ms
+Performance:    1192.8678 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.4020 ms
+Median Time:       1.4024 ms
+Std Dev:           0.0070 ms
+Min Time:          1.3852 ms
+Max Time:          1.4169 ms
+Performance:    1176.3714 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.5200 ms
-Median Time:       1.5143 ms
-Std Dev:           0.0087 ms
-Min Time:          1.5107 ms
-Max Time:          1.5387 ms
-Performance:    1085.0762 TFLOPS
+Average Time:      1.5751 ms
+Median Time:       1.5491 ms
+Std Dev:           0.0634 ms
+Min Time:          1.5117 ms
+Max Time:          1.6834 ms
+Performance:    1047.0771 TFLOPS
 ----------------------------------------------------------
 
 ############################################################
@@ -976,9 +1109,9 @@ Triton vs SDPA bf16   max_abs=5.117e-01  mean_abs=5.605e-03
 === Latency  (4x24x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         0.6897    0.6601    0.7346     1195.70
-SDPA bf16 (compiled)           0.7109    0.6985    0.7173     1160.02
-Triton flash (GQA)             2.6535    2.6475    2.6711      310.77
+SDPA bf16 (enable_gqa)         0.6868    0.6619    0.7027     1200.75
+SDPA bf16 (compiled)           0.7044    0.6966    0.7081     1170.72
+Triton flash (GQA)             2.6584    2.6546    2.6777      310.20
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.653e-06  max_rel=5.569e+01
@@ -988,9 +1121,9 @@ Triton flash (GQA)             2.6535    2.6475    2.6711      310.77
 === Backward latency  (4x24x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          2.8598    2.7467    2.9203     1153.42
-SDPA bwd (compiled)            2.9180    2.8530    2.9230     1130.39
-Triton flash bwd (GQA)         5.6683    5.6526    5.6733      581.92
+SDPA bwd (enable_gqa)          2.7431    2.7416    2.7455     1202.50
+SDPA bwd (compiled)            2.8818    2.8190    2.9100     1144.61
+Triton flash bwd (GQA)         5.6619    5.6578    5.6655      582.58
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -1025,7 +1158,15 @@ Loaded PyTorch reference from data/gqa_*.bin
 ── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
   dQ  max_abs=1.953e-03  mean_abs=1.185e-05  max_rel=3.991e+01
   dK  max_abs=5.859e-03  mean_abs=2.095e-05  max_rel=2.567e+01
-  dV  max_abs=3.125e-02  mean_abs=3.894e-05  max_rel=1.625e+01
+  dV  max_abs=3.125e-02  mean_abs=3.893e-05  max_rel=1.625e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.185e-05  max_rel=3.991e+01
+  dK  max_abs=7.812e-03  mean_abs=1.919e-05  max_rel=2.600e+01
+  dV  max_abs=7.812e-03  mean_abs=1.486e-06  max_rel=1.625e+01
   dQ: [32mValues match!
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
@@ -1043,56 +1184,67 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.4003 ms
-Median Time:       3.4017 ms
-Std Dev:           0.0024 ms
-Min Time:          3.3945 ms
-Max Time:          3.4047 ms
-Performance:     970.0754 TFLOPS
+Average Time:      3.4021 ms
+Median Time:       3.4010 ms
+Std Dev:           0.0043 ms
+Min Time:          3.3959 ms
+Max Time:          3.4100 ms
+Performance:     969.5487 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.0977 ms
-Median Time:       3.0905 ms
-Std Dev:           0.1203 ms
-Min Time:          2.9527 ms
-Max Time:          4.0323 ms
-Performance:    1064.8388 TFLOPS
+Average Time:      3.1856 ms
+Median Time:       3.0645 ms
+Std Dev:           0.3460 ms
+Min Time:          2.9572 ms
+Max Time:          4.4132 ms
+Performance:    1035.4630 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.1640 ms
-Median Time:       3.1508 ms
-Std Dev:           0.1734 ms
-Min Time:          2.8259 ms
-Max Time:          3.4982 ms
-Performance:    1042.5146 TFLOPS
+Average Time:      2.8529 ms
+Median Time:       2.8486 ms
+Std Dev:           0.0406 ms
+Min Time:          2.7679 ms
+Max Time:          2.9508 ms
+Performance:    1156.2114 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      2.7405 ms
-Median Time:       2.7269 ms
-Std Dev:           0.0550 ms
-Min Time:          2.6417 ms
-Max Time:          2.8394 ms
-Performance:    1203.6325 TFLOPS
+Average Time:      2.6762 ms
+Median Time:       2.6768 ms
+Std Dev:           0.0219 ms
+Min Time:          2.6270 ms
+Max Time:          2.7155 ms
+Performance:    1232.5218 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.7146 ms
+Median Time:       2.7173 ms
+Std Dev:           0.0247 ms
+Min Time:          2.6671 ms
+Max Time:          2.7573 ms
+Performance:    1215.1098 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.1411 ms
-Median Time:       3.1415 ms
-Std Dev:           0.0070 ms
-Min Time:          3.1117 ms
-Max Time:          3.1538 ms
-Performance:    1050.1306 TFLOPS
+Average Time:      3.1364 ms
+Median Time:       3.1410 ms
+Std Dev:           0.0149 ms
+Min Time:          3.1141 ms
+Max Time:          3.1616 ms
+Performance:    1051.6951 TFLOPS
 ----------------------------------------------------------
 
 ############################################################
@@ -1113,9 +1265,9 @@ Triton vs SDPA bf16   max_abs=5.098e-01  mean_abs=5.635e-03
 === Latency  (8x24x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         1.4093    1.2742    1.4353     1170.25
-SDPA bf16 (compiled)           1.3827    1.3723    1.3873     1192.77
-Triton flash (GQA)             5.2021    5.1883    5.2311      317.04
+SDPA bf16 (enable_gqa)         1.3700    1.3204    1.3864     1203.87
+SDPA bf16 (compiled)           1.3831    1.3658    1.4025     1192.45
+Triton flash (GQA)             5.2104    5.1929    5.2393      316.54
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.465e-03  mean_abs=9.641e-06  max_rel=4.253e+01
@@ -1125,9 +1277,9 @@ Triton flash (GQA)             5.2021    5.1883    5.2311      317.04
 === Backward latency  (8x24x4096x128, GQA G=3, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          5.7285    5.3536    5.7982     1151.63
-SDPA bwd (compiled)            5.8308    5.3981    5.8774     1131.42
-Triton flash bwd (GQA)        11.0090   11.0059   11.0152      599.25
+SDPA bwd (enable_gqa)          5.7285    5.7076    5.8298     1151.62
+SDPA bwd (compiled)            5.7218    5.6193    5.7721     1152.98
+Triton flash bwd (GQA)        11.0413   11.0159   11.0501      597.49
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -1162,7 +1314,15 @@ Loaded PyTorch reference from data/gqa_*.bin
 ── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
   dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=2.465e+01
   dK  max_abs=3.906e-03  mean_abs=2.085e-05  max_rel=1.767e+01
-  dV  max_abs=3.125e-02  mean_abs=3.865e-05  max_rel=1.700e+01
+  dV  max_abs=3.125e-02  mean_abs=3.866e-05  max_rel=1.700e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=2.465e+01
+  dK  max_abs=3.906e-03  mean_abs=1.910e-05  max_rel=1.900e+01
+  dV  max_abs=1.562e-02  mean_abs=1.494e-06  max_rel=1.600e+01
   dQ: [32mValues match!
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
@@ -1180,56 +1340,67 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:     10.9923 ms
-Median Time:      11.0074 ms
-Std Dev:           0.1214 ms
-Min Time:         10.6575 ms
-Max Time:         11.2439 ms
-Performance:     600.1544 TFLOPS
+Average Time:     10.9651 ms
+Median Time:      10.9924 ms
+Std Dev:           0.1570 ms
+Min Time:         10.1470 ms
+Max Time:         11.1752 ms
+Performance:     601.6433 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:     10.9225 ms
-Median Time:      10.8777 ms
-Std Dev:           0.2396 ms
-Min Time:         10.4092 ms
-Max Time:         11.4643 ms
-Performance:     603.9903 TFLOPS
+Average Time:     10.8894 ms
+Median Time:      10.8738 ms
+Std Dev:           0.2485 ms
+Min Time:         10.4493 ms
+Max Time:         11.7449 ms
+Performance:     605.8230 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      5.5741 ms
-Median Time:       5.5445 ms
-Std Dev:           0.1577 ms
-Min Time:          5.3458 ms
-Max Time:          5.8548 ms
-Performance:    1183.5163 TFLOPS
+Average Time:      5.4748 ms
+Median Time:       5.4116 ms
+Std Dev:           0.1229 ms
+Min Time:          5.3461 ms
+Max Time:          5.8552 ms
+Performance:    1204.9793 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      5.5878 ms
-Median Time:       5.5483 ms
-Std Dev:           0.1948 ms
-Min Time:          5.3371 ms
-Max Time:          5.9120 ms
-Performance:    1180.6257 TFLOPS
+Average Time:      5.2974 ms
+Median Time:       5.3008 ms
+Std Dev:           0.0272 ms
+Min Time:          5.2072 ms
+Max Time:          5.3559 ms
+Performance:    1245.3522 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      5.7823 ms
+Median Time:       5.5629 ms
+Std Dev:           0.3955 ms
+Min Time:          5.3267 ms
+Max Time:          6.5059 ms
+Performance:    1140.8985 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      6.2665 ms
-Median Time:       6.2669 ms
-Std Dev:           0.1247 ms
-Min Time:          6.0889 ms
-Max Time:          6.4750 ms
-Performance:    1052.7556 TFLOPS
+Average Time:      6.0979 ms
+Median Time:       6.0914 ms
+Std Dev:           0.0582 ms
+Min Time:          6.0500 ms
+Max Time:          6.2615 ms
+Performance:    1081.8512 TFLOPS
 ----------------------------------------------------------
 
 ############################################################
@@ -1250,9 +1421,9 @@ Triton vs SDPA bf16   max_abs=5.039e-01  mean_abs=5.665e-03
 === Latency  (2x32x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         0.4660    0.4554    0.4736     1179.77
-SDPA bf16 (compiled)           0.4809    0.4721    0.4863     1143.19
-Triton flash (GQA)             1.7601    1.7560    1.7726      312.35
+SDPA bf16 (enable_gqa)         0.4649    0.4560    0.4780     1182.54
+SDPA bf16 (compiled)           0.4747    0.4663    0.4792     1158.22
+Triton flash (GQA)             1.7619    1.7566    1.7664      312.03
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.644e-06  max_rel=5.401e+01
@@ -1262,9 +1433,9 @@ Triton flash (GQA)             1.7601    1.7560    1.7726      312.35
 === Backward latency  (2x32x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          1.8734    1.8692    1.8748     1173.83
-SDPA bwd (compiled)            1.9337    1.8701    1.9642     1137.21
-Triton flash bwd (GQA)         3.9101    3.9057    3.9364      562.39
+SDPA bwd (enable_gqa)          1.8772    1.8735    1.8788     1171.47
+SDPA bwd (compiled)            1.9692    1.8761    1.9787     1116.69
+Triton flash bwd (GQA)         3.9169    3.9126    3.9463      561.41
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -1299,7 +1470,15 @@ Loaded PyTorch reference from data/gqa_*.bin
 ── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
   dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
   dK  max_abs=7.812e-03  mean_abs=2.593e-05  max_rel=4.900e+01
-  dV  max_abs=3.125e-02  mean_abs=6.665e-05  max_rel=3.100e+01
+  dV  max_abs=3.125e-02  mean_abs=6.659e-05  max_rel=3.200e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.246e-05  max_rel=3.850e+01
+  dV  max_abs=7.812e-03  mean_abs=1.991e-06  max_rel=8.000e+00
   dQ: [32mValues match!
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
@@ -1317,56 +1496,67 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      2.2687 ms
-Median Time:       2.2680 ms
-Std Dev:           0.0036 ms
-Min Time:          2.2651 ms
-Max Time:          2.2864 ms
-Performance:     969.2986 TFLOPS
+Average Time:      2.2723 ms
+Median Time:       2.2721 ms
+Std Dev:           0.0042 ms
+Min Time:          2.2655 ms
+Max Time:          2.2797 ms
+Performance:     967.7578 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.9858 ms
-Median Time:       1.9926 ms
-Std Dev:           0.0164 ms
-Min Time:          1.9467 ms
-Max Time:          1.9988 ms
-Performance:    1107.3546 TFLOPS
+Average Time:      1.9944 ms
+Median Time:       1.9951 ms
+Std Dev:           0.0199 ms
+Min Time:          1.9490 ms
+Max Time:          2.0170 ms
+Performance:    1102.6193 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      2.0584 ms
-Median Time:       2.0617 ms
-Std Dev:           0.0249 ms
-Min Time:          2.0059 ms
-Max Time:          2.1162 ms
-Performance:    1068.3156 TFLOPS
+Average Time:      2.0619 ms
+Median Time:       2.0646 ms
+Std Dev:           0.0314 ms
+Min Time:          1.9660 ms
+Max Time:          2.1250 ms
+Performance:    1066.5061 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      1.9388 ms
-Median Time:       1.8511 ms
-Std Dev:           0.1517 ms
-Min Time:          1.7859 ms
-Max Time:          2.1720 ms
-Performance:    1134.1951 TFLOPS
+Average Time:      1.8018 ms
+Median Time:       1.8050 ms
+Std Dev:           0.0116 ms
+Min Time:          1.7710 ms
+Max Time:          1.8210 ms
+Performance:    1220.4597 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.8318 ms
+Median Time:       1.8316 ms
+Std Dev:           0.0087 ms
+Min Time:          1.8135 ms
+Max Time:          1.8497 ms
+Performance:    1200.4677 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      2.2132 ms
-Median Time:       2.2055 ms
-Std Dev:           0.0181 ms
-Min Time:          2.1985 ms
-Max Time:          2.2772 ms
-Performance:     993.6036 TFLOPS
+Average Time:      2.2084 ms
+Median Time:       2.2081 ms
+Std Dev:           0.0047 ms
+Min Time:          2.1999 ms
+Max Time:          2.2225 ms
+Performance:     995.7317 TFLOPS
 ----------------------------------------------------------
 
 ############################################################
@@ -1387,9 +1577,9 @@ Triton vs SDPA bf16   max_abs=5.039e-01  mean_abs=5.682e-03
 === Latency  (4x32x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         0.9277    0.8653    0.9319     1185.15
-SDPA bf16 (compiled)           0.9306    0.9206    0.9335     1181.52
-Triton flash (GQA)             3.4745    3.4629    3.4957      316.45
+SDPA bf16 (enable_gqa)         0.9244    0.8676    0.9300     1189.47
+SDPA bf16 (compiled)           0.9261    0.9215    0.9307     1187.21
+Triton flash (GQA)             3.4711    3.4628    3.4938      316.77
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.636e-06  max_rel=6.142e+01
@@ -1399,9 +1589,9 @@ Triton flash (GQA)             3.4745    3.4629    3.4957      316.45
 === Backward latency  (4x32x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          3.8215    3.6063    3.8779     1150.86
-SDPA bwd (compiled)            3.8127    3.7326    3.8330     1153.53
-Triton flash bwd (GQA)         7.4819    7.4799    7.4906      587.83
+SDPA bwd (enable_gqa)          3.7974    3.7812    3.8122     1158.16
+SDPA bwd (compiled)            3.8942    3.6181    3.8989     1129.39
+Triton flash bwd (GQA)         7.4770    7.4730    7.4826      588.21
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -1435,8 +1625,16 @@ Loaded PyTorch reference from data/gqa_*.bin
 [0m
 ── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
   dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.062e+01
-  dK  max_abs=5.859e-03  mean_abs=2.582e-05  max_rel=4.167e+01
-  dV  max_abs=6.250e-02  mean_abs=6.632e-05  max_rel=1.948e+01
+  dK  max_abs=5.859e-03  mean_abs=2.581e-05  max_rel=4.167e+01
+  dV  max_abs=6.250e-02  mean_abs=6.630e-05  max_rel=1.948e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.062e+01
+  dK  max_abs=3.906e-03  mean_abs=2.244e-05  max_rel=4.067e+01
+  dV  max_abs=1.562e-02  mean_abs=2.022e-06  max_rel=1.800e+01
   dQ: [32mValues match!
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
@@ -1454,56 +1652,67 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      4.5103 ms
-Median Time:       4.5067 ms
-Std Dev:           0.0084 ms
-Min Time:          4.5035 ms
-Max Time:          4.5453 ms
-Performance:     975.1188 TFLOPS
+Average Time:      4.5083 ms
+Median Time:       4.5083 ms
+Std Dev:           0.0020 ms
+Min Time:          4.5017 ms
+Max Time:          4.5106 ms
+Performance:     975.5488 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      5.3140 ms
-Median Time:       5.3200 ms
-Std Dev:           0.4832 ms
-Min Time:          4.2471 ms
-Max Time:          6.1928 ms
-Performance:     827.6290 TFLOPS
+Average Time:      5.3128 ms
+Median Time:       5.5301 ms
+Std Dev:           0.5944 ms
+Min Time:          4.0927 ms
+Max Time:          6.2143 ms
+Performance:     827.8136 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.7715 ms
-Median Time:       3.7674 ms
-Std Dev:           0.0404 ms
-Min Time:          3.6814 ms
-Max Time:          3.8680 ms
-Performance:    1166.1321 TFLOPS
+Average Time:      3.8059 ms
+Median Time:       3.7601 ms
+Std Dev:           0.1009 ms
+Min Time:          3.6800 ms
+Max Time:          4.0418 ms
+Performance:    1155.5786 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      3.6194 ms
-Median Time:       3.5505 ms
-Std Dev:           0.1258 ms
-Min Time:          3.4577 ms
-Max Time:          3.8754 ms
-Performance:    1215.1171 TFLOPS
+Average Time:      3.5432 ms
+Median Time:       3.5499 ms
+Std Dev:           0.0407 ms
+Min Time:          3.4494 ms
+Max Time:          3.6364 ms
+Performance:    1241.2565 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.6056 ms
+Median Time:       3.5936 ms
+Std Dev:           0.0909 ms
+Min Time:          3.5070 ms
+Max Time:          3.9497 ms
+Performance:    1219.7770 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      4.2062 ms
-Median Time:       4.1702 ms
-Std Dev:           0.1379 ms
-Min Time:          4.1287 ms
-Max Time:          4.8591 ms
-Performance:    1045.6065 TFLOPS
+Average Time:      4.2077 ms
+Median Time:       4.1718 ms
+Std Dev:           0.1159 ms
+Min Time:          4.1345 ms
+Max Time:          4.8129 ms
+Performance:    1045.2436 TFLOPS
 ----------------------------------------------------------
 
 ############################################################
@@ -1524,9 +1733,9 @@ Triton vs SDPA bf16   max_abs=5.078e-01  mean_abs=5.636e-03
 === Latency  (8x32x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bf16 (enable_gqa)         1.8524    1.7842    1.8566     1187.12
-SDPA bf16 (compiled)           1.8552    1.8505    1.8635     1185.35
-Triton flash (GQA)             6.8514    6.8424    6.8958      320.96
+SDPA bf16 (enable_gqa)         1.7849    1.7763    1.8567     1232.02
+SDPA bf16 (compiled)           1.8352    1.8292    1.8425     1198.22
+Triton flash (GQA)             6.8500    6.8462    6.8582      321.02
 
 === Backward precision (Triton flash vs SDPA bf16) ===
   dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.656e-06  max_rel=7.133e+01
@@ -1536,9 +1745,9 @@ Triton flash (GQA)             6.8514    6.8424    6.8958      320.96
 === Backward latency  (8x32x4096x128, GQA G=4, bf16) ===
 Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
 ---------------------------------------------------------------------
-SDPA bwd (enable_gqa)          7.6377    7.5110    7.7987     1151.66
-SDPA bwd (compiled)            7.6850    7.2684    7.7487     1144.58
-Triton flash bwd (GQA)        14.6006   14.5948   14.6066      602.45
+SDPA bwd (enable_gqa)          7.5619    7.5111    7.5692     1163.22
+SDPA bwd (compiled)            7.6338    7.1979    7.6449     1152.25
+Triton flash bwd (GQA)        14.5971   14.5896   14.6002      602.59
 GQA Backward — precision test  [Hopper SM_90 / H200]
 Prerequisite: python precision/baseline_gqa.py
 
@@ -1578,6 +1787,14 @@ Loaded PyTorch reference from data/gqa_*.bin
 [0m  dK: [32mValues match!
 [0m  dV: [32mValues match!
 [0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.465e-03  mean_abs=1.184e-05  max_rel=3.168e+01
+  dK  max_abs=5.859e-03  mean_abs=2.252e-05  max_rel=6.400e+01
+  dV  max_abs=3.125e-02  mean_abs=1.999e-06  max_rel=1.600e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
 ── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
   dQ  max_abs=1.465e-03  mean_abs=1.184e-05  max_rel=3.168e+01
   dK  max_abs=3.906e-03  mean_abs=2.141e-05  max_rel=5.133e+01
@@ -1591,74 +1808,79 @@ Loaded PyTorch reference from data/gqa_*.bin
 ----------------------------------------------------------
 Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:     14.9081 ms
-Median Time:      14.9142 ms
-Std Dev:           0.0909 ms
-Min Time:         14.5833 ms
-Max Time:         15.1071 ms
-Performance:     590.0213 TFLOPS
+Average Time:     14.9012 ms
+Median Time:      14.9092 ms
+Std Dev:           0.0857 ms
+Min Time:         14.6193 ms
+Max Time:         15.0762 ms
+Performance:     590.2954 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:     14.9223 ms
-Median Time:      14.9455 ms
-Std Dev:           0.2579 ms
-Min Time:         14.3278 ms
-Max Time:         15.5871 ms
-Performance:     589.4583 TFLOPS
+Average Time:     14.8986 ms
+Median Time:      14.8674 ms
+Std Dev:           0.2716 ms
+Min Time:         14.1991 ms
+Max Time:         15.5856 ms
+Performance:     590.3979 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      7.6470 ms
-Median Time:       7.7597 ms
-Std Dev:           0.2986 ms
-Min Time:          7.1332 ms
-Max Time:          8.0948 ms
-Performance:    1150.2625 TFLOPS
+Average Time:      7.5602 ms
+Median Time:       7.6256 ms
+Std Dev:           0.2667 ms
+Min Time:          7.1877 ms
+Max Time:          8.0116 ms
+Performance:    1163.4671 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      7.2044 ms
-Median Time:       7.0820 ms
-Std Dev:           0.1993 ms
-Min Time:          7.0051 ms
-Max Time:          7.5888 ms
-Performance:    1220.9265 TFLOPS
+Average Time:      7.0433 ms
+Median Time:       7.0026 ms
+Std Dev:           0.1337 ms
+Min Time:          6.8903 ms
+Max Time:          7.4788 ms
+Performance:    1248.8677 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      7.2321 ms
+Median Time:       7.1561 ms
+Std Dev:           0.2322 ms
+Min Time:          7.0756 ms
+Max Time:          8.1701 ms
+Performance:    1216.2602 TFLOPS
 ----------------------------------------------------------
 
 ----------------------------------------------------------
 Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
 ----------------------------------------------------------
-Average Time:      8.2373 ms
-Median Time:       8.1181 ms
-Std Dev:           0.3227 ms
-Min Time:          8.0268 ms
-Max Time:          9.5175 ms
-Performance:    1067.8410 TFLOPS
+Average Time:      8.1807 ms
+Median Time:       8.1080 ms
+Std Dev:           0.3214 ms
+Min Time:          8.0269 ms
+Max Time:          9.6156 ms
+Performance:    1075.2281 TFLOPS
 ----------------------------------------------------------
-== resetting clocks ==
-
-
-== sweep complete -> reports/vz2_sweep_20260819_095658.log ==
-== per-shape best-of (cuDNN / V44 / Vj1) — champion = faster of V44,Vj1; margin vs cuDNN ==
-==   shapes flagged [MARGINAL <1%] need a 12-run median-of-medians before the win is claimed. ==
-B=2  Hq=12  Hkv=4    cuDNN 0.8144  V44 0.7440  Vj1 0.7489  | WIN  +8.6% (V44)
-B=4  Hq=12  Hkv=4    cuDNN 1.5103  V44 1.5182  Vj1 1.3862  | WIN  +8.2% (Vj1)
-B=8  Hq=12  Hkv=4    cuDNN 2.8320  V44 3.0916  Vj1 2.7223  | WIN  +3.9% (Vj1)
-B=2  Hq=16  Hkv=4    cuDNN 1.0140  V44 0.9830  Vj1 0.9547  | WIN  +5.8% (Vj1)
-B=4  Hq=16  Hkv=4    cuDNN 1.8796  V44 1.9938  Vj1 1.8160  | WIN  +3.4% (Vj1)
-B=8  Hq=16  Hkv=4    cuDNN 3.8280  V44 5.3207  Vj1 3.7409  | WIN  +2.3% (Vj1)
-B=2  Hq=24  Hkv=8    cuDNN 1.4851  V44 1.4836  Vj1 1.3811  | WIN  +7.0% (Vj1)
-B=4  Hq=24  Hkv=8    cuDNN 2.8598  V44 3.0905  Vj1 2.7269  | WIN  +4.6% (Vj1)
-B=8  Hq=24  Hkv=8    cuDNN 5.7285  V44 10.8777 Vj1 5.5483  | WIN  +3.1% (Vj1)
-B=2  Hq=32  Hkv=8    cuDNN 1.8734  V44 1.9926  Vj1 1.8511  | WIN  +1.2% (Vj1)
-B=4  Hq=32  Hkv=8    cuDNN 3.8215  V44 5.3200  Vj1 3.5505  | WIN  +7.1% (Vj1)
-B=8  Hq=32  Hkv=8    cuDNN 7.6377  V44 14.9455 Vj1 7.0820  | WIN  +7.3% (Vj1)
-
-== 12/12 board is locked. This is the confirming sweep: re-verify only the [MARGINAL] shapes. ==
+== per-shape: cuDNN vs Vj1 (banked, bf16 atomic reduce) and Vj1d (deterministic, bit-identical dK/dV). +=win -=loss ==
+==   [MRG] = margin <1%, needs a 12-run median-of-medians before the win is claimed. ==
+B=2  Hq=12  Hkv=4    cuDNN 0.7991  | Vj1 0.7463  WIN  +6.6%       | Vj1d 0.7570  WIN  +5.3%
+B=4  Hq=12  Hkv=4    cuDNN 1.4865  | Vj1 1.3725  WIN  +7.7%       | Vj1d 1.3944  WIN  +6.2%
+B=8  Hq=12  Hkv=4    cuDNN 2.7406  | Vj1 2.6776  WIN  +2.3%       | Vj1d 2.7219  WIN  +0.7% [MRG]
+B=2  Hq=16  Hkv=4    cuDNN 1.0223  | Vj1 0.9551  WIN  +6.6%       | Vj1d 0.9669  WIN  +5.4%
+B=4  Hq=16  Hkv=4    cuDNN 1.8795  | Vj1 1.7971  WIN  +4.4%       | Vj1d 1.8305  WIN  +2.6%
+B=8  Hq=16  Hkv=4    cuDNN 3.8275  | Vj1 3.5445  WIN  +7.4%       | Vj1d 3.5932  WIN  +6.1%
+B=2  Hq=24  Hkv=8    cuDNN 1.4883  | Vj1 1.3827  WIN  +7.1%       | Vj1d 1.4024  WIN  +5.8%
+B=4  Hq=24  Hkv=8    cuDNN 2.7431  | Vj1 2.6768  WIN  +2.4%       | Vj1d 2.7173  WIN  +0.9% [MRG]
+B=8  Hq=24  Hkv=8    cuDNN 5.7285  | Vj1 5.3008  WIN  +7.5%       | Vj1d 5.5629  WIN  +2.9%
+B=2  Hq=32  Hkv=8    cuDNN 1.8772  | Vj1 1.8050  WIN  +3.8%       | Vj1d 1.8316  WIN  +2.4%
+B=4  Hq=32  Hkv=8    cuDNN 3.7974  | Vj1 3.5499  WIN  +6.5%       | Vj1d 3.5936  WIN  +5.4%
+B=8  Hq=32  Hkv=8    cuDNN 7.5619  | Vj1 7.0026  WIN  +7.4%       | Vj1d 7.1561  WIN  +5.4%
