@@ -1101,7 +1101,8 @@ gqa_backward_dQ_v3(
         // dP = dO·V^T   (A=dO[i][d], B=V[j][d]; K-major over D → 8 k-steps, SBO=2048)
         fill_copy<Br, D>(sA_t, sdO, tid); fill_copy<Bc, D>(sB_t, sV, tid);
         __syncthreads();
-        { float acc[32]; zeroN<32>(acc); run_gemm_n64<D / 16>(acc, sA_t, sB_t, (uint64_t)(D >> 3) * 128); store_acc_smem<Bc>(acc, sdP, tid, 1.0f); }
+        { float acc[32]; zeroN<32>(acc); run_gemm_n64<D / 16>(acc, sA_t, sB_t, (uint64_t)(D >> 3) * 128); 
+          store_acc_smem<Bc>(acc, sdP, tid, 1.0f); }
         __syncthreads();
 
         // dS = P ⊙ (dP - D)   (into sP)
@@ -16121,7 +16122,7 @@ int main(int argc, char** argv){
     }
     {
         KernelStats s = benchmarkKernel(
-            [&](){ launch_gqa_backward_v6<Br2,Bc2,D>(
+            [&](){ launch_gqa_backward_v5<Br2,Bc2,D>(
                 d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); },
             100, 10, bwd_flops);
         displayStats("GQA bwd V5  Br=64, Bc=64  FUSED KV-centric  (Hopper SM_90)", s);
