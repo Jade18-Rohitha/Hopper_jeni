@@ -15790,6 +15790,7 @@ void launch_gqa_backward_vj1d(
 
 
 
+#ifndef GQA_BWD_NO_MAIN   // defined by GQA_fwd_bwd.cu, which reuses Vj1/Vj1d
 int main(int argc, char** argv){
     std::cout << "GQA Backward — precision test  [Hopper SM_90 / H200]\n";
     std::cout << "Prerequisite: python precision/baseline_gqa.py\n\n";
@@ -16438,3 +16439,4 @@ int main(int argc, char** argv){
     CUDA_CHECK(cudaFree(d_dQ)); CUDA_CHECK(cudaFree(d_dK)); CUDA_CHECK(cudaFree(d_dV));
     return 0;
 }
+#endif // GQA_BWD_NO_MAIN

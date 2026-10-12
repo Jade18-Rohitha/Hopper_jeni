@@ -1,9 +1,9 @@
 // ============================================================================
-//  GQA_fwd_bwd.cu  —  FORWARD + BACKWARD chain: V62 forward -> Vj1d backward  [H200, sm_90a]
+//  GQA_fwd_bwd.cu  —  FORWARD + BACKWARD chain: V62 forward -> Vj1d | Vj1 backward  [H200, sm_90a]
 //
 //  Apples-to-apples with cuDNN's training step (sdpa(...).backward(dO)): our V62 forward
-//  produces O + LSE, and Vj1d consumes THOSE (not the PyTorch reference O/LSE), so the
-//  chain is exactly what a training step would run.
+//  produces O + LSE, and the backward (Vj1d = deterministic dK/dV, Vj1 = atomic TMA-reduce dK/dV)
+//  consumes THOSE (not the PyTorch reference O/LSE), so the chain is exactly a training step.
 //
 //  Timing mirrors triton.testing.do_bench (what precision/baseline_gqa.py uses for cuDNN):
 //  per rep = L2 flush, start event, work, end event; all reps enqueued back-to-back, ONE
@@ -13,8 +13,8 @@
 //  Run:    python precision/baseline_gqa.py B Hq Hkv     # writes data/gqa_*.bin
 //          ./build/bin/gqa_fwd_bwd B Hq Hkv
 // ============================================================================
-#define VJ1_NO_MAIN
-#include "GQA_bwd_baseline.cu"   // Vj1d: launch_gqa_backward_vj1d<Br,Bc,D>
+#define GQA_BWD_NO_MAIN
+#include "GQA_bwd.cu"            // Vj1d + Vj1: launch_gqa_backward_vj1d / _vj1 <Br,Bc,D> (same code the sweep times)
 #include "GQA_fwd_ref.cu"        // V62:  launch_gqa_v62
 
 #include <algorithm>
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
     const int Hkv = argc > 3 ? atoi(argv[3]) : 4;
     const int G   = Hq / Hkv;
     constexpr int S = 4096, D = 128, Br = 64, Bc = 64;
-    printf("GQA fwd+bwd chain: V62 fwd -> Vj1d bwd   B=%d Hq=%d Hkv=%d (G=%d) S=%d D=%d causal bf16\n\n",
+    printf("GQA fwd+bwd chain: V62 fwd -> Vj1d|Vj1 bwd   B=%d Hq=%d Hkv=%d (G=%d) S=%d D=%d causal bf16\n\n",
            B, Hq, Hkv, G, S, D);
 
     const float  scale = 1.0f / sqrtf((float)D);
@@ -96,41 +96,53 @@ int main(int argc, char** argv) {
     auto fwd = [&]() { launch_gqa_v62(d_Q, d_K, d_V, d_O, d_LSE, B, Hq, Hkv, S, scale, 0); };
     auto bwd = [&]() { launch_gqa_backward_vj1d<Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,
                                                          B,Hq,Hkv,G,S,scale); };
+    auto bwd1 = [&]() { launch_gqa_backward_vj1<Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,
+                                                         B,Hq,Hkv,G,S,scale); };
 
     // ── correctness: chained (bwd consumes OUR forward's O/LSE) ──
-    fwd(); CUDA_CHECK(cudaGetLastError());
-    bwd(); CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
     auto toF = [](const bf16 *d, size_t n) {
         std::vector<bf16> h(n); CUDA_CHECK(cudaMemcpy(h.data(), d, n*sizeof(bf16), cudaMemcpyDeviceToHost));
         std::vector<float> f(n); for (size_t i = 0; i < n; ++i) f[i] = __bfloat162float(h[i]); return f;
     };
+    fwd(); CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
     {
         std::vector<float> o = toF(d_O, Nq), lse(Nlse);
         CUDA_CHECK(cudaMemcpy(lse.data(), d_LSE, Nlse*sizeof(float), cudaMemcpyDeviceToHost));
-        std::vector<float> dq = toF(d_dQ, Nq), dk = toF(d_dK, Nkv), dv = toF(d_dV, Nkv);
         printf("-- V62 forward vs PyTorch reference --\n");
         reportPrecision("  O  ", h_Oref.data(),   o.data(),   Nq);
         reportPrecision("  LSE", h_LSEref.data(), lse.data(), Nlse);
-        std::cout << "  O:   "; checkResult(h_Oref.data(),   o.data(),   Nq,   2e-2f, 2e-2f);
-        std::cout << "  LSE: "; checkResult(h_LSEref.data(), lse.data(), Nlse, 2e-2f, 2e-2f);
-        printf("-- Vj1d backward on V62's O/LSE vs PyTorch reference --\n");
+        std::cout << "CHECK V62 O:      "; checkResult(h_Oref.data(),   o.data(),   Nq,   2e-2f, 2e-2f);
+        std::cout << "CHECK V62 LSE:    "; checkResult(h_LSEref.data(), lse.data(), Nlse, 2e-2f, 2e-2f);
+    }
+    auto checkBwd = [&](const char *name, auto launch) {
+        CUDA_CHECK(cudaMemset(d_dQ, 0, Nq*sizeof(bf16)));
+        CUDA_CHECK(cudaMemset(d_dK, 0, Nkv*sizeof(bf16)));
+        CUDA_CHECK(cudaMemset(d_dV, 0, Nkv*sizeof(bf16)));
+        launch(); CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
+        std::vector<float> dq = toF(d_dQ, Nq), dk = toF(d_dK, Nkv), dv = toF(d_dV, Nkv);
+        printf("-- %s backward on V62's O/LSE vs PyTorch reference --\n", name);
         reportPrecision("  dQ", h_dQref.data(), dq.data(), Nq);
         reportPrecision("  dK", h_dKref.data(), dk.data(), Nkv);
         reportPrecision("  dV", h_dVref.data(), dv.data(), Nkv);
-        std::cout << "  dQ: "; checkResult(h_dQref.data(), dq.data(), Nq,  2e-2f, 2e-2f);
-        std::cout << "  dK: "; checkResult(h_dKref.data(), dk.data(), Nkv, 2e-2f, 2e-2f);
-        std::cout << "  dV: "; checkResult(h_dVref.data(), dv.data(), Nkv, 2e-2f, 2e-2f);
-        printf("\n");
-    }
+        std::cout << "CHECK " << name << " dQ:  "; checkResult(h_dQref.data(), dq.data(), Nq,  2e-2f, 2e-2f);
+        std::cout << "CHECK " << name << " dK:  "; checkResult(h_dKref.data(), dk.data(), Nkv, 2e-2f, 2e-2f);
+        std::cout << "CHECK " << name << " dV:  "; checkResult(h_dVref.data(), dv.data(), Nkv, 2e-2f, 2e-2f);
+    };
+    checkBwd("Vj1d", bwd);
+    checkBwd("Vj1 ", bwd1);
+    printf("\n");
 
     // ── latency (do_bench-style medians) ──
     const float t_fwd = median_ms_dobench(fwd);
     const float t_bwd = median_ms_dobench(bwd);
     const float t_fb  = median_ms_dobench([&]() { fwd(); bwd(); });
+    const float t_b1  = median_ms_dobench(bwd1);
+    const float t_fb1 = median_ms_dobench([&]() { fwd(); bwd1(); });
     printf("OURS fwd V62              %.4f ms\n", t_fwd);
     printf("OURS bwd Vj1d             %.4f ms\n", t_bwd);
     printf("OURS fwd+bwd V62+Vj1d     %.4f ms\n", t_fb);
+    printf("OURS bwd Vj1              %.4f ms\n", t_b1);
+    printf("OURS fwd+bwd V62+Vj1      %.4f ms\n", t_fb1);
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));

@@ -35,8 +35,13 @@ k, v = load("k", B, Hkv, S, D), load("v", B, Hkv, S, D)
 scale = 1.0 / math.sqrt(D)
 
 
-def sdpa(q_, k_, v_):
-    with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+BACKENDS = {"cuDNN": SDPBackend.CUDNN_ATTENTION}
+
+
+def sdpa(q_, k_, v_, backend):
+    if backend is None:
+        return F.scaled_dot_product_attention(q_, k_, v_, scale=scale, is_causal=True, enable_gqa=True)
+    with sdpa_kernel(backend):
         return F.scaled_dot_product_attention(q_, k_, v_, scale=scale, is_causal=True, enable_gqa=True)
 
 
@@ -44,23 +49,28 @@ def leaves():
     return [t.detach().requires_grad_(True) for t in (q, k, v)]
 
 
-qa, ka, va = leaves()
-o = sdpa(qa, ka, va)
-assert "Cudnn" in type(o.grad_fn).__name__, f"not cuDNN: {type(o.grad_fn).__name__}"
-
-
-def fwd_bwd():
-    qb, kb, vb = leaves()
-    sdpa(qb, kb, vb).backward(do)
-
-
-fns = {
-    "cuDNN fwd     ": lambda: sdpa(q, k, v),
-    "cuDNN bwd-only": lambda: torch.autograd.grad(o, (qa, ka, va), do, retain_graph=True),
-    "cuDNN fwd+bwd ": fwd_bwd,
-}
-print(f"cuDNN forced ({type(o.grad_fn).__name__})  B={B} Hq={Hq} Hkv={Hkv}")
-for name, fn in fns.items():
+def bench(fn):
     med = triton.testing.do_bench(fn, warmup=25, rep=100, quantiles=[0.5])
-    med = med[0] if isinstance(med, (list, tuple)) else med
-    print(f"{name}  {med:.4f} ms")
+    return med[0] if isinstance(med, (list, tuple)) else med
+
+
+print(f"B={B} Hq={Hq} Hkv={Hkv}")
+for label, backend in BACKENDS.items():
+    qa, ka, va = leaves()
+    try:
+        o = sdpa(qa, ka, va, backend)
+    except RuntimeError as e:
+        print(f"# {label}: unavailable ({str(e).splitlines()[0][:100]})")
+        continue
+    gf = type(o.grad_fn).__name__
+    if label == "cuDNN":
+        assert "Cudnn" in gf, f"not cuDNN: {gf}"
+
+    def fwd_bwd(backend=backend):
+        qb, kb, vb = leaves()
+        sdpa(qb, kb, vb, backend).backward(do)
+
+    print(f"# {label} -> {gf}")
+    print(f"{label} fwd       {bench(lambda: sdpa(q, k, v, backend)):.4f} ms")
+    print(f"{label} bwd-only  {bench(lambda: torch.autograd.grad(o, (qa, ka, va), do, retain_graph=True)):.4f} ms")
+    print(f"{label} fwd+bwd   {bench(fwd_bwd):.4f} ms")
