@@ -6,7 +6,7 @@ remembers not just what worked but why the wrong turns were wrong.*
 > **⚠ CORRECTION (2026-10-12): the "beat cuDNN" conclusion of this write-up is WRONG.** Every cuDNN
 > number used all week came from `_sdpa_bwd` in `precision/baseline_gqa.py`, which timed
 > `sdpa(...).backward(do)` — **forward + backward** — while my kernels were timed **backward only**.
-> Subtracting cuDNN's forward (same log), cuDNN's backward alone is **24–32% faster than Vj1d on all
+> Subtracting cuDNN's forward (same log), cuDNN's backward alone is **24–37% faster than Vj1d on all
 > 12 shapes** (see `report.md`). The relative lessons *between my own kernels* (naive→Vz2→Vj1, per-hq,
 > TMA-reduce, profile the whole pipeline) still hold; every "vs cuDNN" margin and "12/12" claim below
 > does not. Lesson 10 at the end is the one that matters most.

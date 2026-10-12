@@ -8,7 +8,7 @@
 
 ---
 
-## ⚠ Board corrected — 2026-10-12: **we do NOT beat cuDNN. Vj1d is 24–32% slower on all 12 shapes.**
+## ⚠ Board corrected — 2026-10-12: **we do NOT beat cuDNN. Vj1d is 24–37% slower on all 12 shapes (measured).**
 
 **What was wrong.** Every cuDNN number on the old board (and in every daily log below) came from
 `_sdpa_bwd` in `precision/baseline_gqa.py`, which timed `sdpa(q,k,v).backward(do)` — i.e. cuDNN's
@@ -16,29 +16,29 @@
 greduce + dQ convert; O/LSE precomputed). The backend was also never forced to cuDNN. So the old
 "12/12" compared our backward against cuDNN's forward+backward.
 
-**Corrected board (derived, pending H200 re-measure).** From sweep `reports/vz2_sweep_20260820_140637.log`,
-which also timed the SDPA forward alone under the same conditions: cuDNN bwd ≈ (fwd+bwd) − fwd.
-Negative = slower than cuDNN.
+**Corrected board — MEASURED on H200, 2026-10-12** (`reports/vz2_sweep_20261012_091718.log`, locked
+1980 MHz, cuDNN backend forced — `native enable_gqa`, its dQ/dK/dV match default SDPA bit-for-bit, so
+the old default path *was* cuDNN). cuDNN bwd = `autograd.grad` on a pre-built graph (do_bench).
+Negative = slower than cuDNN. Single sweep; 12-run medians: `bash scripts/run_median12.sh`.
 
 | B×Hq (Hkv) | cuDNN fwd | cuDNN fwd+bwd (old "cuDNN") | **cuDNN bwd** | **Vj1d** | Vj1d vs cuDNN bwd | Vj1 | Vj1 vs cuDNN bwd |
 |---|---|---|---|---|---|---|---|
-| 2×12 (4) | 0.200 | 0.799 | **0.599** | 0.757 | **−26.3%** | 0.746 | −24.5% |
-| 4×12 (4) | 0.359 | 1.486 | **1.127** | 1.394 | **−23.7%** | 1.373 | −21.7% |
-| 8×12 (4) | 0.666 | 2.741 | **2.075** | 2.722 | **−31.2%** | 2.678 | −29.1% |
-| 2×16 (4) | 0.252 | 1.022 | **0.770** | 0.967 | **−25.6%** | 0.955 | −24.1% |
-| 4×16 (4) | 0.462 | 1.879 | **1.417** | 1.831 | **−29.1%** | 1.797 | −26.8% |
-| 8×16 (4) | 0.923 | 3.828 | **2.905** | 3.593 | **−23.7%** | 3.545 | −22.0% |
-| 2×24 (8) | 0.358 | 1.488 | **1.130** | 1.402 | **−24.1%** | 1.383 | −22.3% |
-| 4×24 (8) | 0.687 | 2.743 | **2.056** | 2.717 | **−32.1%** | 2.677 | −30.2% |
-| 8×24 (8) | 1.370 | 5.729 | **4.359** | 5.563 | **−27.6%** | 5.301 | −21.6% |
-| 2×32 (8) | 0.465 | 1.877 | **1.412** | 1.832 | **−29.7%** | 1.805 | −27.8% |
-| 4×32 (8) | 0.924 | 3.797 | **2.873** | 3.594 | **−25.1%** | 3.550 | −23.6% |
-| 8×32 (8) | 1.785 | 7.562 | **5.777** | 7.156 | **−23.9%** | 7.003 | −21.2% |
+| 2×12 (4) | 0.198 | 0.802 | **0.607** | 0.762 | **−25.6%** | 0.747 | −23.1% |
+| 4×12 (4) | 0.372 | 1.511 | **1.107** | 1.400 | **−26.5%** | 1.374 | −24.1% |
+| 8×12 (4) | 0.711 | 2.912 | **2.161** | 2.714 | **−25.6%** | 2.735 | −26.5% |
+| 2×16 (4) | 0.251 | 1.021 | **0.773** | 0.971 | **−25.7%** | 0.953 | −23.4% |
+| 4×16 (4) | 0.463 | 1.971 | **1.426** | 1.957 | **−37.3%** | 1.824 | −27.9% |
+| 8×16 (4) | 0.917 | 3.809 | **2.757** | 3.711 | **−34.6%** | 3.700 | −34.2% |
+| 2×24 (8) | 0.368 | 1.500 | **1.116** | 1.411 | **−26.4%** | 1.383 | −23.9% |
+| 4×24 (8) | 0.724 | 2.927 | **2.196** | 2.725 | **−24.1%** | 2.757 | −25.5% |
+| 8×24 (8) | 1.361 | 5.787 | **4.367** | 5.762 | **−32.0%** | 5.412 | −23.9% |
+| 2×32 (8) | 0.467 | 1.954 | **1.444** | 1.961 | **−35.7%** | 1.807 | −25.1% |
+| 4×32 (8) | 0.948 | 3.846 | **2.852** | 3.716 | **−30.3%** | 3.675 | −28.8% |
+| 8×32 (8) | 1.862 | 7.608 | **5.728** | 7.338 | **−28.1%** | 7.121 | −24.3% |
 
-**Score: Vj1d 0/12, Vj1 0/12.** Our backward ≈ cuDNN's forward + backward.
+**Score: Vj1d 0/12, Vj1 0/12 (24–37% slower).** Our backward ≈ cuDNN's forward + backward.
 
-Caveats: the cuDNN bwd column is a subtraction, not a direct measurement (the forward under autograd also
-saves LSE; small effect, cannot close a 24–32% gap), and the backend was not forced. **Fix landed:**
+**Fix landed:**
 `baseline_gqa.py` now prints `cuDNN bwd-only (forced)` (forward once outside the timer, `autograd.grad`
 timed, backend forced, gradients checked vs SDPA) and `scripts/run_vz2_sweep.sh` parses that line. The
 old fwd+bwd rows are still printed, relabelled `SDPA fwd+bwd`, for reference only. Re-run

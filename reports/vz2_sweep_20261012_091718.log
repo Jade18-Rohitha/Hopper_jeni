@@ -1,0 +1,1956 @@
+
+############################################################
+# SHAPE  B=2  Hq=12  Hkv=4  (G=3)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (2x12x4096x128, GQA G=3) ===
+  SDPA bf16 (enable_gqa)                    max_abs=2.888e-03  mean_abs=7.245e-04  max_rel=5.419e-03
+Saved forward reference data (B=2, Hq=12, Hkv=4, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=2.638e-03  mean_abs=3.538e-04  max_rel=1.904e+02
+  dK SDPA bf16                              max_abs=2.888e-03  mean_abs=2.372e-05  max_rel=3.435e+01
+  dV SDPA bf16                              max_abs=2.748e-02  mean_abs=9.435e-05  max_rel=7.400e+01
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.029e-01  mean_abs=5.701e-03
+
+=== Latency  (2x12x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         0.1969    0.1962    0.1977     1047.04
+SDPA bf16 (compiled)           0.1961    0.1952    0.1975     1051.14
+Triton flash (GQA)             0.6952    0.6921    0.6990      296.54
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.641e-06  max_rel=3.300e+01
+  dK Triton flash vs SDPA                   max_abs=3.906e-03  mean_abs=1.587e-05  max_rel=4.730e+01
+  dV Triton flash vs SDPA                   max_abs=3.125e-02  mean_abs=5.489e-05  max_rel=4.578e+02
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=9.537e-07  mean_abs=1.990e-13  max_rel=6.410e-03
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (2x12x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        0.6068    0.6046    0.6104     1358.92
+cuDNN fwd+graph (forced)       0.1980    0.1972    0.1989     4164.48
+SDPA fwd+bwd (enable_gqa)      0.8017    0.7991    0.8042     1028.61
+SDPA fwd+bwd (compiled)        0.8022    0.7995    3.2850     1027.91
+Triton flash bwd-only          1.6203    1.6149    1.6246      508.93
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=2 Hq=12 Hkv=4 (G=3)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=9.766e-04  mean_abs=1.182e-05  max_rel=2.247e+01
+  dK  max_abs=3.906e-03  mean_abs=1.858e-05  max_rel=2.062e+01
+  dV  max_abs=3.125e-02  mean_abs=5.445e-05  max_rel=1.000e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=9.766e-04  mean_abs=1.182e-05  max_rel=2.247e+01
+  dK  max_abs=3.906e-03  mean_abs=1.858e-05  max_rel=2.062e+01
+  dV  max_abs=3.125e-02  mean_abs=5.445e-05  max_rel=1.000e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=9.766e-04  mean_abs=1.182e-05  max_rel=2.247e+01
+  dK  max_abs=3.906e-03  mean_abs=1.858e-05  max_rel=2.062e+01
+  dV  max_abs=3.125e-02  mean_abs=5.445e-05  max_rel=1.000e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=9.766e-04  mean_abs=1.182e-05  max_rel=2.247e+01
+  dK  max_abs=3.906e-03  mean_abs=2.083e-05  max_rel=1.500e+01
+  dV  max_abs=3.125e-02  mean_abs=3.829e-05  max_rel=9.000e+00
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=9.766e-04  mean_abs=1.182e-05  max_rel=2.247e+01
+  dK  max_abs=3.906e-03  mean_abs=1.916e-05  max_rel=1.875e+01
+  dV  max_abs=7.812e-03  mean_abs=1.469e-06  max_rel=8.000e+00
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=9.766e-04  mean_abs=1.182e-05  max_rel=2.247e+01
+  dK  max_abs=3.906e-03  mean_abs=1.858e-05  max_rel=2.062e+01
+  dV  max_abs=3.125e-02  mean_abs=5.445e-05  max_rel=1.000e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=2 Hq=12 Hkv=4 S=4096 D=128, GQA G=3, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      0.8614 ms
+Median Time:       0.8615 ms
+Std Dev:           0.0008 ms
+Min Time:          0.8596 ms
+Max Time:          0.8633 ms
+Performance:     957.3261 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      0.7870 ms
+Median Time:       0.7533 ms
+Std Dev:           0.2485 ms
+Min Time:          0.7512 ms
+Max Time:          3.1665 ms
+Performance:    1047.7658 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      0.9314 ms
+Median Time:       0.9301 ms
+Std Dev:           0.0144 ms
+Min Time:          0.8839 ms
+Max Time:          0.9726 ms
+Performance:     885.4063 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      0.7552 ms
+Median Time:       0.7467 ms
+Std Dev:           0.0599 ms
+Min Time:          0.7347 ms
+Max Time:          1.2789 ms
+Performance:    1091.8904 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      0.7610 ms
+Median Time:       0.7620 ms
+Std Dev:           0.0067 ms
+Min Time:          0.7454 ms
+Max Time:          0.7750 ms
+Performance:    1083.6867 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      0.7638 ms
+Median Time:       0.7638 ms
+Std Dev:           0.0011 ms
+Min Time:          0.7616 ms
+Max Time:          0.7664 ms
+Performance:    1079.6395 TFLOPS
+----------------------------------------------------------
+
+############################################################
+# SHAPE  B=4  Hq=12  Hkv=4  (G=3)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (4x12x4096x128, GQA G=3) ===
+  SDPA bf16 (enable_gqa)                    max_abs=3.169e-03  mean_abs=7.379e-04  max_rel=5.601e-03
+Saved forward reference data (B=4, Hq=12, Hkv=4, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=2.849e-03  mean_abs=3.607e-04  max_rel=2.160e+02
+  dK SDPA bf16                              max_abs=4.119e-03  mean_abs=2.353e-05  max_rel=9.926e+01
+  dV SDPA bf16                              max_abs=3.559e-02  mean_abs=9.463e-05  max_rel=1.473e+02
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.090e-01  mean_abs=5.671e-03
+
+=== Latency  (4x12x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         0.3571    0.3493    0.3584     1154.77
+SDPA bf16 (compiled)           0.3548    0.3527    0.3601     1162.27
+Triton flash (GQA)             1.3786    1.3739    1.3828      299.08
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.221e-03  mean_abs=1.019e-05  max_rel=1.221e+02
+  dK Triton flash vs SDPA                   max_abs=3.906e-03  mean_abs=1.601e-05  max_rel=6.866e+01
+  dV Triton flash vs SDPA                   max_abs=3.125e-02  mean_abs=5.489e-05  max_rel=1.450e+02
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=7.629e-06  mean_abs=5.556e-13  max_rel=7.143e-03
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (4x12x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        1.1072    1.0995    1.1260     1489.58
+cuDNN fwd+graph (forced)       0.3716    0.3678    0.3729     4438.48
+SDPA fwd+bwd (enable_gqa)      1.5109    1.4713    1.5362     1091.57
+SDPA fwd+bwd (compiled)        1.4919    1.4763    1.5043     1105.45
+Triton flash bwd-only          2.9598    2.9526    2.9822      557.22
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=4 Hq=12 Hkv=4 (G=3)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=1.850e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=5.478e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=1.850e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=5.478e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=1.850e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=5.478e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=2.083e-05  max_rel=3.633e+01
+  dV  max_abs=3.125e-02  mean_abs=3.888e-05  max_rel=9.667e+00
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=1.907e-05  max_rel=3.633e+01
+  dV  max_abs=1.562e-02  mean_abs=1.631e-06  max_rel=1.067e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=1.850e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=5.478e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=4 Hq=12 Hkv=4 S=4096 D=128, GQA G=3, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.7098 ms
+Median Time:       1.7092 ms
+Std Dev:           0.0030 ms
+Min Time:          1.7070 ms
+Max Time:          1.7208 ms
+Performance:     964.5835 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.4938 ms
+Median Time:       1.4920 ms
+Std Dev:           0.0042 ms
+Min Time:          1.4880 ms
+Max Time:          1.5008 ms
+Performance:    1104.0613 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.5552 ms
+Median Time:       1.5526 ms
+Std Dev:           0.0215 ms
+Min Time:          1.5069 ms
+Max Time:          1.5962 ms
+Performance:    1060.4937 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.3742 ms
+Median Time:       1.3744 ms
+Std Dev:           0.0068 ms
+Min Time:          1.3600 ms
+Max Time:          1.3890 ms
+Performance:    1200.1654 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.4005 ms
+Median Time:       1.4001 ms
+Std Dev:           0.0069 ms
+Min Time:          1.3821 ms
+Max Time:          1.4160 ms
+Performance:    1177.6490 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.5137 ms
+Median Time:       1.5132 ms
+Std Dev:           0.0024 ms
+Min Time:          1.5106 ms
+Max Time:          1.5276 ms
+Performance:    1089.5574 TFLOPS
+----------------------------------------------------------
+
+############################################################
+# SHAPE  B=8  Hq=12  Hkv=4  (G=3)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (8x12x4096x128, GQA G=3) ===
+  SDPA bf16 (enable_gqa)                    max_abs=3.274e-03  mean_abs=7.343e-04  max_rel=5.817e-03
+Saved forward reference data (B=8, Hq=12, Hkv=4, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=2.919e-03  mean_abs=3.595e-04  max_rel=1.971e+02
+  dK SDPA bf16                              max_abs=4.025e-03  mean_abs=2.370e-05  max_rel=4.152e+01
+  dV SDPA bf16                              max_abs=2.831e-02  mean_abs=9.493e-05  max_rel=9.863e+01
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.117e-01  mean_abs=5.605e-03
+
+=== Latency  (8x12x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         0.6736    0.6507    0.6881     1224.16
+SDPA bf16 (compiled)           0.6843    0.6784    0.6868     1205.13
+Triton flash (GQA)             2.7010    2.6959    2.7211      305.30
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=1.018e-05  max_rel=7.727e+01
+  dK Triton flash vs SDPA                   max_abs=3.906e-03  mean_abs=1.602e-05  max_rel=5.608e+01
+  dV Triton flash vs SDPA                   max_abs=3.125e-02  mean_abs=5.488e-05  max_rel=7.538e+02
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (8x12x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        2.1609    2.0894    2.2124     1526.47
+cuDNN fwd+graph (forced)       0.7107    0.7043    0.7164     4641.12
+SDPA fwd+bwd (enable_gqa)      2.9122    2.8768    2.9394     1132.68
+SDPA fwd+bwd (compiled)        2.8445    2.7842    2.9214     1159.60
+Triton flash bwd-only          5.6199    5.6147    5.6337      586.94
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=8 Hq=12 Hkv=4 (G=3)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=3.906e-03  mean_abs=1.861e-05  max_rel=2.350e+01
+  dV  max_abs=3.125e-02  mean_abs=5.509e-05  max_rel=2.008e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=3.906e-03  mean_abs=1.861e-05  max_rel=2.350e+01
+  dV  max_abs=3.125e-02  mean_abs=5.509e-05  max_rel=2.008e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=3.906e-03  mean_abs=1.861e-05  max_rel=2.350e+01
+  dV  max_abs=3.125e-02  mean_abs=5.509e-05  max_rel=2.008e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=5.859e-03  mean_abs=2.095e-05  max_rel=2.300e+01
+  dV  max_abs=3.125e-02  mean_abs=3.900e-05  max_rel=1.625e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=7.812e-03  mean_abs=1.920e-05  max_rel=2.300e+01
+  dV  max_abs=7.812e-03  mean_abs=1.628e-06  max_rel=1.625e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=3.906e-03  mean_abs=1.861e-05  max_rel=2.350e+01
+  dV  max_abs=3.125e-02  mean_abs=5.509e-05  max_rel=2.008e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=8 Hq=12 Hkv=4 S=4096 D=128, GQA G=3, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.3884 ms
+Median Time:       3.3867 ms
+Std Dev:           0.0050 ms
+Min Time:          3.3837 ms
+Max Time:          3.4109 ms
+Performance:     973.4893 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.0543 ms
+Median Time:       3.0529 ms
+Std Dev:           0.0376 ms
+Min Time:          2.9735 ms
+Max Time:          3.3022 ms
+Performance:    1079.9645 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.0919 ms
+Median Time:       3.0229 ms
+Std Dev:           0.1921 ms
+Min Time:          2.7754 ms
+Max Time:          3.3863 ms
+Performance:    1066.8347 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.7349 ms
+Median Time:       2.7346 ms
+Std Dev:           0.0292 ms
+Min Time:          2.6770 ms
+Max Time:          2.8052 ms
+Performance:    1206.0686 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.7147 ms
+Median Time:       2.7139 ms
+Std Dev:           0.0192 ms
+Min Time:          2.6799 ms
+Max Time:          2.7695 ms
+Performance:    1215.0716 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.2597 ms
+Median Time:       3.2618 ms
+Std Dev:           0.0635 ms
+Min Time:          3.1595 ms
+Max Time:          3.3852 ms
+Performance:    1011.9079 TFLOPS
+----------------------------------------------------------
+
+############################################################
+# SHAPE  B=2  Hq=16  Hkv=4  (G=4)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (2x16x4096x128, GQA G=4) ===
+  SDPA bf16 (enable_gqa)                    max_abs=3.011e-03  mean_abs=7.270e-04  max_rel=5.301e-03
+Saved forward reference data (B=2, Hq=16, Hkv=4, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=3.056e-03  mean_abs=3.566e-04  max_rel=1.941e+02
+  dK SDPA bf16                              max_abs=3.470e-03  mean_abs=2.733e-05  max_rel=3.131e+01
+  dV SDPA bf16                              max_abs=2.835e-02  mean_abs=1.103e-04  max_rel=5.850e+01
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.039e-01  mean_abs=5.618e-03
+
+=== Latency  (2x16x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         0.2470    0.2462    0.2480     1112.97
+SDPA bf16 (compiled)           0.2480    0.2469    0.2489     1108.45
+Triton flash (GQA)             0.9034    0.8984    0.9093      304.28
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.221e-03  mean_abs=9.659e-06  max_rel=2.763e+01
+  dK Triton flash vs SDPA                   max_abs=2.930e-03  mean_abs=1.826e-05  max_rel=3.872e+01
+  dV Triton flash vs SDPA                   max_abs=3.125e-02  mean_abs=6.311e-05  max_rel=9.995e+01
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (2x16x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        0.7725    0.7680    0.7777     1423.38
+cuDNN fwd+graph (forced)       0.2508    0.2495    0.2522     4383.18
+SDPA fwd+bwd (enable_gqa)      1.0208    1.0179    1.0285     1077.14
+SDPA fwd+bwd (compiled)        1.0176    1.0158    1.0214     1080.49
+Triton flash bwd-only          2.1148    2.1080    2.1210      519.90
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=2 Hq=16 Hkv=4 (G=4)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.038e-03  mean_abs=1.183e-05  max_rel=4.058e+01
+  dK  max_abs=3.906e-03  mean_abs=2.136e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=6.392e-05  max_rel=1.988e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.038e-03  mean_abs=1.183e-05  max_rel=4.058e+01
+  dK  max_abs=3.906e-03  mean_abs=2.136e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=6.392e-05  max_rel=1.988e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=1.038e-03  mean_abs=1.183e-05  max_rel=4.058e+01
+  dK  max_abs=3.906e-03  mean_abs=2.136e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=6.392e-05  max_rel=1.988e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=1.038e-03  mean_abs=1.183e-05  max_rel=4.058e+01
+  dK  max_abs=3.906e-03  mean_abs=2.591e-05  max_rel=3.100e+01
+  dV  max_abs=6.250e-02  mean_abs=6.641e-05  max_rel=1.180e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.038e-03  mean_abs=1.183e-05  max_rel=4.058e+01
+  dK  max_abs=3.906e-03  mean_abs=2.245e-05  max_rel=3.300e+01
+  dV  max_abs=1.562e-02  mean_abs=1.990e-06  max_rel=8.000e+00
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.038e-03  mean_abs=1.183e-05  max_rel=4.058e+01
+  dK  max_abs=3.906e-03  mean_abs=2.136e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=6.392e-05  max_rel=1.988e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=2 Hq=16 Hkv=4 S=4096 D=128, GQA G=4, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.1382 ms
+Median Time:       1.1379 ms
+Std Dev:           0.0013 ms
+Min Time:          1.1362 ms
+Max Time:          1.1410 ms
+Performance:     966.0038 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      0.9946 ms
+Median Time:       0.9945 ms
+Std Dev:           0.0015 ms
+Min Time:          0.9922 ms
+Max Time:          1.0048 ms
+Performance:    1105.5212 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.2442 ms
+Median Time:       1.2412 ms
+Std Dev:           0.0197 ms
+Min Time:          1.2043 ms
+Max Time:          1.2966 ms
+Performance:     883.7283 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      0.9528 ms
+Median Time:       0.9529 ms
+Std Dev:           0.0091 ms
+Min Time:          0.9340 ms
+Max Time:          1.0138 ms
+Performance:    1154.0000 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      0.9707 ms
+Median Time:       0.9707 ms
+Std Dev:           0.0068 ms
+Min Time:          0.9535 ms
+Max Time:          0.9860 ms
+Performance:    1132.7357 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.0092 ms
+Median Time:       1.0093 ms
+Std Dev:           0.0010 ms
+Min Time:          1.0074 ms
+Max Time:          1.0118 ms
+Performance:    1089.4573 TFLOPS
+----------------------------------------------------------
+
+############################################################
+# SHAPE  B=4  Hq=16  Hkv=4  (G=4)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (4x16x4096x128, GQA G=4) ===
+  SDPA bf16 (enable_gqa)                    max_abs=3.134e-03  mean_abs=7.362e-04  max_rel=5.570e-03
+Saved forward reference data (B=4, Hq=16, Hkv=4, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=2.843e-03  mean_abs=3.604e-04  max_rel=2.335e+02
+  dK SDPA bf16                              max_abs=4.936e-03  mean_abs=2.767e-05  max_rel=9.825e+01
+  dV SDPA bf16                              max_abs=2.929e-02  mean_abs=1.104e-04  max_rel=2.676e+02
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.039e-01  mean_abs=5.665e-03
+
+=== Latency  (4x16x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         0.4606    0.4499    0.4627     1193.63
+SDPA bf16 (compiled)           0.4633    0.4556    0.4670     1186.54
+Triton flash (GQA)             1.7923    1.7887    1.7974      306.73
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.644e-06  max_rel=5.401e+01
+  dK Triton flash vs SDPA                   max_abs=3.906e-03  mean_abs=1.848e-05  max_rel=1.213e+02
+  dV Triton flash vs SDPA                   max_abs=3.125e-02  mean_abs=6.345e-05  max_rel=2.487e+02
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=1.192e-07  mean_abs=4.056e-15  max_rel=5.587e-03
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (4x16x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        1.4255    1.4246    1.4290     1542.65
+cuDNN fwd+graph (forced)       0.4632    0.4621    0.4645     4747.13
+SDPA fwd+bwd (enable_gqa)      1.9712    1.9359    1.9770     1115.60
+SDPA fwd+bwd (compiled)        1.9483    1.8914    1.9784     1128.70
+Triton flash bwd-only          3.9029    3.8972    3.9156      563.43
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=4 Hq=16 Hkv=4 (G=4)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.138e-05  max_rel=3.575e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=2.025e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.138e-05  max_rel=3.575e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=2.025e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.138e-05  max_rel=3.575e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=2.025e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=7.812e-03  mean_abs=2.593e-05  max_rel=4.900e+01
+  dV  max_abs=3.125e-02  mean_abs=6.663e-05  max_rel=3.200e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.246e-05  max_rel=3.850e+01
+  dV  max_abs=7.812e-03  mean_abs=1.991e-06  max_rel=8.000e+00
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.138e-05  max_rel=3.575e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=2.025e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=4 Hq=16 Hkv=4 S=4096 D=128, GQA G=4, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.2636 ms
+Median Time:       2.2624 ms
+Std Dev:           0.0046 ms
+Min Time:          2.2579 ms
+Max Time:          2.2812 ms
+Performance:     971.4827 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.9976 ms
+Median Time:       1.9988 ms
+Std Dev:           0.0143 ms
+Min Time:          1.9664 ms
+Max Time:          2.0196 ms
+Performance:    1100.8384 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.0642 ms
+Median Time:       2.0638 ms
+Std Dev:           0.0279 ms
+Min Time:          2.0031 ms
+Max Time:          2.1218 ms
+Performance:    1065.3199 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.9088 ms
+Median Time:       1.8235 ms
+Std Dev:           0.1304 ms
+Min Time:          1.7745 ms
+Max Time:          2.1230 ms
+Performance:    1152.0190 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.9600 ms
+Median Time:       1.9565 ms
+Std Dev:           0.0254 ms
+Min Time:          1.8901 ms
+Max Time:          2.0203 ms
+Performance:    1121.9536 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.2237 ms
+Median Time:       2.2206 ms
+Std Dev:           0.0092 ms
+Min Time:          2.2147 ms
+Max Time:          2.2604 ms
+Performance:     988.9085 TFLOPS
+----------------------------------------------------------
+
+############################################################
+# SHAPE  B=8  Hq=16  Hkv=4  (G=4)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (8x16x4096x128, GQA G=4) ===
+  SDPA bf16 (enable_gqa)                    max_abs=3.018e-03  mean_abs=7.304e-04  max_rel=6.053e-03
+Saved forward reference data (B=8, Hq=16, Hkv=4, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=2.521e-03  mean_abs=3.567e-04  max_rel=2.060e+02
+  dK SDPA bf16                              max_abs=5.085e-03  mean_abs=2.733e-05  max_rel=7.292e+01
+  dV SDPA bf16                              max_abs=3.461e-02  mean_abs=1.100e-04  max_rel=1.469e+02
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.039e-01  mean_abs=5.682e-03
+
+=== Latency  (8x16x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         0.8992    0.8569    0.9041     1222.83
+SDPA bf16 (compiled)           0.9059    0.8930    0.9101     1213.74
+Triton flash (GQA)             3.5393    3.5336    3.5643      310.66
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.636e-06  max_rel=6.142e+01
+  dK Triton flash vs SDPA                   max_abs=3.906e-03  mean_abs=1.841e-05  max_rel=7.095e+01
+  dV Triton flash vs SDPA                   max_abs=6.250e-02  mean_abs=6.355e-05  max_rel=5.432e+02
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=7.451e-09  mean_abs=1.700e-16  max_rel=7.451e-04
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (8x16x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        2.7568    2.7384    2.9037     1595.36
+cuDNN fwd+graph (forced)       0.9171    0.9112    0.9210     4795.50
+SDPA fwd+bwd (enable_gqa)      3.8091    3.8052    3.8124     1154.62
+SDPA fwd+bwd (compiled)        3.8399    3.6140    3.8751     1145.35
+Triton flash bwd-only          7.4528    7.4477    7.4879      590.12
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=8 Hq=16 Hkv=4 (G=4)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.062e+01
+  dK  max_abs=3.906e-03  mean_abs=2.133e-05  max_rel=2.167e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=1.018e+02
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.062e+01
+  dK  max_abs=3.906e-03  mean_abs=2.133e-05  max_rel=2.167e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=1.018e+02
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.062e+01
+  dK  max_abs=3.906e-03  mean_abs=2.133e-05  max_rel=2.167e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=1.018e+02
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.062e+01
+  dK  max_abs=5.859e-03  mean_abs=2.582e-05  max_rel=4.167e+01
+  dV  max_abs=6.250e-02  mean_abs=6.630e-05  max_rel=1.948e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.062e+01
+  dK  max_abs=3.906e-03  mean_abs=2.244e-05  max_rel=4.067e+01
+  dV  max_abs=1.562e-02  mean_abs=2.022e-06  max_rel=1.800e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.062e+01
+  dK  max_abs=3.906e-03  mean_abs=2.133e-05  max_rel=2.167e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=1.018e+02
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=8 Hq=16 Hkv=4 S=4096 D=128, GQA G=4, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      4.4899 ms
+Median Time:       4.4893 ms
+Std Dev:           0.0050 ms
+Min Time:          4.4847 ms
+Max Time:          4.5213 ms
+Performance:     979.5369 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      5.2879 ms
+Median Time:       5.5126 ms
+Std Dev:           0.5832 ms
+Min Time:          4.2422 ms
+Max Time:          6.3217 ms
+Performance:     831.7123 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.7981 ms
+Median Time:       3.7804 ms
+Std Dev:           0.0563 ms
+Min Time:          3.6949 ms
+Max Time:          3.9560 ms
+Performance:    1157.9671 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.7397 ms
+Median Time:       3.6999 ms
+Std Dev:           0.1022 ms
+Min Time:          3.5650 ms
+Max Time:          3.9116 ms
+Performance:    1176.0387 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.7249 ms
+Median Time:       3.7113 ms
+Std Dev:           0.0635 ms
+Min Time:          3.6295 ms
+Max Time:          3.8382 ms
+Performance:    1180.7041 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      4.1951 ms
+Median Time:       4.1994 ms
+Std Dev:           0.0219 ms
+Min Time:          4.1594 ms
+Max Time:          4.2640 ms
+Performance:    1048.3720 TFLOPS
+----------------------------------------------------------
+
+############################################################
+# SHAPE  B=2  Hq=24  Hkv=8  (G=3)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (2x24x4096x128, GQA G=3) ===
+  SDPA bf16 (enable_gqa)                    max_abs=3.169e-03  mean_abs=7.379e-04  max_rel=5.601e-03
+Saved forward reference data (B=2, Hq=24, Hkv=8, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=2.849e-03  mean_abs=3.607e-04  max_rel=2.160e+02
+  dK SDPA bf16                              max_abs=4.119e-03  mean_abs=2.353e-05  max_rel=9.926e+01
+  dV SDPA bf16                              max_abs=3.559e-02  mean_abs=9.463e-05  max_rel=1.473e+02
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.090e-01  mean_abs=5.671e-03
+
+=== Latency  (2x24x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         0.3497    0.3486    0.3702     1179.07
+SDPA bf16 (compiled)           0.3590    0.3496    0.3697     1148.64
+Triton flash (GQA)             1.3797    1.3741    1.4000      298.84
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.221e-03  mean_abs=1.019e-05  max_rel=1.221e+02
+  dK Triton flash vs SDPA                   max_abs=3.906e-03  mean_abs=1.601e-05  max_rel=6.866e+01
+  dV Triton flash vs SDPA                   max_abs=3.125e-02  mean_abs=5.489e-05  max_rel=1.450e+02
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=1.490e-08  mean_abs=1.184e-15  max_rel=1.490e-03
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (2x24x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        1.1164    1.1021    1.1248     1477.25
+cuDNN fwd+graph (forced)       0.3683    0.3662    0.3751     4478.59
+SDPA fwd+bwd (enable_gqa)      1.5003    1.4671    1.5097     1099.32
+SDPA fwd+bwd (compiled)        1.4732    1.4688    1.5180     1119.50
+Triton flash bwd-only          2.9607    2.9559    2.9663      557.06
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=2 Hq=24 Hkv=8 (G=3)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=1.850e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=5.478e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=1.850e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=5.478e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=1.850e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=5.478e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=2.083e-05  max_rel=3.633e+01
+  dV  max_abs=3.125e-02  mean_abs=3.880e-05  max_rel=9.667e+00
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=1.907e-05  max_rel=3.633e+01
+  dV  max_abs=1.562e-02  mean_abs=1.631e-06  max_rel=1.067e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.890e+01
+  dK  max_abs=3.906e-03  mean_abs=1.850e-05  max_rel=2.800e+01
+  dV  max_abs=3.125e-02  mean_abs=5.478e-05  max_rel=3.520e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=2 Hq=24 Hkv=8 S=4096 D=128, GQA G=3, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.7091 ms
+Median Time:       1.7072 ms
+Std Dev:           0.0043 ms
+Min Time:          1.7058 ms
+Max Time:          1.7190 ms
+Performance:     965.0022 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.4905 ms
+Median Time:       1.4891 ms
+Std Dev:           0.0033 ms
+Min Time:          1.4854 ms
+Max Time:          1.4972 ms
+Performance:    1106.4931 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.5432 ms
+Median Time:       1.5433 ms
+Std Dev:           0.0208 ms
+Min Time:          1.4978 ms
+Max Time:          1.5863 ms
+Performance:    1068.7652 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.3830 ms
+Median Time:       1.3829 ms
+Std Dev:           0.0069 ms
+Min Time:          1.3671 ms
+Max Time:          1.4012 ms
+Performance:    1192.4881 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.4284 ms
+Median Time:       1.4112 ms
+Std Dev:           0.0418 ms
+Min Time:          1.3929 ms
+Max Time:          1.5528 ms
+Performance:    1154.6498 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.6458 ms
+Median Time:       1.6497 ms
+Std Dev:           0.0325 ms
+Min Time:          1.5804 ms
+Max Time:          1.6926 ms
+Performance:    1002.1116 TFLOPS
+----------------------------------------------------------
+
+############################################################
+# SHAPE  B=4  Hq=24  Hkv=8  (G=3)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (4x24x4096x128, GQA G=3) ===
+  SDPA bf16 (enable_gqa)                    max_abs=3.274e-03  mean_abs=7.343e-04  max_rel=5.817e-03
+Saved forward reference data (B=4, Hq=24, Hkv=8, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=2.919e-03  mean_abs=3.595e-04  max_rel=1.971e+02
+  dK SDPA bf16                              max_abs=4.025e-03  mean_abs=2.370e-05  max_rel=4.152e+01
+  dV SDPA bf16                              max_abs=2.831e-02  mean_abs=9.493e-05  max_rel=9.863e+01
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.117e-01  mean_abs=5.605e-03
+
+=== Latency  (4x24x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         0.6787    0.6488    0.6924     1214.98
+SDPA bf16 (compiled)           0.6792    0.6735    0.6864     1214.13
+Triton flash (GQA)             2.6998    2.6930    2.7181      305.44
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=1.018e-05  max_rel=7.727e+01
+  dK Triton flash vs SDPA                   max_abs=3.906e-03  mean_abs=1.602e-05  max_rel=5.608e+01
+  dV Triton flash vs SDPA                   max_abs=3.125e-02  mean_abs=5.488e-05  max_rel=7.538e+02
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (4x24x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        2.1959    2.0872    2.2134     1502.11
+cuDNN fwd+graph (forced)       0.7239    0.7109    0.7276     4556.49
+SDPA fwd+bwd (enable_gqa)      2.9273    2.8181    2.9475     1126.80
+SDPA fwd+bwd (compiled)        2.9125    2.7850    2.9351     1132.55
+Triton flash bwd-only          5.6199    5.6153    5.6256      586.93
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=4 Hq=24 Hkv=8 (G=3)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=3.906e-03  mean_abs=1.861e-05  max_rel=2.350e+01
+  dV  max_abs=3.125e-02  mean_abs=5.509e-05  max_rel=2.008e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=3.906e-03  mean_abs=1.861e-05  max_rel=2.350e+01
+  dV  max_abs=3.125e-02  mean_abs=5.509e-05  max_rel=2.008e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=3.906e-03  mean_abs=1.861e-05  max_rel=2.350e+01
+  dV  max_abs=3.125e-02  mean_abs=5.509e-05  max_rel=2.008e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=5.859e-03  mean_abs=2.095e-05  max_rel=2.300e+01
+  dV  max_abs=3.125e-02  mean_abs=3.901e-05  max_rel=1.625e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=7.812e-03  mean_abs=1.920e-05  max_rel=2.300e+01
+  dV  max_abs=7.812e-03  mean_abs=1.628e-06  max_rel=1.625e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.237e-05  max_rel=4.079e+01
+  dK  max_abs=3.906e-03  mean_abs=1.861e-05  max_rel=2.350e+01
+  dV  max_abs=3.125e-02  mean_abs=5.509e-05  max_rel=2.008e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=4 Hq=24 Hkv=8 S=4096 D=128, GQA G=3, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.3900 ms
+Median Time:       3.3869 ms
+Std Dev:           0.0067 ms
+Min Time:          3.3821 ms
+Max Time:          3.4023 ms
+Performance:     973.0228 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.0596 ms
+Median Time:       3.0500 ms
+Std Dev:           0.0726 ms
+Min Time:          2.9746 ms
+Max Time:          3.7356 ms
+Performance:    1078.1078 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.0941 ms
+Median Time:       3.0597 ms
+Std Dev:           0.1923 ms
+Min Time:          2.7929 ms
+Max Time:          3.3882 ms
+Performance:    1066.0838 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.7472 ms
+Median Time:       2.7567 ms
+Std Dev:           0.0312 ms
+Min Time:          2.6875 ms
+Max Time:          2.7913 ms
+Performance:    1200.6826 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.7198 ms
+Median Time:       2.7246 ms
+Std Dev:           0.0199 ms
+Min Time:          2.6820 ms
+Max Time:          2.7505 ms
+Performance:    1212.7650 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.2856 ms
+Median Time:       3.3170 ms
+Std Dev:           0.0605 ms
+Min Time:          3.1582 ms
+Max Time:          3.3626 ms
+Performance:    1003.9326 TFLOPS
+----------------------------------------------------------
+
+############################################################
+# SHAPE  B=8  Hq=24  Hkv=8  (G=3)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (8x24x4096x128, GQA G=3) ===
+  SDPA bf16 (enable_gqa)                    max_abs=3.234e-03  mean_abs=7.330e-04  max_rel=5.727e-03
+Saved forward reference data (B=8, Hq=24, Hkv=8, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=2.851e-03  mean_abs=3.587e-04  max_rel=2.371e+02
+  dK SDPA bf16                              max_abs=3.931e-03  mean_abs=2.330e-05  max_rel=1.948e+02
+  dV SDPA bf16                              max_abs=2.851e-02  mean_abs=9.470e-05  max_rel=1.951e+02
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.098e-01  mean_abs=5.635e-03
+
+=== Latency  (8x24x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         1.3379    1.2757    1.3472     1232.74
+SDPA bf16 (compiled)           1.3479    1.3364    1.3504     1223.59
+Triton flash (GQA)             5.2852    5.2807    5.3303      312.05
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.465e-03  mean_abs=9.641e-06  max_rel=4.253e+01
+  dK Triton flash vs SDPA                   max_abs=3.906e-03  mean_abs=1.601e-05  max_rel=1.251e+02
+  dV Triton flash vs SDPA                   max_abs=6.250e-02  mean_abs=5.479e-05  max_rel=5.127e+02
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=3.815e-06  mean_abs=1.591e-13  max_rel=7.407e-03
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (8x24x4096x128, GQA G=3, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        4.3669    4.3209    4.3707     1510.68
+cuDNN fwd+graph (forced)       1.3605    1.3484    1.3656     4848.90
+SDPA fwd+bwd (enable_gqa)      5.7868    5.6888    5.8363     1140.02
+SDPA fwd+bwd (compiled)        5.6896    5.3683    5.7327     1159.50
+Triton flash bwd-only         10.9387   10.9346   10.9414      603.10
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=8 Hq=24 Hkv=8 (G=3)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=2.465e+01
+  dK  max_abs=3.906e-03  mean_abs=1.853e-05  max_rel=2.012e+01
+  dV  max_abs=3.125e-02  mean_abs=5.487e-05  max_rel=2.818e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=2.465e+01
+  dK  max_abs=3.906e-03  mean_abs=1.853e-05  max_rel=2.012e+01
+  dV  max_abs=3.125e-02  mean_abs=5.487e-05  max_rel=2.818e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=2.465e+01
+  dK  max_abs=3.906e-03  mean_abs=1.853e-05  max_rel=2.012e+01
+  dV  max_abs=3.125e-02  mean_abs=5.487e-05  max_rel=2.818e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=2.465e+01
+  dK  max_abs=3.906e-03  mean_abs=2.085e-05  max_rel=1.767e+01
+  dV  max_abs=3.125e-02  mean_abs=3.867e-05  max_rel=1.700e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=2.465e+01
+  dK  max_abs=3.906e-03  mean_abs=1.910e-05  max_rel=1.900e+01
+  dV  max_abs=1.562e-02  mean_abs=1.494e-06  max_rel=1.600e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=2.465e+01
+  dK  max_abs=3.906e-03  mean_abs=1.853e-05  max_rel=2.012e+01
+  dV  max_abs=3.125e-02  mean_abs=5.487e-05  max_rel=2.818e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=8 Hq=24 Hkv=8 S=4096 D=128, GQA G=3, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:     11.0140 ms
+Median Time:      11.0387 ms
+Std Dev:           0.1141 ms
+Min Time:         10.5353 ms
+Max Time:         11.2160 ms
+Performance:     598.9713 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:     10.8168 ms
+Median Time:      10.8322 ms
+Std Dev:           0.2024 ms
+Min Time:         10.3715 ms
+Max Time:         11.3915 ms
+Performance:     609.8932 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      5.4960 ms
+Median Time:       5.4156 ms
+Std Dev:           0.1720 ms
+Min Time:          5.1883 ms
+Max Time:          5.8384 ms
+Performance:    1200.3318 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      5.5040 ms
+Median Time:       5.4120 ms
+Std Dev:           0.2088 ms
+Min Time:          5.2803 ms
+Max Time:          5.8201 ms
+Performance:    1198.5898 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      5.7284 ms
+Median Time:       5.7623 ms
+Std Dev:           0.1301 ms
+Min Time:          5.4252 ms
+Max Time:          5.9318 ms
+Performance:    1151.6443 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      6.1212 ms
+Median Time:       6.1055 ms
+Std Dev:           0.0272 ms
+Min Time:          6.0866 ms
+Max Time:          6.1988 ms
+Performance:    1077.7346 TFLOPS
+----------------------------------------------------------
+
+############################################################
+# SHAPE  B=2  Hq=32  Hkv=8  (G=4)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (2x32x4096x128, GQA G=4) ===
+  SDPA bf16 (enable_gqa)                    max_abs=3.134e-03  mean_abs=7.362e-04  max_rel=5.570e-03
+Saved forward reference data (B=2, Hq=32, Hkv=8, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=2.843e-03  mean_abs=3.604e-04  max_rel=2.335e+02
+  dK SDPA bf16                              max_abs=4.936e-03  mean_abs=2.767e-05  max_rel=9.825e+01
+  dV SDPA bf16                              max_abs=2.929e-02  mean_abs=1.104e-04  max_rel=2.676e+02
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.039e-01  mean_abs=5.665e-03
+
+=== Latency  (2x32x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         0.4531    0.4483    0.4620     1213.27
+SDPA bf16 (compiled)           0.4615    0.4603    0.4659     1191.23
+Triton flash (GQA)             1.7912    1.7853    1.7939      306.92
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=9.644e-06  max_rel=5.401e+01
+  dK Triton flash vs SDPA                   max_abs=3.906e-03  mean_abs=1.848e-05  max_rel=1.213e+02
+  dV Triton flash vs SDPA                   max_abs=3.125e-02  mean_abs=6.345e-05  max_rel=2.487e+02
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=7.629e-06  mean_abs=2.275e-13  max_rel=5.556e-03
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (2x32x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        1.4444    1.4321    1.4759     1522.43
+cuDNN fwd+graph (forced)       0.4667    0.4655    0.4701     4711.82
+SDPA fwd+bwd (enable_gqa)      1.9540    1.9487    1.9699     1125.40
+SDPA fwd+bwd (compiled)        1.9413    1.8862    1.9474     1132.77
+Triton flash bwd-only          3.9042    3.8981    3.9249      563.25
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=2 Hq=32 Hkv=8 (G=4)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.138e-05  max_rel=3.575e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=2.025e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.138e-05  max_rel=3.575e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=2.025e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.138e-05  max_rel=3.575e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=2.025e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=7.812e-03  mean_abs=2.592e-05  max_rel=4.900e+01
+  dV  max_abs=3.125e-02  mean_abs=6.658e-05  max_rel=3.100e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.246e-05  max_rel=3.850e+01
+  dV  max_abs=7.812e-03  mean_abs=1.991e-06  max_rel=8.000e+00
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.183e-05  max_rel=3.281e+01
+  dK  max_abs=3.906e-03  mean_abs=2.138e-05  max_rel=3.575e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=2.025e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=2 Hq=32 Hkv=8 S=4096 D=128, GQA G=4, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.2608 ms
+Median Time:       2.2608 ms
+Std Dev:           0.0007 ms
+Min Time:          2.2580 ms
+Max Time:          2.2641 ms
+Performance:     972.6930 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.9698 ms
+Median Time:       1.9696 ms
+Std Dev:           0.0025 ms
+Min Time:          1.9652 ms
+Max Time:          1.9828 ms
+Performance:    1116.3466 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.0510 ms
+Median Time:       2.0494 ms
+Std Dev:           0.0272 ms
+Min Time:          1.9785 ms
+Max Time:          2.1081 ms
+Performance:    1072.1964 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.9019 ms
+Median Time:       1.8069 ms
+Std Dev:           0.1404 ms
+Min Time:          1.7619 ms
+Max Time:          2.1395 ms
+Performance:    1156.2261 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      1.9696 ms
+Median Time:       1.9605 ms
+Std Dev:           0.0413 ms
+Min Time:          1.8968 ms
+Max Time:          2.0651 ms
+Performance:    1116.4719 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      2.2244 ms
+Median Time:       2.2220 ms
+Std Dev:           0.0081 ms
+Min Time:          2.2158 ms
+Max Time:          2.2606 ms
+Performance:     988.5984 TFLOPS
+----------------------------------------------------------
+
+############################################################
+# SHAPE  B=4  Hq=32  Hkv=8  (G=4)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (4x32x4096x128, GQA G=4) ===
+  SDPA bf16 (enable_gqa)                    max_abs=3.018e-03  mean_abs=7.304e-04  max_rel=6.053e-03
+Saved forward reference data (B=4, Hq=32, Hkv=8, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=2.521e-03  mean_abs=3.567e-04  max_rel=2.060e+02
+  dK SDPA bf16                              max_abs=5.085e-03  mean_abs=2.734e-05  max_rel=7.292e+01
+  dV SDPA bf16                              max_abs=3.461e-02  mean_abs=1.100e-04  max_rel=1.469e+02
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.039e-01  mean_abs=5.682e-03
+
+=== Latency  (4x32x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         0.8924    0.8507    0.9077     1232.13
+SDPA bf16 (compiled)           0.9071    0.9060    0.9087     1212.18
+Triton flash (GQA)             3.5348    3.5300    3.5603      311.05
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=1.015e-05  max_rel=6.142e+01
+  dK Triton flash vs SDPA                   max_abs=3.906e-03  mean_abs=1.841e-05  max_rel=7.095e+01
+  dV Triton flash vs SDPA                   max_abs=6.250e-02  mean_abs=6.356e-05  max_rel=5.432e+02
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (4x32x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        2.8521    2.7369    2.8804     1542.04
+cuDNN fwd+graph (forced)       0.9484    0.9377    0.9535     4637.41
+SDPA fwd+bwd (enable_gqa)      3.8459    3.8416    3.8739     1143.58
+SDPA fwd+bwd (compiled)        3.8448    3.6483    3.8776     1143.89
+Triton flash bwd-only          7.4602    7.4512    7.4886      589.54
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=4 Hq=32 Hkv=8 (G=4)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.235e-05  max_rel=4.803e+01
+  dK  max_abs=3.906e-03  mean_abs=2.133e-05  max_rel=2.167e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=1.018e+02
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.235e-05  max_rel=4.803e+01
+  dK  max_abs=3.906e-03  mean_abs=2.133e-05  max_rel=2.167e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=1.018e+02
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.235e-05  max_rel=4.803e+01
+  dK  max_abs=3.906e-03  mean_abs=2.133e-05  max_rel=2.167e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=1.018e+02
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.235e-05  max_rel=4.803e+01
+  dK  max_abs=5.859e-03  mean_abs=2.581e-05  max_rel=4.167e+01
+  dV  max_abs=6.250e-02  mean_abs=6.636e-05  max_rel=1.948e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.235e-05  max_rel=4.803e+01
+  dK  max_abs=3.906e-03  mean_abs=2.244e-05  max_rel=4.067e+01
+  dV  max_abs=3.125e-02  mean_abs=2.208e-06  max_rel=8.000e+00
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.953e-03  mean_abs=1.235e-05  max_rel=4.803e+01
+  dK  max_abs=3.906e-03  mean_abs=2.133e-05  max_rel=2.167e+01
+  dV  max_abs=3.125e-02  mean_abs=6.380e-05  max_rel=1.018e+02
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=4 Hq=32 Hkv=8 S=4096 D=128, GQA G=4, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      4.4895 ms
+Median Time:       4.4891 ms
+Std Dev:           0.0037 ms
+Min Time:          4.4828 ms
+Max Time:          4.4983 ms
+Performance:     979.6274 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      5.1931 ms
+Median Time:       5.2378 ms
+Std Dev:           0.5442 ms
+Min Time:          4.1758 ms
+Max Time:          6.2914 ms
+Performance:     846.8998 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.8008 ms
+Median Time:       3.7928 ms
+Std Dev:           0.0441 ms
+Min Time:          3.7065 ms
+Max Time:          3.9049 ms
+Performance:    1157.1254 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.7420 ms
+Median Time:       3.6748 ms
+Std Dev:           0.1166 ms
+Min Time:          3.5825 ms
+Max Time:          3.9455 ms
+Performance:    1175.3083 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      3.7315 ms
+Median Time:       3.7162 ms
+Std Dev:           0.0609 ms
+Min Time:          3.6268 ms
+Max Time:          3.8381 ms
+Performance:    1178.6370 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      4.1960 ms
+Median Time:       4.1978 ms
+Std Dev:           0.0173 ms
+Min Time:          4.1678 ms
+Max Time:          4.2650 ms
+Performance:    1048.1595 TFLOPS
+----------------------------------------------------------
+
+############################################################
+# SHAPE  B=8  Hq=32  Hkv=8  (G=4)  S=4096 D=128
+############################################################
+=== Precision vs FP64 ground truth  (8x32x4096x128, GQA G=4) ===
+  SDPA bf16 (enable_gqa)                    max_abs=3.114e-03  mean_abs=7.333e-04  max_rel=6.027e-03
+Saved forward reference data (B=8, Hq=32, Hkv=8, S=4096, D=128) to /root/jeni/Hopper_jeni/data/
+
+=== Backward precision vs FP64 ground truth ===
+  dQ SDPA bf16                              max_abs=3.325e-03  mean_abs=3.580e-04  max_rel=2.884e+02
+  dK SDPA bf16                              max_abs=5.476e-03  mean_abs=2.739e-05  max_rel=7.639e+01
+  dV SDPA bf16                              max_abs=3.531e-02  mean_abs=1.098e-04  max_rel=1.835e+02
+Saved backward reference data to /root/jeni/Hopper_jeni/data/
+
+Triton vs SDPA bf16   max_abs=5.078e-01  mean_abs=5.636e-03
+
+=== Latency  (8x32x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+SDPA bf16 (enable_gqa)         1.7429    1.7362    1.7990     1261.73
+SDPA bf16 (compiled)           1.7958    1.7797    1.7979     1224.53
+Triton flash (GQA)             6.9917    6.9894    7.0429      314.52
+
+=== Backward precision (Triton flash vs SDPA bf16) ===
+  dQ Triton flash vs SDPA                   max_abs=1.953e-03  mean_abs=1.017e-05  max_rel=7.133e+01
+  dK Triton flash vs SDPA                   max_abs=3.906e-03  mean_abs=1.847e-05  max_rel=9.613e+01
+  dV Triton flash vs SDPA                   max_abs=6.250e-02  mean_abs=6.359e-05  max_rel=1.202e+03
+
+cuDNN backend forced: native enable_gqa
+  dQ cuDNN(forced) vs SDPA                  max_abs=2.384e-07  mean_abs=3.109e-15  max_rel=5.960e-03
+  dK cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+  dV cuDNN(forced) vs SDPA                  max_abs=0.000e+00  mean_abs=0.000e+00  max_rel=0.000e+00
+
+=== Backward latency  (8x32x4096x128, GQA G=4, bf16) ===
+Kernel                      median ms     p5 ms    p95 ms     TFLOP/s
+---------------------------------------------------------------------
+cuDNN bwd-only (forced)        5.7276    5.3720    5.7730     1535.73
+cuDNN fwd+graph (forced)       1.8620    1.8612    1.8761     4723.96
+SDPA fwd+bwd (enable_gqa)      7.6084    7.5995    7.6590     1156.11
+SDPA fwd+bwd (compiled)        7.6525    7.4915    7.6580     1149.43
+Triton flash bwd-only         14.5677   14.5513   14.5701      603.81
+GQA Backward — precision test  [Hopper SM_90 / H200]
+Prerequisite: python precision/baseline_gqa.py
+
+  shape: B=8 Hq=32 Hkv=8 (G=4)
+
+Loaded PyTorch reference from data/gqa_*.bin
+
+── V43 Br=64 Bc=64 TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.465e-03  mean_abs=1.235e-05  max_rel=6.978e+01
+  dK  max_abs=3.906e-03  mean_abs=2.141e-05  max_rel=5.133e+01
+  dV  max_abs=6.250e-02  mean_abs=6.365e-05  max_rel=2.638e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V44 Br=64 Bc=64 swizzled TMA-reduce dQ (Hopper SM_90) ──
+  dQ  max_abs=1.465e-03  mean_abs=1.235e-05  max_rel=6.978e+01
+  dK  max_abs=3.906e-03  mean_abs=2.141e-05  max_rel=5.133e+01
+  dV  max_abs=6.250e-02  mean_abs=6.365e-05  max_rel=2.638e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vz2 wgmma tensor cores (Hopper SM_90) ──
+  dQ  max_abs=1.465e-03  mean_abs=1.235e-05  max_rel=6.978e+01
+  dK  max_abs=3.906e-03  mean_abs=2.141e-05  max_rel=5.133e+01
+  dV  max_abs=6.250e-02  mean_abs=6.365e-05  max_rel=2.638e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1 clone of Vz2 + levers (Hopper SM_90) ──
+  dQ  max_abs=1.465e-03  mean_abs=1.235e-05  max_rel=6.978e+01
+  dK  max_abs=4.883e-03  mean_abs=2.589e-05  max_rel=7.467e+01
+  dV  max_abs=6.250e-02  mean_abs=6.597e-05  max_rel=2.233e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── Vj1d deterministic bit-identical dK/dV (Hopper SM_90) ──
+  dQ  max_abs=1.465e-03  mean_abs=1.235e-05  max_rel=6.978e+01
+  dK  max_abs=5.859e-03  mean_abs=2.252e-05  max_rel=6.400e+01
+  dV  max_abs=1.562e-02  mean_abs=2.192e-06  max_rel=1.600e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+── V45 Br=64 Bc=64 adaptive raster (default<=B4, raster B8) (Hopper SM_90) ──
+  dQ  max_abs=1.465e-03  mean_abs=1.235e-05  max_rel=6.978e+01
+  dK  max_abs=3.906e-03  mean_abs=2.141e-05  max_rel=5.133e+01
+  dV  max_abs=6.250e-02  mean_abs=6.365e-05  max_rel=2.638e+01
+  dQ: [32mValues match!
+[0m  dK: [32mValues match!
+[0m  dV: [32mValues match!
+[0m
+=== Latency  (B=8 Hq=32 Hkv=8 S=4096 D=128, GQA G=4, bf16, causal) ===
+
+----------------------------------------------------------
+Benchmark: GQA bwd V43 Br=64, Bc=64  TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:     14.9344 ms
+Median Time:      14.9342 ms
+Std Dev:           0.0684 ms
+Min Time:         14.7677 ms
+Max Time:         15.0927 ms
+Performance:     588.9833 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V44 Br=64, Bc=64  swizzled TMA-reduce dQ  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:     14.8730 ms
+Median Time:      14.8405 ms
+Std Dev:           0.2160 ms
+Min Time:         14.3368 ms
+Max Time:         15.4736 ms
+Performance:     591.4120 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vz2 wgmma tensor cores  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      7.5655 ms
+Median Time:       7.6241 ms
+Std Dev:           0.3045 ms
+Min Time:          7.1323 ms
+Max Time:          8.0616 ms
+Performance:    1162.6593 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1 clone of Vz2 + levers  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      7.2104 ms
+Median Time:       7.1214 ms
+Std Dev:           0.1775 ms
+Min Time:          7.0257 ms
+Max Time:          7.5213 ms
+Performance:    1219.9117 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd Vj1d deterministic dK/dV  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      7.3874 ms
+Median Time:       7.3384 ms
+Std Dev:           0.1945 ms
+Min Time:          7.1378 ms
+Max Time:          7.8264 ms
+Performance:    1190.6927 TFLOPS
+----------------------------------------------------------
+
+----------------------------------------------------------
+Benchmark: GQA bwd V45 Br=64, Bc=64  adaptive raster (default<=B4, raster B8)  (Hopper SM_90)
+----------------------------------------------------------
+Average Time:      8.2509 ms
+Median Time:       8.1847 ms
+Std Dev:           0.1258 ms
+Min Time:          8.0972 ms
+Max Time:          8.5948 ms
+Performance:    1066.0763 TFLOPS
+----------------------------------------------------------
