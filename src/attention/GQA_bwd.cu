@@ -15797,7 +15797,7 @@ int main(int argc, char** argv){
     const int B   = argc > 1 ? atoi(argv[1]) : 4;    // shape from argv (default 8x12x4) -> sweep-friendly
     const int Hq  = argc > 2 ? atoi(argv[2]) : 24;
     const int Hkv = argc > 3 ? atoi(argv[3]) : 8;
-    const int G   = Hq / Hkv;
+    const int G   = Hq / Hkv;   
     std::cout << "  shape: B=" << B << " Hq=" << Hq << " Hkv=" << Hkv << " (G=" << G << ")\n\n";
     constexpr int S   = 4096, D = 128, Br = 16, Bc = 32;
     constexpr int Br2 = 64, Bc2 = 64;

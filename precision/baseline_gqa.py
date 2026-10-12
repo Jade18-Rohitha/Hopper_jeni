@@ -508,13 +508,50 @@ def main():
     ]:
         report(f"{name} Triton flash vs SDPA", ref.float().cpu(), tri.float().cpu())
 
-    def _sdpa_bwd():
+    # ── cuDNN BACKWARD-ONLY timing (apples-to-apples with our gqa_bwd bench) ──
+    # Our kernels are timed backward-only (O/LSE precomputed). So run cuDNN's forward ONCE, outside
+    # the timer, keep its graph, and time only autograd.grad (= cuDNN dot(dO,O) preprocess + bwd
+    # kernel). The backend is FORCED to cuDNN — sdpa_kernel raises rather than silently falling back.
+    from torch.nn.attention import sdpa_kernel, SDPBackend
+
+    def _cudnn_graph():
+        qc = q.detach().requires_grad_(True)
+        kc = k.detach().requires_grad_(True)
+        vc = v.detach().requires_grad_(True)
+        try:
+            with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+                oc = sdpa_gqa(qc, kc, vc, scale)
+            path = "native enable_gqa"
+        except RuntimeError:
+            # this torch's cuDNN path has no GQA: expand K/V inside the graph, so the timed
+            # backward also pays the G-way dK/dV sum (what a user of cuDNN would get)
+            with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+                oc = F.scaled_dot_product_attention(
+                    qc, kc.repeat_interleave(G, dim=1), vc.repeat_interleave(G, dim=1),
+                    scale=scale, is_causal=True)
+            path = "K/V repeat_interleave (no native GQA)"
+        return qc, kc, vc, oc, path
+
+    qc, kc, vc, oc, cudnn_path = _cudnn_graph()
+    print(f"\ncuDNN backend forced: {cudnn_path}")
+    dq_c, dk_c, dv_c = torch.autograd.grad(oc, (qc, kc, vc), do, retain_graph=True)
+    for name, got, ref in [("dQ", dq_c, q_ad.grad), ("dK", dk_c, k_ad.grad), ("dV", dv_c, v_ad.grad)]:
+        report(f"{name} cuDNN(forced) vs SDPA", ref.float().cpu(), got.float().cpu())
+
+    def _cudnn_bwd_only():
+        torch.autograd.grad(oc, (qc, kc, vc), do, retain_graph=True)
+
+    def _cudnn_fwd_only():
+        with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+            _cudnn_graph()
+
+    def _sdpa_fwd_bwd():
         qb = q.detach().requires_grad_(True)
         kb = k.detach().requires_grad_(True)
         vb = v.detach().requires_grad_(True)
         sdpa_gqa(qb, kb, vb, scale).backward(do)
 
-    def _sdpa_compiled_bwd():
+    def _sdpa_compiled_fwd_bwd():
         qb = q.detach().requires_grad_(True)
         kb = k.detach().requires_grad_(True)
         vb = v.detach().requires_grad_(True)
@@ -524,10 +561,14 @@ def main():
         triton_gqa_backward(q, k, v, o_ref, lse_ref, do, scale)
 
     print(f"\n=== Backward latency  ({B}x{Hq}x{S}x{D}, GQA G={G}, bf16) ===")
+    # ONLY the "bwd-only" rows are comparable to our gqa_bwd numbers. The fwd+bwd rows include the
+    # forward pass (this was the old, invalid "cuDNN" baseline) and are kept for reference only.
     bwd_fns = {
-        "SDPA bwd (enable_gqa) ": _sdpa_bwd,
-        "SDPA bwd (compiled)   ": _sdpa_compiled_bwd,
-        "Triton flash bwd (GQA)": _triton_bwd,
+        "cuDNN bwd-only (forced)   ": _cudnn_bwd_only,
+        "cuDNN fwd+graph (forced)  ": _cudnn_fwd_only,
+        "SDPA fwd+bwd (enable_gqa) ": _sdpa_fwd_bwd,
+        "SDPA fwd+bwd (compiled)   ": _sdpa_compiled_fwd_bwd,
+        "Triton flash bwd-only     ": _triton_bwd,
     }
     # rough backward FLOPs: dQ + dK + dV + P recompute ≈ 4× forward
     bwd_flops = 4 * flops

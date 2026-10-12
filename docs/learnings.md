@@ -3,6 +3,14 @@
 *A retrospective on the H200 flash-attention backward kernel. Written for myself, so future-me
 remembers not just what worked but why the wrong turns were wrong.*
 
+> **⚠ CORRECTION (2026-10-12): the "beat cuDNN" conclusion of this write-up is WRONG.** Every cuDNN
+> number used all week came from `_sdpa_bwd` in `precision/baseline_gqa.py`, which timed
+> `sdpa(...).backward(do)` — **forward + backward** — while my kernels were timed **backward only**.
+> Subtracting cuDNN's forward (same log), cuDNN's backward alone is **24–32% faster than Vj1d on all
+> 12 shapes** (see `report.md`). The relative lessons *between my own kernels* (naive→Vz2→Vj1, per-hq,
+> TMA-reduce, profile the whole pipeline) still hold; every "vs cuDNN" margin and "12/12" claim below
+> does not. Lesson 10 at the end is the one that matters most.
+
 ---
 
 ## The goal
@@ -144,3 +152,8 @@ sliver. Simpler and universal beat marginally-faster-but-two-pieces. That felt l
 9. **The cheapest step is the one you delete.** I closed the last gap not by making something faster but
    by removing a step entirely — the scratch-buffer-then-sum became a reduce-as-you-go. When a step is
    the bottleneck, ask whether it needs to exist before you ask how to speed it up.
+10. **Audit the baseline's timer before trusting any margin against it.** The whole week's "win" was
+   an apples-to-oranges comparison: the cuDNN callable ran forward + backward, mine ran backward only,
+   and the backend wasn't even forced to cuDNN. Twelve-run medians can't fix a wrong measurement —
+   they just make it look more trustworthy. Before claiming any number against a competitor, read
+   what's inside the timed region on *both* sides, force the backend, and check the `grad_fn`.

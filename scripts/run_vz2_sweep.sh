@@ -41,11 +41,11 @@ sudo nvidia-smi -rgc >/dev/null || true
 
 echo ""
 echo "== sweep complete -> $LOG =="
-echo "== per-shape: cuDNN vs Vj1 (banked, bf16 atomic reduce) and Vj1d (deterministic, bit-identical dK/dV). +=win -=loss =="
+echo "== per-shape: cuDNN BWD-ONLY (forced backend) vs Vj1 (banked, bf16 atomic reduce) and Vj1d (deterministic, bit-identical dK/dV). +=win -=loss =="
 echo "==   [MRG] = margin <1%, needs a 12-run median-of-medians before the win is claimed. =="
 awk '
   /^# SHAPE/                         { shape=$0; sub(/^# SHAPE  /,"",shape); sub(/  \(G.*/,"",shape) }
-  /SDPA bwd \(enable_gqa\)/          { cudnn=$4 }
+  /cuDNN bwd-only \(forced\)/         { cudnn=$4 }   # bwd-only, backend forced (NOT the old fwd+bwd line)
   /Benchmark: GQA bwd Vj1 /          { k="vj1" }
   /Benchmark: GQA bwd Vj1d/          { k="vj1d" }
   /Median Time:/ && k=="vj1"         { vj1=$3; k="" }

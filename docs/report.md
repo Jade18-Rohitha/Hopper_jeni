@@ -3,38 +3,51 @@
 > Two sections, both refreshed each day: the **clear-winners board** (the current best kernel per
 > shape, locked in and only replaced by a strictly faster verified median) and **today's report**
 > (what I tried, how close I got, why it did or didn't land). S=4096, D=128, bf16, causal.
-> Reference = PyTorch SDPA `enable_gqa` bwd (cuDNN). Locked clock: `nvidia-smi -pm 1; -lgc 1980`.
+> Reference = **cuDNN backward-only, backend forced** (`SDPBackend.CUDNN_ATTENTION`, forward run once outside
+> the timer, time `autograd.grad` only). Locked clock: `nvidia-smi -pm 1; -lgc 1980`.
 
 ---
 
-## Clear-winners board — updated 2026-08-20 — **deliverable = Vj1d (deterministic, bit-identical dK/dV)**
+## ⚠ Board corrected — 2026-10-12: **we do NOT beat cuDNN. Vj1d is 24–32% slower on all 12 shapes.**
 
-The shipped baseline is **Vj1d** — the deterministic kernel whose dK/dV are bit-identical run-to-run
-(matching cuDNN). Board is Vj1d vs cuDNN, per shape, locked clock (`-lgc 1980`). `[MRG]` = margin <1%,
-needs a 12-run median-of-medians. (The faster **Vj1** — atomic reduce, ~1 ULP dK/dV wobble — lives in
-`GQA_bwd.cu`; its column is shown for reference.)
+**What was wrong.** Every cuDNN number on the old board (and in every daily log below) came from
+`_sdpa_bwd` in `precision/baseline_gqa.py`, which timed `sdpa(q,k,v).backward(do)` — i.e. cuDNN's
+**forward + backward** — while our `gqa_bwd` bench times **backward only** (memset + drowsum + main +
+greduce + dQ convert; O/LSE precomputed). The backend was also never forced to cuDNN. So the old
+"12/12" compared our backward against cuDNN's forward+backward.
 
-| B×Hq (Hkv) | cuDNN | **Vj1d** (shipped) | vs cuDNN | Vj1 (faster, ref) |
-|---|---|---|---|---|
-| 2×12 (4) | 0.799 | **0.757** | **+5.3%** | 0.746 (+6.6%) |
-| 4×12 (4) | 1.487 | **1.394** | **+6.2%** | 1.373 (+7.7%) |
-| 8×12 (4) | 2.775 | **2.760** | **+0.5%** *12-run 11/12* | 2.678 (+2.3%) |
-| 2×16 (4) | 1.022 | **0.967** | **+5.4%** | 0.955 (+6.6%) |
-| 4×16 (4) | 1.880 | **1.831** | **+2.6%** | 1.797 (+4.4%) |
-| 8×16 (4) | 3.828 | **3.593** | **+6.1%** | 3.545 (+7.4%) |
-| 2×24 (8) | 1.488 | **1.402** | **+5.8%** | 1.383 (+7.1%) |
-| 4×24 (8) | 2.792 | **2.755** | **+1.3%** *12-run 11/12* | 2.677 (+2.4%) |
-| 8×24 (8) | 5.729 | **5.563** | **+2.9%** | 5.301 (+7.5%) |
-| 2×32 (8) | 1.877 | **1.832** | **+2.4%** | 1.805 (+3.8%) |
-| 4×32 (8) | 3.797 | **3.594** | **+5.4%** | 3.550 (+6.5%) |
-| 8×32 (8) | 7.562 | **7.156** | **+5.4%** | 7.003 (+7.4%) |
+**Corrected board (derived, pending H200 re-measure).** From sweep `reports/vz2_sweep_20260820_140637.log`,
+which also timed the SDPA forward alone under the same conditions: cuDNN bwd ≈ (fwd+bwd) − fwd.
+Negative = slower than cuDNN.
 
-**Vj1d beats cuDNN on all 12 shapes — confirmed 12/12.** 10 shapes are clear single-sweep wins (+2.4% to
-+6.2%); the two marginals were settled by 12-run median-of-medians: **8×12 +0.5% (11/12)** and **4×24
-+1.3% (11/12)**. So the shipped *deterministic* baseline sweeps the board — cuDNN-grade reproducibility
-(dK/dV bit-identical run-to-run, max|Δ|=0; dQ non-deterministic ~3e-5, exactly like cuDNN) **and** faster
-than cuDNN on every shape — at the cost of ~69 µs (the greduce) versus the even-faster Vj1. All 12 pass
-correctness. **This is the deliverable: `GQA_bwd_baseline.cu`.**
+| B×Hq (Hkv) | cuDNN fwd | cuDNN fwd+bwd (old "cuDNN") | **cuDNN bwd** | **Vj1d** | Vj1d vs cuDNN bwd | Vj1 | Vj1 vs cuDNN bwd |
+|---|---|---|---|---|---|---|---|
+| 2×12 (4) | 0.200 | 0.799 | **0.599** | 0.757 | **−26.3%** | 0.746 | −24.5% |
+| 4×12 (4) | 0.359 | 1.486 | **1.127** | 1.394 | **−23.7%** | 1.373 | −21.7% |
+| 8×12 (4) | 0.666 | 2.741 | **2.075** | 2.722 | **−31.2%** | 2.678 | −29.1% |
+| 2×16 (4) | 0.252 | 1.022 | **0.770** | 0.967 | **−25.6%** | 0.955 | −24.1% |
+| 4×16 (4) | 0.462 | 1.879 | **1.417** | 1.831 | **−29.1%** | 1.797 | −26.8% |
+| 8×16 (4) | 0.923 | 3.828 | **2.905** | 3.593 | **−23.7%** | 3.545 | −22.0% |
+| 2×24 (8) | 0.358 | 1.488 | **1.130** | 1.402 | **−24.1%** | 1.383 | −22.3% |
+| 4×24 (8) | 0.687 | 2.743 | **2.056** | 2.717 | **−32.1%** | 2.677 | −30.2% |
+| 8×24 (8) | 1.370 | 5.729 | **4.359** | 5.563 | **−27.6%** | 5.301 | −21.6% |
+| 2×32 (8) | 0.465 | 1.877 | **1.412** | 1.832 | **−29.7%** | 1.805 | −27.8% |
+| 4×32 (8) | 0.924 | 3.797 | **2.873** | 3.594 | **−25.1%** | 3.550 | −23.6% |
+| 8×32 (8) | 1.785 | 7.562 | **5.777** | 7.156 | **−23.9%** | 7.003 | −21.2% |
+
+**Score: Vj1d 0/12, Vj1 0/12.** Our backward ≈ cuDNN's forward + backward.
+
+Caveats: the cuDNN bwd column is a subtraction, not a direct measurement (the forward under autograd also
+saves LSE; small effect, cannot close a 24–32% gap), and the backend was not forced. **Fix landed:**
+`baseline_gqa.py` now prints `cuDNN bwd-only (forced)` (forward once outside the timer, `autograd.grad`
+timed, backend forced, gradients checked vs SDPA) and `scripts/run_vz2_sweep.sh` parses that line. The
+old fwd+bwd rows are still printed, relabelled `SDPA fwd+bwd`, for reference only. Re-run
+`bash scripts/run_vz2_sweep.sh` on the H200 to replace this table with measured numbers.
+
+**What still stands:** the relative progress among our own kernels (naive 305 ms → Vz2 → Vj1/Vj1d,
+per-hq grid, TMA-reduce dK/dV, determinism measurements) — those were all timed the same way.
+**What does not:** every "vs cuDNN" margin, "WIN", "12/12", "nemesis", and "beats cuDNN" in the daily
+logs below. They are kept unedited as history.
 
 ---
 

@@ -9,8 +9,10 @@ standalone numbers against the field.
 Flow:
   1. build canonical bf16 inputs (Q,K,V,dO) with GQA shape
   2. for each competitor: run forward+backward, gate correctness (dQ/dK/dV vs fp32 ref)
-  3. time only the backward pass (forward recomputes are included — that's what
-     the real backward costs)
+  3. time ONLY the backward pass: each competitor's forward runs once OUTSIDE the
+     timer (graph retained) and only autograd.grad is timed -- apples-to-apples with
+     our gqa_bwd bench, which times backward only with O/LSE precomputed.
+     (Before 2026-10-12 the forward was inside the timed region -> invalid numbers.)
   4. print table with TFLOP/s, speedups vs baseline
 
 Usage on H200:
@@ -190,8 +192,13 @@ class BwdCompetitor:
         raise NotImplementedError
 
     def make_bwd(self, q, k, v, do, shape):
-        """Returns a zero-arg callable that runs the backward."""
-        return lambda: self.backward(q, k, v, do, shape)
+        """Returns a zero-arg callable that runs the backward ONLY (no forward)."""
+        raise NotImplementedError
+
+
+def _bwd_only(o, inputs, do):
+    """Zero-arg callable timing only the backward of an already-built autograd graph."""
+    return lambda: torch.autograd.grad(o, inputs, do, retain_graph=True)
 
 
 class SDPABwd(BwdCompetitor):
@@ -211,15 +218,13 @@ class SDPABwd(BwdCompetitor):
 
     def make_bwd(self, q, k, v, do, shape):
         scale = 1.0 / math.sqrt(shape.D)
-        def _run():
-            qa = q.detach().requires_grad_(True)
-            ka = k.detach().requires_grad_(True)
-            va = v.detach().requires_grad_(True)
-            o = F.scaled_dot_product_attention(
-                qa, ka, va, scale=scale,
-                is_causal=shape.causal, enable_gqa=(shape.G > 1))
-            o.backward(do)
-        return _run
+        qa = q.detach().requires_grad_(True)
+        ka = k.detach().requires_grad_(True)
+        va = v.detach().requires_grad_(True)
+        o = F.scaled_dot_product_attention(
+            qa, ka, va, scale=scale,
+            is_causal=shape.causal, enable_gqa=(shape.G > 1))
+        return _bwd_only(o, (qa, ka, va), do)
 
 
 class CuDNNBwd(BwdCompetitor):
@@ -249,16 +254,15 @@ class CuDNNBwd(BwdCompetitor):
     def make_bwd(self, q, k, v, do, shape):
         from torch.nn.attention import sdpa_kernel, SDPBackend
         scale = 1.0 / math.sqrt(shape.D)
-        def _run():
-            qa = q.detach().requires_grad_(True)
-            ka = k.detach().requires_grad_(True)
-            va = v.detach().requires_grad_(True)
-            with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
-                o = F.scaled_dot_product_attention(
-                    qa, ka, va, scale=scale,
-                    is_causal=shape.causal, enable_gqa=(shape.G > 1))
-            o.backward(do)
-        return _run
+        qa = q.detach().requires_grad_(True)
+        ka = k.detach().requires_grad_(True)
+        va = v.detach().requires_grad_(True)
+        with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+            o = F.scaled_dot_product_attention(
+                qa, ka, va, scale=scale,
+                is_causal=shape.causal, enable_gqa=(shape.G > 1))
+        assert "Cudnn" in type(o.grad_fn).__name__, f"not cuDNN: {type(o.grad_fn).__name__}"
+        return _bwd_only(o, (qa, ka, va), do)
 
 
 class FA4Bwd(BwdCompetitor):
@@ -303,15 +307,13 @@ class FA4Bwd(BwdCompetitor):
         k_t  = k.transpose(1,2).contiguous()
         v_t  = v.transpose(1,2).contiguous()
         do_t = do.transpose(1,2).contiguous()
-        def _run():
-            qa = q_t.detach().requires_grad_(True)
-            ka = k_t.detach().requires_grad_(True)
-            va = v_t.detach().requires_grad_(True)
-            out = fn(qa, ka, va, causal=shape.causal)
-            if isinstance(out, tuple):
-                out = out[0]
-            out.backward(do_t)
-        return _run
+        qa = q_t.detach().requires_grad_(True)
+        ka = k_t.detach().requires_grad_(True)
+        va = v_t.detach().requires_grad_(True)
+        out = fn(qa, ka, va, causal=shape.causal)
+        if isinstance(out, tuple):
+            out = out[0]
+        return _bwd_only(out, (qa, ka, va), do_t)
 
 
 class FlashInferBwd(BwdCompetitor):
@@ -343,7 +345,16 @@ class FlashInferBwd(BwdCompetitor):
         return torch.stack(outs_dq), torch.stack(outs_dk), torch.stack(outs_dv)
 
     def make_bwd(self, q, k, v, do, shape):
-        return lambda: self.backward(q, k, v, do, shape)
+        import flashinfer
+        outs, ins, dos = [], [], []
+        for b in range(shape.B):
+            qa = q[b].transpose(0,1).contiguous().detach().requires_grad_(True)
+            ka = k[b].transpose(0,1).contiguous().detach().requires_grad_(True)
+            va = v[b].transpose(0,1).contiguous().detach().requires_grad_(True)
+            outs.append(flashinfer.single_prefill_with_kv_cache(qa, ka, va, causal=shape.causal))
+            ins += [qa, ka, va]
+            dos.append(do[b].transpose(0,1).contiguous())
+        return lambda: torch.autograd.grad(outs, ins, dos, retain_graph=True)
 
 
 BWD_ALL = {
