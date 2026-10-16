@@ -4,7 +4,80 @@
 > shape, locked in and only replaced by a strictly faster verified median) and **today's report**
 > (what I tried, how close I got, why it did or didn't land). S=4096, D=128, bf16, causal.
 > Reference = **cuDNN backward-only, backend forced** (`SDPBackend.CUDNN_ATTENTION`, forward run once outside
-> the timer, time `autograd.grad` only). Locked clock: `nvidia-smi -pm 1; -lgc 1980`.
+> the timer, time `autograd.grad` only). Locked clock: `nvidia-smi -i <gpu> -pm 1; -lgc 1980` — on the H200
+> box the user's GPU is **index 1** (GPU 0 runs another job); runs before 2026-10-16 locked index 3, so the
+> lock never applied (SM ran ≤ 1830 MHz). From 2026-10-16 the decision metric is **SUSTAINED** timing
+> (back-to-back ~3 s, training-like) + energy per backward; do_bench is kept as a secondary number.
+
+---
+
+## Today — 2026-10-16: the 128-key line closed, register fusion (Vj2) is the first win over Vj1d
+
+All numbers: H200, GPU 1, S=4096 D=128 causal bf16. Δ = candidate − Vj1d in ms (negative = faster). Every
+candidate passed dQ/dK/dV vs the PyTorch reference (2e-2) and dK/dV bit-identical over 6 runs.
+Full detail: [plan_vm1_bwd.md](plan_vm1_bwd.md), [ncu_vj1d_vs_cudnn_B8_Hq18.md](ncu_vj1d_vs_cudnn_B8_Hq18.md).
+
+### 1. The Vm line: cuDNN's 128-key structure, five tries, none beat Vj1d
+
+ncu + SASS (10-13) showed cuDNN's backward = 132 persistent blocks, each work item **128 keys as 2 compute
+warpgroups × 64**, sharing one Q/dO load and one summed dQ reduce per q-step: half Vj1d's L2 bytes per key.
+We built that on Vj1d's per-tile pipeline:
+
+| Version | Change | 8×12 (ms) | Δ vs Vj1d |
+|---|---|---|---|
+| Vj1d | baseline: 64 keys/block, 2 independent blocks/SM | 2.738 | — |
+| Vm1 | 128 keys/block, 2 WGs share Q/dO, dQ summed in smem | 3.561 | +0.77 |
+| Vm2 | + compile-time per-WG addressing (Vm1 had +32% instructions of descriptor math) | 3.123 | +0.33 |
+| Vm3 | + parallel dQ combine | 3.088 | +0.35 |
+| Vm4 | owner-split combine (40% less smem data) | 3.157 | +0.42 |
+| Vm5 | fully decoupled WGs (mbarrier handoffs, double-buffered Q/dO, "second one does it") | 3.267 | +0.53 |
+
+Every version cut L2 traffic **exactly to cuDNN's level** (ncu: reads 216 → 114 M sectors, dQ reduce-adds
+204 → 104 M at 8×12), yet all lost. At 1 block/SM, every way of combining two warpgroups (lockstep,
+parallel, cheaper, decoupled) cost more than the L2 saving; Vj1d's two independent blocks per SM hide
+latency better. **All Vm kernels removed** (rule: drop what doesn't work, keep everything up to Vj1d);
+recoverable from git `fe8089a`. Side lessons: `setmaxnreg` does not lift ptxas's per-warpgroup register cap
+(384 threads → 168 regs + spills); a `printf` anywhere in a kernel serializes every wgmma.
+
+### 2. Vj2: keep P^T / dS^T in registers (user's fusion idea)
+
+FA3's transposed backward on Vj1d: compute S^T = K·Q^T, so P^T and dS^T are already wgmma **register-A**
+operands. dV += P^T·dO and dK += dS^T·Q read registers; P never touches smem; only dS^T is stored (for dQ).
+SASS: 16/40 HGMMA register-A, STSM 12 → 4, LDSM 4 → 0, one barrier fewer per step; 218 regs, 0 spills,
+106 KB smem → still 2 blocks/SM.
+
+| Measurement | 8×12 Vj1d → Vj2 | 8×18 Vj1d → Vj2 |
+|---|---|---|
+| ncu, main kernel only | — | 3.584 → **3.432 ms (−0.152)** |
+| do_bench, 6 runs (median) | 2.768 → **2.700 (−0.068), 6/6** | 4.115 → 4.384 (+0.27), 0/6 |
+| **SUSTAINED** (2 windows) | 2.888 → **2.812 (−0.077)** | 4.302 → **4.185 (−0.117)** |
+| Energy per backward (sustained) | 2.17 → **2.12 J** | 3.20 → **3.13 J** |
+
+**Vj2 is a consistent ~2.7% win in the training-like regime, and uses less energy.** The one loss is
+do_bench at 8×18 (L2-flush memset before every launch, short blocks): nsys showed Vj2 starting each timed
+block at ~3.50 ms and degrading over ~10 launches while the GPU sat at its 700 W cap. Cause of that
+interaction is still open (an energy explanation was tested and ruled out: Vj2 uses less energy).
+
+### 3. Measurement fixes found today
+
+- **Wrong GPU index:** commands said GPU 3; the user runs on GPU 1 → the clock lock never applied. Scripts
+  now take `GPU=` (default 1) and touch only that GPU. They previously locked/reset **all** GPUs, including
+  GPU 0 running another user's job.
+- **Power cap:** sustained backward runs at the 700 W cap; mid-run SM 1830 MHz. 1980 MHz has never been
+  observed on GPU 1 (whether 1830 is the board max is still to check).
+- **New tooling:** `gqa_bwd_vm1_test` SUSTAINED mode (ms/bwd, W, J/bwd via NVML); `cudnn_time.py` got the
+  same sustained protocol for cuDNN; `GQA_fwd_bwd.cu` + `median_summary.py` include Vj2.
+
+### Where it stands / next
+
+| 8×12 | 8×18 | |
+|---|---|---|
+| cuDNN bwd (do_bench) 2.212 ms | 3.264 ms | sustained cuDNN not yet measured |
+| **Vj2 sustained 2.812 ms** | **4.185 ms** | best of ours |
+
+Gap to cuDNN is still ~0.6–0.9 ms. Next session: (1) sustained cuDNN numbers (same protocol);
+(2) 12-shape sweep with Vj2; (3) profile Vj2 for its next limit (it doesn't reduce L2 traffic, which was
+Vj1d's limit at 80%); (4) check `clocks.max.sm` on GPU 1.
 
 ---
 
