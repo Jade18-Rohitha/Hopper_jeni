@@ -70,10 +70,10 @@ interaction is still open (an energy explanation was tested and ruled out: Vj2 u
 
 ### Where it stands / next
 
-| 8×12 | 8×18 | |
-|---|---|---|
-| cuDNN bwd (do_bench) 2.212 ms | 3.264 ms | sustained cuDNN not yet measured |
-| **Vj2 sustained 2.812 ms** | **4.185 ms** | best of ours |
+| | 8×12 | 8×18 | note |
+|---|---|---|---|
+| cuDNN bwd (do_bench) | 2.212 ms | 3.264 ms | sustained cuDNN not yet measured |
+| **Vj2 (sustained)** | **2.812 ms** | **4.185 ms** | best of ours |
 
 Gap to cuDNN is still ~0.6–0.9 ms. Next session: (1) sustained cuDNN numbers (same protocol);
 (2) 12-shape sweep with Vj2; (3) profile Vj2 for its next limit (it doesn't reduce L2 traffic, which was
