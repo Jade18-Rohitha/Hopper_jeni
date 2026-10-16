@@ -2,6 +2,41 @@
 
 Minimal kernel-dev structure mirroring `../Blackwell`, targeting Hopper (SM_90a).
 
+## Current state (2026-10-13)
+
+GQA flash attention for H200 (sm_90a), S=4096, D=128, bf16, causal.
+
+| Piece | File | Status vs cuDNN (12-run medians, locked 1980 MHz) |
+|---|---|---|
+| Forward **V62** | `src/attention/GQA_fwd_ref.cu` (`launch_gqa_v62`) | about even on small/mid shapes; 0.07–0.26 ms behind at large B×Hq |
+| Backward **Vj1d** (deterministic dK/dV, shipped) | `src/attention/GQA_bwd_baseline.cu` | **0.15–1.70 ms slower on all 12 shapes** |
+| Backward **Vj1** (atomic dK/dV) | `src/attention/GQA_bwd.cu` | about the same as Vj1d |
+
+Earlier "Vj1d beats cuDNN 12/12" claims were wrong (they compared cuDNN fwd+bwd against our bwd only);
+see `docs/cudnn_comparison_2026-10-12.md`.
+
+**Build targets** (`cmake -B build && cmake --build build -j`, binaries in `build/bin/`):
+- `gqa_bwd`: dev bench, all backward versions (`./build/bin/gqa_bwd B Hq Hkv`)
+- `gqa_bwd_baseline`: standalone Vj1d (`./build/bin/gqa_bwd_baseline B Hq Hkv`)
+- `gqa_fwd_bwd`: V62 fwd → Vj1d|Vj1 bwd chain, do_bench-style timing (`./build/bin/gqa_fwd_bwd B Hq Hkv`)
+
+**Benchmarking vs cuDNN** (always backend-forced, same inputs, same timing method):
+```bash
+python3 precision/baseline_gqa.py B Hq Hkv        # reference data/ for one shape (run first)
+python3 precision/cudnn_time.py B Hq Hkv          # cuDNN fwd / bwd-only / fwd+bwd
+bash scripts/run_median12.sh                      # 12 shapes × 12 interleaved runs, ours vs cuDNN
+python3 scripts/median_summary.py reports/median12_<stamp>.log
+```
+
+**Docs:**
+- `docs/cudnn_comparison_2026-10-12.md`: apples-to-apples results (ms deltas) and what was wrong before
+- `docs/ncu_vj1d_vs_cudnn_B8_Hq18.md`: ncu/nsys profiling of Vj1d vs cuDNN backward (where the gap is)
+- `docs/report.md`: running board + daily log; `docs/learnings.md`: retrospective
+
+---
+
+## Original scaffold (V1/V2, kept for history)
+
 ```
 Hopper/
 ├── CMakeLists.txt              # single target: gqa_bwd (arch 90a)

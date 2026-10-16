@@ -10,6 +10,11 @@ remembers not just what worked but why the wrong turns were wrong.*
 > 12 shapes** (see `report.md`). The relative lessons *between my own kernels* (naive→Vz2→Vj1, per-hq,
 > TMA-reduce, profile the whole pipeline) still hold; every "vs cuDNN" margin and "12/12" claim below
 > does not. Lesson 10 at the end is the one that matters most.
+>
+> **Where the real gap is (profiled 2026-10-13):** cuDNN's backward uses the same pipeline and the same 64×64 tile,
+> and its helper kernels cost the same. The whole gap is the main kernel. Ours is L2-bandwidth bound and moves
+> 2× cuDNN's L2 bytes per key (Q/dO reloads + fp32 dQ reduce-adds), most likely because cuDNN covers 128 keys
+> per block where we cover 64. See `ncu_vj1d_vs_cudnn_B8_Hq18.md`.
 
 ---
 

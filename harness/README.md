@@ -50,6 +50,13 @@ Use it to validate the harness and iterate on the Triton/SDPA floors.
 Run `base/setup_fa4_b300.sh` first, then the full field lights up: **fa4, cudnn,
 flashinfer** join. This is where the real numbers come from.
 
+## Backward harness (`run_gqa_bwd_v44_bench.py`): read before using its numbers
+- Since 2026-10-12 every competitor's forward runs **once outside the timer** and only `autograd.grad` is
+  timed (before that the forward was inside the timed region, which made every backward number invalid).
+- It **syncs after every iteration**, so host-side overhead (Python autograd, cuDNN graph lookup) lands in the
+  timing: cuDNN backward reads ~3.21 ms at B=8 Hq=12 here vs ~2.16 ms GPU time with `triton.do_bench`.
+  For kernel-vs-kernel comparisons on Hopper use `precision/cudnn_time.py` + `scripts/run_median12.sh`.
+
 ## Measurement discipline (from `kernel_guidelines.md`)
 - CUDA events, measured at the API boundary (dispatch overhead included).
 - L2 flushed before every timed rep (256 MB memset); warmup not flushed.

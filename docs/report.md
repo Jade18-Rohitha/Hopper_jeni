@@ -38,16 +38,74 @@ Negative = slower than cuDNN. Single sweep; 12-run medians: `bash scripts/run_me
 
 **Score: Vj1d 0/12, Vj1 0/12 (24–37% slower).** Our backward ≈ cuDNN's forward + backward.
 
+### 12-run apples-to-apples — H200, 2026-10-12 (`reports/median12_20261012_095009.log`)
+
+`bash scripts/run_median12.sh`: our chain `gqa_fwd_bwd` (V62 fwd → Vj1d|Vj1 bwd on **V62's own O/LSE**)
+vs `precision/cudnn_time.py` (cuDNN forced), **same inputs**, same do_bench-style timing (L2 flush per rep,
+async queue, one sync), runs interleaved, locked 1980 MHz. Median of 12; wins = runs ours < cuDNN.
+All correctness checks pass on all 12 shapes (V62 O/LSE; dQ/dK/dV for Vj1d and Vj1, tol 2e-2).
+Δ: + = we are faster.
+
+| B×Hq (Hkv) | cuDNN fwd | V62 | Δ (wins) | cuDNN bwd | Vj1d | Δ | Vj1 | Δ | cuDNN fwd+bwd | V62+Vj1d | Δ | V62+Vj1 | Δ |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2×12 (4) | 0.197 | 0.182 | **+7.2%** (12/12) | 0.607 | 0.766 | −26.2% | 0.758 | −24.8% | 0.801 | 0.950 | −18.6% | 0.935 | −16.7% |
+| 4×12 (4) | 0.348 | 0.351 | −0.7% (0/12) | 1.104 | 1.411 | −27.8% | 1.383 | −25.3% | 1.492 | 1.770 | −18.7% | 1.758 | −17.8% |
+| 8×12 (4) | 0.652 | 0.693 | −6.3% (3/12) | 2.147 | 2.735 | −27.4% | 2.763 | −28.7% | 2.906 | 3.475 | −19.6% | 3.425 | −17.9% |
+| 2×16 (4) | 0.247 | 0.239 | **+3.6%** (12/12) | 0.772 | 0.973 | −26.0% | 0.956 | −23.7% | 1.027 | 1.213 | −18.1% | 1.196 | −16.4% |
+| 4×16 (4) | 0.450 | 0.463 | −2.8% (5/12) | 1.439 | 1.842 | −28.0% | 1.815 | −26.1% | 1.956 | 2.338 | −19.5% | 2.456 | −25.5% |
+| 8×16 (4) | 0.868 | 0.942 | −8.6% (0/12) | 2.892 | 3.608 | −24.8% | 3.561 | −23.1% | 3.838 | 4.911 | −28.0% | 4.905 | −27.8% |
+| 2×24 (8) | 0.349 | 0.351 | −0.7% (2/12) | 1.109 | 1.412 | −27.3% | 1.384 | −24.8% | 1.486 | 1.772 | −19.3% | 1.763 | −18.7% |
+| 4×24 (8) | 0.698 | 0.691 | +1.0% (6/12) | 2.163 | 2.734 | −26.4% | 2.767 | −27.9% | 2.903 | 3.470 | −19.5% | 3.420 | −17.8% |
+| 8×24 (8) | 1.258 | 1.439 | −14.4% (0/12) | 4.288 | 5.383 | −25.5% | 5.397 | −25.8% | 5.674 | 6.898 | −21.6% | 7.098 | −25.1% |
+| 2×32 (8) | 0.480 | 0.463 | **+3.5%** (8/12) | 1.453 | 1.839 | −26.6% | 1.809 | −24.5% | 1.956 | 2.337 | −19.4% | 2.451 | −25.3% |
+| 4×32 (8) | 0.853 | 0.919 | −7.8% (2/12) | 2.878 | 3.603 | −25.2% | 3.551 | −23.4% | 3.815 | 4.906 | −28.6% | 4.846 | −27.0% |
+| 8×32 (8) | 1.662 | 1.917 | −15.3% (0/12) | 5.706 | 7.323 | −28.4% | 7.403 | −29.8% | 7.578 | 9.322 | −23.0% | 9.343 | −23.3% |
+
+Backward wins 0/12 for both Vj1d and Vj1 (every single run lost). fwd+bwd wins 0/12.
+
+**Reading it.**
+- **Backward is the gap:** Vj1d and Vj1 are 23–30% slower than cuDNN's backward on every shape.
+  Vj1's atomic TMA-reduce is *not* reliably faster than Vj1d any more (8×12, 4×24, 8×24, 8×32 it's slower).
+- **Forward (V62) is roughly at parity on small/mid shapes** (+7% to −3%) but **falls behind at large
+  B×Hq** (8×24 −14%, 8×32 −15%, 8×16 −9%). V62's header claim "1.6% faster than cuDNN at 8×12" does
+  not reproduce here (−6.3%, 3/12).
+- **Open anomaly — chain overhead at B×Hq=128:** at 8×16 and 4×32 (only), fwd→bwd chained costs a
+  consistent **+0.37 ms** more than fwd + bwd timed separately (every run, 0.30–0.46); all other shapes
+  ≤0.1 ms, and cuDNN's chain overhead is ≤0.2 ms everywhere. That's why those two rows are −28% fwd+bwd.
+  Needs an nsys trace of the chained 8×16 run. (V62's launcher also calls `cudaGetDeviceProperties` on
+  every launch — host-side cost, worth removing regardless.)
+
 **Fix landed:**
 `baseline_gqa.py` now prints `cuDNN bwd-only (forced)` (forward once outside the timer, `autograd.grad`
 timed, backend forced, gradients checked vs SDPA) and `scripts/run_vz2_sweep.sh` parses that line. The
-old fwd+bwd rows are still printed, relabelled `SDPA fwd+bwd`, for reference only. Re-run
-`bash scripts/run_vz2_sweep.sh` on the H200 to replace this table with measured numbers.
+old fwd+bwd rows are still printed, relabelled `SDPA fwd+bwd`, for reference only. The apples-to-apples
+tooling is `gqa_fwd_bwd` + `precision/cudnn_time.py` + `scripts/run_median12.sh` + `scripts/median_summary.py`.
+Full write-up with ms deltas: [cudnn_comparison_2026-10-12.md](cudnn_comparison_2026-10-12.md).
 
 **What still stands:** the relative progress among our own kernels (naive 305 ms → Vz2 → Vj1/Vj1d,
 per-hq grid, TMA-reduce dK/dV, determinism measurements) — those were all timed the same way.
 **What does not:** every "vs cuDNN" margin, "WIN", "12/12", "nemesis", and "beats cuDNN" in the daily
 logs below. They are kept unedited as history.
+
+### Profiling — 2026-10-13: where the backward gap is (ncu + nsys, B=8 S=4096 Hq=18, Hkv=9 and 6)
+
+Data only, no optimization yet. Full numbers: [ncu_vj1d_vs_cudnn_B8_Hq18.md](ncu_vj1d_vs_cudnn_B8_Hq18.md).
+
+| | Vj1d | cuDNN |
+|---|---|---|
+| Backward kernels | drowsum 0.082 · **main 3.578** · greduce 2×0.057 · dQ convert 0.105 ms | dot_do_o 0.149 · **bprop 2.770** (ncu) · reduce_head 2×0.055 · convert_dq 0.116 ms |
+| Main kernel layout | 9,216 blocks × 128 thr, 2/SM, 220 regs | 132 persistent blocks × 384 thr, 1/SM, 168 regs |
+| Tile | 64×64×128 | 64×64×128 |
+| Tensor pipe / L2 throughput | 44.8% / **80% (limit)** | 60.0% / 64% |
+| L2 reads / dQ reduce-adds | 10.4 / 9.8 GB | 5.4 / 5.0 GB (**0.5×**) |
+
+- Same pipeline as cuDNN, kernel for kernel (both write per-head partial dK/dV and reduce over G in a separate
+  fixed-order kernel, which is why both have bit-identical dK/dV). Helper kernels are not the gap.
+- **The gap is the main kernel**, which is L2-bandwidth bound: per 64 keys it reloads Q/dO (32 KB) and
+  reduce-adds an fp32 dQ tile (32 KB) to L2, twice cuDNN's bytes per key. G (Hkv=9 vs 6) changes nothing for either side.
+- **Confirmed from SASS execution counts** (`plan_vm1_bwd.md`): cuDNN covers 128 keys per work item per q-step, as two
+  consumer warpgroups × 64 keys that share one Q/dO load and sum dQ in-block before one reduce.
+- **Plan:** [plan_vm1_bwd.md](plan_vm1_bwd.md): Vm1 = Vj1d with 128-key work items.
 
 ---
 

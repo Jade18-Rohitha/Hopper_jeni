@@ -1,5 +1,5 @@
 // ============================================================================
-//  GQA_fwd_bwd.cu  —  FORWARD + BACKWARD chain: V62 forward -> Vj1d | Vj1 backward  [H200, sm_90a]
+//  GQA_fwd_bwd.cu  —  FORWARD + BACKWARD chain: V62 forward -> Vj1d | Vj1 | Vm1 backward  [H200, sm_90a]
 //
 //  Apples-to-apples with cuDNN's training step (sdpa(...).backward(dO)): our V62 forward
 //  produces O + LSE, and the backward (Vj1d = deterministic dK/dV, Vj1 = atomic TMA-reduce dK/dV)
@@ -18,6 +18,7 @@
 #include "GQA_fwd_ref.cu"        // V62:  launch_gqa_v62
 
 #include <algorithm>
+#include <cstring>
 
 template<typename F>
 static float median_ms_dobench(F work, int iters = 100, int warmup = 25) {
@@ -98,6 +99,8 @@ int main(int argc, char** argv) {
                                                          B,Hq,Hkv,G,S,scale); };
     auto bwd1 = [&]() { launch_gqa_backward_vj1<Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,
                                                          B,Hq,Hkv,G,S,scale); };
+    auto bwdm = [&]() { launch_gqa_backward_vm1<Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,
+                                                         B,Hq,Hkv,G,S,scale); };
 
     // ── correctness: chained (bwd consumes OUR forward's O/LSE) ──
     auto toF = [](const bf16 *d, size_t n) {
@@ -130,6 +133,20 @@ int main(int argc, char** argv) {
     };
     checkBwd("Vj1d", bwd);
     checkBwd("Vj1 ", bwd1);
+    checkBwd("Vm1 ", bwdm);
+    {   // determinism: Vm1 dK/dV must be bit-identical run to run (one writer + fixed-order greduce)
+        std::vector<bf16> k0(Nkv), v0(Nkv), k1(Nkv), v1(Nkv); bool same = true;
+        bwdm(); CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemcpy(k0.data(), d_dK, Nkv*sizeof(bf16), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(v0.data(), d_dV, Nkv*sizeof(bf16), cudaMemcpyDeviceToHost));
+        for (int r = 0; r < 5 && same; r++) {
+            bwdm(); CUDA_CHECK(cudaDeviceSynchronize());
+            CUDA_CHECK(cudaMemcpy(k1.data(), d_dK, Nkv*sizeof(bf16), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(v1.data(), d_dV, Nkv*sizeof(bf16), cudaMemcpyDeviceToHost));
+            same = !memcmp(k0.data(), k1.data(), Nkv*sizeof(bf16)) && !memcmp(v0.data(), v1.data(), Nkv*sizeof(bf16));
+        }
+        printf("CHECK Vm1  dK/dV bit-identical over 6 runs: %s\n", same ? "Values match!" : "Values don't match (NON-DETERMINISTIC)");
+    }
     printf("\n");
 
     // ── latency (do_bench-style medians) ──
@@ -138,11 +155,15 @@ int main(int argc, char** argv) {
     const float t_fb  = median_ms_dobench([&]() { fwd(); bwd(); });
     const float t_b1  = median_ms_dobench(bwd1);
     const float t_fb1 = median_ms_dobench([&]() { fwd(); bwd1(); });
+    const float t_bm  = median_ms_dobench(bwdm);
+    const float t_fbm = median_ms_dobench([&]() { fwd(); bwdm(); });
     printf("OURS fwd V62              %.4f ms\n", t_fwd);
     printf("OURS bwd Vj1d             %.4f ms\n", t_bwd);
     printf("OURS fwd+bwd V62+Vj1d     %.4f ms\n", t_fb);
     printf("OURS bwd Vj1              %.4f ms\n", t_b1);
     printf("OURS fwd+bwd V62+Vj1      %.4f ms\n", t_fb1);
+    printf("OURS bwd Vm1              %.4f ms\n", t_bm);
+    printf("OURS fwd+bwd V62+Vm1      %.4f ms\n", t_fbm);
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
