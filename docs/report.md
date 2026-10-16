@@ -70,14 +70,22 @@ interaction is still open (an energy explanation was tested and ruled out: Vj2 u
 
 ### Where it stands / next
 
-| | 8×12 | 8×18 | note |
-|---|---|---|---|
-| cuDNN bwd (do_bench) | 2.212 ms | 3.264 ms | sustained cuDNN not yet measured |
-| **Vj2 (sustained)** | **2.812 ms** | **4.185 ms** | best of ours |
+All sustained (back-to-back ~3 s, 2 windows), GPU 1, same protocol for cuDNN (`cudnn_time.py`) and ours:
 
-Gap to cuDNN is still ~0.6–0.9 ms. Next session: (1) sustained cuDNN numbers (same protocol);
-(2) 12-shape sweep with Vj2; (3) profile Vj2 for its next limit (it doesn't reduce L2 traffic, which was
-Vj1d's limit at 80%); (4) check `clocks.max.sm` on GPU 1.
+| Sustained | 8×12 ms/bwd | 8×12 J/bwd | 8×18 ms/bwd | 8×18 J/bwd |
+|---|---|---|---|---|
+| **cuDNN** | **2.330** | **1.77** | pending (do_bench 3.264) | pending |
+| **Vj2** (best of ours) | 2.812 | 2.12 | 4.185 | 3.13 |
+| Vj1d | 2.888 | 2.17 | 4.302 | 3.20 |
+
+- **Real gap at 8×12: Vj2 is 0.48 ms behind cuDNN** under the same sustained method (do_bench said 0.57:
+  cuDNN also slows under sustained load, 2.134 → 2.330 ms).
+- **cuDNN uses ~17% less energy per backward than Vj2** (1.77 vs 2.12 J). At the 700 W cap energy turns
+  directly into time, so energy per backward is a useful lens for the next round.
+
+Next session: (1) sustained cuDNN at 8×18; (2) `nvidia-smi -i 1 --query-gpu=clocks.sm,clocks.max.sm` to see
+whether 1830 MHz is the board max; (3) 12-shape sweep with Vj2; (4) profile Vj2 for its next limit (it doesn't
+reduce L2 traffic, Vj1d's limit at 80%), with energy per backward next to time.
 
 ---
 
