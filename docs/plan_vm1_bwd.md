@@ -107,6 +107,11 @@ proxy fence only in the owner, no stage B. 218 regs, 0 spills, 162 KB smem. In `
 If it still loses and the stalls move to barriers: **Vm4b** = mbarrier handoffs instead of block barriers +
 double-buffered Q/dO (uses the freed 32 KB), i.e. cuDNN's sync style.
 
+**H200 result 2026-10-16 (8×12):** Vj1d 2.734, Vm3 3.088, **Vm4 3.157 ms** (all correct, dK/dV bit-identical).
+Vm4 moved 40% less smem data but got slower: under lockstep the owner idles during the non-owner's store and
+the non-owner has nothing to overlap with the owner's add. The combine's cost is critical-path time, not smem
+bandwidth (same conclusion as Vm2→Vm3). **Vm4 removed** (lost to Vm3). Vm3 remains the only new kernel.
+
 | | Vj1d | Vm1 |
 |---|---|---|
 | Grid | (S/64, Hq, B) | **(S/128, Hq, B)** |
@@ -176,3 +181,19 @@ this needs evidence first.
 - Kernel vs kernel: ncu at locked clock (`nvidia-smi -i 3 -lgc 1980`, ncu `--clock-control none`).
 - End to end: `run_median12.sh` (same inputs, do_bench-style timing, interleaved, 12 runs).
 - Correctness and determinism checked before any timing is reported.
+
+**Vm5 built 2026-10-16 (option A, user's choice): the two WGs DECOUPLED, cuDNN's sync style.** 256 threads
+(a separate loader warpgroup was tried: ptxas caps registers per warpgroup, 384 threads -> 168 regs + 1.4 KB
+spills even with setmaxnreg, matching V62's probe4 note). No block barriers in the loop: Q/dO/LSE/D
+double-buffered on mbarriers; "second one does it" handoffs for both the stage refill (second WG to release a
+stage issues its next load) and the dQ combine (first WG stores + arrives, second adds + issues the single
+reduce), 4-slot role counters, double-buffered exchange buffers, one-time half-step stagger. Bounded mbarrier
+waits trap instead of hanging (printf removed: a call serialized every wgmma). 246 regs, 0 spills, 231 KB smem.
+ptxas still injects one warpgroup.wait (C7517); locate if Vm5's numbers make it worth tuning.
+
+**Next idea (user, 2026-10-16): fuse more, keep intermediates in registers, cut smem traffic.** Concrete form
+= FA3's backward layout: compute S^T = K·Q^T (keys = M rows of each WG's tile) so P^T and dS^T are already
+wgmma register-A fragments: dV += P^T·dO and dK += dS^T·Q read registers, P never goes to smem, only dS is
+stored (for dQ). Evidence: cuDNN does 36 STSM per 128-key step vs our 64, and Vm3 lost its L2 gain to
+smem-pipe stalls (short_sb + mio +0.88). Plan: test it on Vj1d first (**Vj2**) to isolate the lever, then
+carry it to the Vm line.

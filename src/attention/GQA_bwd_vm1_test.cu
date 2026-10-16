@@ -1,5 +1,5 @@
 // ============================================================================
-//  GQA_bwd_vm1_test.cu  —  standalone head-to-head: Vj1d vs Vm3 vs Vm4 (backward only)  [H200, sm_90a]
+//  GQA_bwd_vm1_test.cu  —  standalone head-to-head: Vj1d vs Vm3 vs Vm5 (backward only)  [H200, sm_90a]
 //
 //  Same inputs and checks as gqa_bwd_baseline (PyTorch reference from data/gqa_*.bin), then:
 //    1. correctness of dQ/dK/dV for Vj1d and Vm1 (tol 2e-2)
@@ -15,7 +15,7 @@
 //          python3 precision/cudnn_time.py B Hq Hkv        # cuDNN reference, same inputs
 // ============================================================================
 #define GQA_BWD_NO_MAIN
-#include "GQA_bwd.cu"            // launch_gqa_backward_vj1d / _vm3 / _vm4
+#include "GQA_bwd.cu"            // launch_gqa_backward_vj1d / _vm3 / _vm5
 
 #include <algorithm>
 #include <cstring>
@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
     const int Hkv = argc > 3 ? atoi(argv[3]) : 4;
     const int G   = Hq / Hkv;
     constexpr int S = 4096, D = 128, Br = 64, Bc = 64;
-    printf("GQA bwd head-to-head: Vj1d vs Vm3 vs Vm4   B=%d Hq=%d Hkv=%d (G=%d) S=%d D=%d causal bf16\n\n",
+    printf("GQA bwd head-to-head: Vj1d vs Vm3 vs Vm5   B=%d Hq=%d Hkv=%d (G=%d) S=%d D=%d causal bf16\n\n",
            B, Hq, Hkv, G, S, D);
 
     const float  scale = 1.0f / sqrtf((float)D);
@@ -97,7 +97,7 @@ int main(int argc, char** argv) {
 
     auto vj1d = [&]() { launch_gqa_backward_vj1d<Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); };
     auto vm3  = [&]() { launch_gqa_backward_vm3 <Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); };
-    auto vm4  = [&]() { launch_gqa_backward_vm4 <Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); };
+    auto vm5  = [&]() { launch_gqa_backward_vm5 <Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); };
 
     auto toF = [](const bf16 *d, size_t n) {
         std::vector<bf16> h(n); CUDA_CHECK(cudaMemcpy(h.data(), d, n*sizeof(bf16), cudaMemcpyDeviceToHost));
@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
     };
     check("Vj1d", vj1d);
     check("Vm3 ", vm3);
-    check("Vm4 ", vm4);
+    check("Vm5 ", vm5);
     auto determinism = [&](const char *name, auto launch) {   // dK/dV bit-identical run to run
         std::vector<bf16> k0(Nkv), v0(Nkv), k1(Nkv), v1(Nkv); bool same = true;
         launch(); CUDA_CHECK(cudaDeviceSynchronize());
@@ -134,19 +134,19 @@ int main(int argc, char** argv) {
         printf("CHECK %s dK/dV bit-identical over 6 runs: %s\n", name, same ? "Values match!" : "Values don't match (NON-DETERMINISTIC)");
     };
     determinism("Vm3 ", vm3);
-    determinism("Vm4 ", vm4);
+    determinism("Vm5 ", vm5);
     printf("\n");
 
     // latency, interleaved round-robin so clock/thermal drift hits all kernels equally
     const long long bwd_flops = 16LL * B * Hq * (long long)S * S * D;
     std::vector<float> t[3];
     for (int r = 0; r < 3; r++) { t[0].push_back(median_ms_dobench(vj1d)); t[1].push_back(median_ms_dobench(vm3));
-                                  t[2].push_back(median_ms_dobench(vm4)); }
+                                  t[2].push_back(median_ms_dobench(vm5)); }
     for (auto &v : t) std::sort(v.begin(), v.end());
     {   KernelStats s = benchmarkKernel(vj1d, 100, 10, bwd_flops); displayStats("GQA bwd Vj1d  (benchmarkKernel, per-iteration sync)", s); }
     {   KernelStats s = benchmarkKernel(vm3,  100, 10, bwd_flops); displayStats("GQA bwd Vm3   (benchmarkKernel, per-iteration sync)", s); }
-    {   KernelStats s = benchmarkKernel(vm4,  100, 10, bwd_flops); displayStats("GQA bwd Vm4   (benchmarkKernel, per-iteration sync)", s); }
-    const char *nm[3] = {"Vj1d", "Vm3 ", "Vm4 "};
+    {   KernelStats s = benchmarkKernel(vm5,  100, 10, bwd_flops); displayStats("GQA bwd Vm5   (benchmarkKernel, per-iteration sync)", s); }
+    const char *nm[3] = {"Vj1d", "Vm3 ", "Vm5 "};
     printf("\n");
     for (int k = 0; k < 3; k++)
         printf("OURS bwd %s   do_bench median-of-3  %.4f ms   (runs %.4f %.4f %.4f)   vs Vj1d %+.4f ms\n",
