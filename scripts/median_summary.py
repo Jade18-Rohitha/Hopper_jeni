@@ -12,6 +12,7 @@ import sys
 KEYS = {"OURS fwd V62": "of",
         "OURS bwd Vj1d": "ob", "OURS fwd+bwd V62+Vj1d": "ofb",
         "OURS bwd Vj1": "ob1", "OURS fwd+bwd V62+Vj1": "ofb1",
+        "OURS bwd Vj2": "ob2", "OURS fwd+bwd V62+Vj2": "ofb2",
         "cuDNN fwd": "cf", "cuDNN bwd-only": "cb", "cuDNN fwd+bwd": "cfb"}
 REQUIRED = {"of", "ob", "ofb", "cf", "cb", "cfb"}
 
@@ -54,6 +55,7 @@ def wins(rs, ours, theirs):
 
 
 have_vj1 = any("ob1" in r for rs in rows.values() for r in rs)
+have_vj2 = any("ob2" in r for rs in rows.values() for r in rs)
 n = max((len(rs) for rs in rows.values()), default=0)
 print(f"== median of {n} runs/shape (ms). Δ = cuDNN - ours in ms: + = we are faster. wins = runs ours < cuDNN ==\n")
 
@@ -63,10 +65,11 @@ for s, rs in rows.items():
     if rs:
         print(f"{s:<11} | {med(rs,'cf'):>7.3f} {med(rs,'of'):>7.3f} {pct(med(rs,'cf'),med(rs,'of')):>+7.3f} {wins(rs,'of','cf')}")
 
-for title, c, pairs in [("BACKWARD", "cb", [("Vj1d", "ob"), ("Vj1", "ob1")]),
+for title, c, pairs in [("BACKWARD", "cb", [("Vj1d", "ob"), ("Vj1", "ob1"), ("Vj2", "ob2")]),
                         ("FORWARD + BACKWARD (training step)", "cfb",
-                         [("V62+Vj1d", "ofb"), ("V62+Vj1", "ofb1")])]:
-    pairs = [p for p in pairs if p[1] in REQUIRED or (have_vj1 and p[1] in ("ob1", "ofb1"))]
+                         [("V62+Vj1d", "ofb"), ("V62+Vj1", "ofb1"), ("V62+Vj2", "ofb2")])]:
+    pairs = [p for p in pairs if p[1] in REQUIRED or (have_vj1 and p[1] in ("ob1", "ofb1"))
+             or (have_vj2 and p[1] in ("ob2", "ofb2"))]
     print(f"\n{title}\n{'B×Hq (Hkv)':<11} | {'cuDNN':>7} | " +
           " | ".join(f"{name:>8} {'Δ':>7} {'wins':>5}" for name, _ in pairs))
     for s, rs in rows.items():

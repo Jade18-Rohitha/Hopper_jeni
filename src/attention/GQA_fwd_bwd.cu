@@ -1,5 +1,5 @@
 // ============================================================================
-//  GQA_fwd_bwd.cu  —  FORWARD + BACKWARD chain: V62 forward -> Vj1d | Vj1 backward  [H200, sm_90a]
+//  GQA_fwd_bwd.cu  —  FORWARD + BACKWARD chain: V62 forward -> Vj1d | Vj1 | Vj2 backward  [H200, sm_90a]
 //
 //  Apples-to-apples with cuDNN's training step (sdpa(...).backward(dO)): our V62 forward
 //  produces O + LSE, and the backward (Vj1d = deterministic dK/dV, Vj1 = atomic TMA-reduce dK/dV)
@@ -99,6 +99,8 @@ int main(int argc, char** argv) {
                                                          B,Hq,Hkv,G,S,scale); };
     auto bwd1 = [&]() { launch_gqa_backward_vj1<Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,
                                                          B,Hq,Hkv,G,S,scale); };
+    auto bwd2 = [&]() { launch_gqa_backward_vj2<Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,
+                                                         B,Hq,Hkv,G,S,scale); };
 
     // ── correctness: chained (bwd consumes OUR forward's O/LSE) ──
     auto toF = [](const bf16 *d, size_t n) {
@@ -131,6 +133,7 @@ int main(int argc, char** argv) {
     };
     checkBwd("Vj1d", bwd);
     checkBwd("Vj1 ", bwd1);
+    checkBwd("Vj2 ", bwd2);
     printf("\n");
 
     // ── latency (do_bench-style medians) ──
@@ -139,11 +142,15 @@ int main(int argc, char** argv) {
     const float t_fb  = median_ms_dobench([&]() { fwd(); bwd(); });
     const float t_b1  = median_ms_dobench(bwd1);
     const float t_fb1 = median_ms_dobench([&]() { fwd(); bwd1(); });
+    const float t_b2  = median_ms_dobench(bwd2);
+    const float t_fb2 = median_ms_dobench([&]() { fwd(); bwd2(); });
     printf("OURS fwd V62              %.4f ms\n", t_fwd);
     printf("OURS bwd Vj1d             %.4f ms\n", t_bwd);
     printf("OURS fwd+bwd V62+Vj1d     %.4f ms\n", t_fb);
     printf("OURS bwd Vj1              %.4f ms\n", t_b1);
     printf("OURS fwd+bwd V62+Vj1      %.4f ms\n", t_fb1);
+    printf("OURS bwd Vj2              %.4f ms\n", t_b2);
+    printf("OURS fwd+bwd V62+Vj2      %.4f ms\n", t_fb2);
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));

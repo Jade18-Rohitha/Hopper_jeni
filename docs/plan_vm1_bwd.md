@@ -229,3 +229,8 @@ SASS vs Vj1d: 16 of 40 HGMMA now register-A; STSM 12 → 4; LDSM 4 → 0; one bl
 218 regs (= Vj1d), 0 spills, 106 KB smem (Vj1d 114 KB). In `gqa_bwd_vm1_test` (Vj1d vs Vj2 + dK/dV
 bit-identical check). Not bit-identical to Vj1d by construction (S^T vs S accumulation order); checked against
 the reference at 2e-2.
+
+**H200 confirmation 2026-10-16 (8×12, locked 1980 MHz, 6 runs of `gqa_bwd_vm1_test`):** Vj2 wins **6/6**.
+Median of medians: Vj1d 2.768, **Vj2 2.700 ms (−0.068, −2.5%)**; per-run Δ −0.056 to −0.087. All correct,
+dK/dV bit-identical. First version to beat Vj1d. Next: 8×18 confirmation, then the 12-shape sweep
+(Vj2 now wired into `gqa_fwd_bwd` + `median_summary.py`).
