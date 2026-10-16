@@ -1,9 +1,9 @@
 // ============================================================================
-//  GQA_bwd_vm1_test.cu  —  standalone head-to-head: Vm1 vs Vj1d (backward only)  [H200, sm_90a]
+//  GQA_bwd_vm1_test.cu  —  standalone head-to-head: Vj1d vs Vm1 / Vm2 / Vm3 (backward only)  [H200, sm_90a]
 //
 //  Same inputs and checks as gqa_bwd_baseline (PyTorch reference from data/gqa_*.bin), then:
 //    1. correctness of dQ/dK/dV for Vj1d and Vm1 (tol 2e-2)
-//    2. Vm1 dK/dV bit-identical over 6 runs
+//    2. Vm* dK/dV bit-identical over 6 runs
 //    3. latency of both, two ways:
 //       - benchmarkKernel (per-iteration sync; same method gqa_bwd_baseline reports)
 //       - do_bench-style median (async queue, one sync; same method precision/cudnn_time.py uses
@@ -15,7 +15,7 @@
 //          python3 precision/cudnn_time.py B Hq Hkv        # cuDNN reference, same inputs
 // ============================================================================
 #define GQA_BWD_NO_MAIN
-#include "GQA_bwd.cu"            // launch_gqa_backward_vj1d / _vm1
+#include "GQA_bwd.cu"            // launch_gqa_backward_vj1d / _vm1 / _vm2 / _vm3
 
 #include <algorithm>
 #include <cstring>
@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
     const int Hkv = argc > 3 ? atoi(argv[3]) : 4;
     const int G   = Hq / Hkv;
     constexpr int S = 4096, D = 128, Br = 64, Bc = 64;
-    printf("GQA bwd head-to-head: Vj1d vs Vm1   B=%d Hq=%d Hkv=%d (G=%d) S=%d D=%d causal bf16\n\n",
+    printf("GQA bwd head-to-head: Vj1d vs Vm1/Vm2/Vm3   B=%d Hq=%d Hkv=%d (G=%d) S=%d D=%d causal bf16\n\n",
            B, Hq, Hkv, G, S, D);
 
     const float  scale = 1.0f / sqrtf((float)D);
@@ -97,6 +97,8 @@ int main(int argc, char** argv) {
 
     auto vj1d = [&]() { launch_gqa_backward_vj1d<Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); };
     auto vm1  = [&]() { launch_gqa_backward_vm1 <Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); };
+    auto vm2  = [&]() { launch_gqa_backward_vm2 <Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); };
+    auto vm3  = [&]() { launch_gqa_backward_vm3 <Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,B,Hq,Hkv,G,S,scale); };
 
     auto toF = [](const bf16 *d, size_t n) {
         std::vector<bf16> h(n); CUDA_CHECK(cudaMemcpy(h.data(), d, n*sizeof(bf16), cudaMemcpyDeviceToHost));
@@ -118,36 +120,44 @@ int main(int argc, char** argv) {
     };
     check("Vj1d", vj1d);
     check("Vm1 ", vm1);
-    {   // Vm1 dK/dV must be bit-identical run to run (one writer per key + fixed-order greduce)
+    check("Vm2 ", vm2);
+    check("Vm3 ", vm3);
+    auto determinism = [&](const char *name, auto launch) {   // dK/dV bit-identical run to run
         std::vector<bf16> k0(Nkv), v0(Nkv), k1(Nkv), v1(Nkv); bool same = true;
-        vm1(); CUDA_CHECK(cudaDeviceSynchronize());
+        launch(); CUDA_CHECK(cudaDeviceSynchronize());
         CUDA_CHECK(cudaMemcpy(k0.data(), d_dK, Nkv*sizeof(bf16), cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(v0.data(), d_dV, Nkv*sizeof(bf16), cudaMemcpyDeviceToHost));
         for (int r = 0; r < 5 && same; r++) {
-            vm1(); CUDA_CHECK(cudaDeviceSynchronize());
+            launch(); CUDA_CHECK(cudaDeviceSynchronize());
             CUDA_CHECK(cudaMemcpy(k1.data(), d_dK, Nkv*sizeof(bf16), cudaMemcpyDeviceToHost));
             CUDA_CHECK(cudaMemcpy(v1.data(), d_dV, Nkv*sizeof(bf16), cudaMemcpyDeviceToHost));
             same = !memcmp(k0.data(), k1.data(), Nkv*sizeof(bf16)) && !memcmp(v0.data(), v1.data(), Nkv*sizeof(bf16));
         }
-        printf("CHECK Vm1  dK/dV bit-identical over 6 runs: %s\n\n", same ? "Values match!" : "Values don't match (NON-DETERMINISTIC)");
-    }
+        printf("CHECK %s dK/dV bit-identical over 6 runs: %s\n", name, same ? "Values match!" : "Values don't match (NON-DETERMINISTIC)");
+    };
+    determinism("Vm1 ", vm1);
+    determinism("Vm2 ", vm2);
+    determinism("Vm3 ", vm3);
+    printf("\n");
 
-    // latency, interleaved A/B/A/B so clock/thermal drift hits both equally
+    // latency, interleaved round-robin so clock/thermal drift hits all kernels equally
     const long long bwd_flops = 16LL * B * Hq * (long long)S * S * D;
-    std::vector<float> dj, dm;
-    for (int r = 0; r < 3; r++) { dj.push_back(median_ms_dobench(vj1d)); dm.push_back(median_ms_dobench(vm1)); }
-    std::sort(dj.begin(), dj.end()); std::sort(dm.begin(), dm.end());
-    {
-        KernelStats s = benchmarkKernel(vj1d, 100, 10, bwd_flops);
-        displayStats("GQA bwd Vj1d  (benchmarkKernel, per-iteration sync)", s);
+    std::vector<float> t[4];
+    for (int r = 0; r < 3; r++) {
+        t[0].push_back(median_ms_dobench(vj1d)); t[1].push_back(median_ms_dobench(vm1));
+        t[2].push_back(median_ms_dobench(vm2));  t[3].push_back(median_ms_dobench(vm3));
     }
-    {
-        KernelStats s = benchmarkKernel(vm1, 100, 10, bwd_flops);
-        displayStats("GQA bwd Vm1   (benchmarkKernel, per-iteration sync)", s);
-    }
-    printf("\nOURS bwd Vj1d   do_bench median-of-3  %.4f ms   (runs %.4f %.4f %.4f)\n", dj[1], dj[0], dj[1], dj[2]);
-    printf("OURS bwd Vm1    do_bench median-of-3  %.4f ms   (runs %.4f %.4f %.4f)\n", dm[1], dm[0], dm[1], dm[2]);
-    printf("Vm1 - Vj1d = %+.4f ms  (negative = Vm1 faster)\n", dm[1] - dj[1]);
+    for (auto &v : t) std::sort(v.begin(), v.end());
+    {   KernelStats s = benchmarkKernel(vj1d, 100, 10, bwd_flops); displayStats("GQA bwd Vj1d  (benchmarkKernel, per-iteration sync)", s); }
+    {   KernelStats s = benchmarkKernel(vm1,  100, 10, bwd_flops); displayStats("GQA bwd Vm1   (benchmarkKernel, per-iteration sync)", s); }
+    {   KernelStats s = benchmarkKernel(vm2,  100, 10, bwd_flops); displayStats("GQA bwd Vm2   (benchmarkKernel, per-iteration sync)", s); }
+    {   KernelStats s = benchmarkKernel(vm3,  100, 10, bwd_flops); displayStats("GQA bwd Vm3   (benchmarkKernel, per-iteration sync)", s); }
+    const char *nm[4] = {"Vj1d", "Vm1 ", "Vm2 ", "Vm3 "};
+    printf("\n");
+    for (int k = 0; k < 4; k++)
+        printf("OURS bwd %s   do_bench median-of-3  %.4f ms   (runs %.4f %.4f %.4f)   vs Vj1d %+.4f ms\n",
+               nm[k], t[k][1], t[k][0], t[k][1], t[k][2], t[k][1] - t[0][1]);
+    printf("(vs Vj1d: negative = faster than Vj1d)\n");
     printf("Compare with: python3 precision/cudnn_time.py %d %d %d   (line 'cuDNN bwd-only')\n", B, Hq, Hkv);
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));

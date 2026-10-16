@@ -30,6 +30,40 @@ New kernel `gqa_bwd_vm1` in `src/attention/GQA_bwd.cu`. **Vj1d stays frozen** as
 (Vj1d: 218 / 0 / 115 KB). Wired into `gqa_bwd` (dev bench), `gqa_fwd_bwd` (correctness + 6-run dK/dV
 bit-identical check + timing: `OURS bwd Vm1`, `OURS fwd+bwd V62+Vm1`) and `scripts/median_summary.py`.
 
+**H200 result 2026-10-16 (8×12, `gqa_bwd_vm1_test`):** gate 1 PASS: dQ/dK/dV identical error to Vj1d, dK/dV
+bit-identical over 6 runs. **Gate 3 FAIL: Vm1 3.559 ms vs Vj1d 2.761 ms (+0.798 ms slower)**, do_bench median of 3
+(benchmarkKernel: 3.559 vs 2.784). Vm1 std 0.003 ms vs Vj1d 0.033. Leading hypothesis (unconfirmed): lost
+inter-block overlap. Vj1d's 2 independent blocks/SM hide each other's stalls; Vm1's 2 warpgroups are lock-stepped
+by 6 block barriers per q-step at 1 block/SM (the Vc8 failure mode). Next: ncu of both kernels at 8×12
+(`reports/ncu_vm1_vs_vj1d_B8_Hq12_Hkv4`) to check (a) L2 traffic halved? (b) which stall grew.
+
+**ncu of Vm1 at 8×12 (2026-10-16; the capture caught 2 Vm1 launches, no Vj1d; Vj1d and cuDNN scaled from their 8×18
+profiles by 2/3):**
+
+| 8×12 | Vj1d (scaled) | **Vm1** | cuDNN (scaled) |
+|---|---|---|---|
+| L2 read sectors | 216.2 M | **113.8 M (0.53×)** | 111.7 M |
+| L2 dQ reduce sectors | 204.5 M | **103.8 M (0.51×)** | 103.8 M |
+| Warp instructions | 591.9 M | **779.4 M (+32%)** | 539.5 M |
+| long_scoreboard (cycles/issue) | 1.70 | **0.39** | 1.78 |
+| barrier | 1.53 | **2.24** | 2.21 |
+| short_scoreboard | 0.65 | **1.23** | 0.79 |
+
+- **Gate 2 PASSES:** L2 traffic halved, exactly to cuDNN's level. The 128-key structure is right.
+- **Cost 1, +188 M instructions (+32%):** R2UR +74 M, IMAD +67 M, LOP3 +21 M, IADD3 +15 M. Vm1 indexes smem and wgmma
+  descriptors by the runtime `wg`, so every HGMMA recomputes its descriptor and moves it to uniform registers.
+  (Vj1d: all compile-time constants.)
+- **Cost 2, serial dQ combine:** ~20% of stall samples sit right after the block barriers around the combine
+  (WG1 idle while WG0 stores, WG0 idle while WG1 adds).
+
+**Vm2 / Vm3 built (2026-10-16), one run measures both fixes separately:**
+- **Vm2** = Vm1 with the per-warpgroup body templated on the WG index (fix 1). SASS: R2UR 107 → 16 (Vj1d: 6).
+  218 regs (= Vj1d), 0 spills, 194 KB smem.
+- **Vm3** = Vm2 + parallel dQ combine (fix 2): both WGs store at once into stage A / stage B, then all 256
+  threads sum B into A. Same 218 regs / 0 spills / 194 KB.
+- `gqa_bwd_vm1_test` now checks and times Vj1d, Vm1, Vm2, Vm3 (round-robin, do_bench median of 3) + dK/dV
+  bit-identical check for each Vm.
+
 | | Vj1d | Vm1 |
 |---|---|---|
 | Grid | (S/64, Hq, B) | **(S/128, Hq, B)** |
