@@ -197,3 +197,35 @@ wgmma register-A fragments: dV += P^T·dO and dK += dS^T·Q read registers, P ne
 stored (for dQ). Evidence: cuDNN does 36 STSM per 128-key step vs our 64, and Vm3 lost its L2 gain to
 smem-pipe stalls (short_sb + mio +0.88). Plan: test it on Vj1d first (**Vj2**) to isolate the lever, then
 carry it to the Vm line.
+
+**H200 result 2026-10-16 (8×12): Vj1d 2.738, Vm3 3.088, Vm5 3.267 ms** (all correct, bit-identical dK/dV, no hang).
+Decoupling made it slower than Vm3.
+
+## Outcome of the Vm line (closed 2026-10-16)
+
+| Version | Change | 8×12 do_bench | vs Vj1d |
+|---|---|---|---|
+| Vj1d | baseline (64 keys/block, 2 blocks/SM) | 2.738 | — |
+| Vm1 | 128 keys/block, 2 WGs share Q/dO, dQ summed in smem | 3.561 | +0.77 |
+| Vm2 | + compile-time per-WG addressing | 3.123 | +0.33 |
+| Vm3 | + parallel dQ combine | 3.088 | +0.35 |
+| Vm4 | owner-split combine (less smem data) | 3.157 | +0.42 |
+| Vm5 | decoupled WGs (mbarrier handoffs, double-buffered Q/dO) | 3.267 | +0.53 |
+
+Every version halved L2 traffic exactly to cuDNN's level, yet none beat Vj1d. At 1 block/SM, every way of
+combining the two warpgroups (lockstep, cheaper, parallel, decoupled) cost more than the L2 saving; Vj1d's two
+independent blocks per SM hide latency better. **All Vm kernels removed** (user rule: remove what doesn't work,
+keep everything up to Vj1d); recoverable from git `fe8089a`. Next: the user's fusion idea on Vj1d (Vj2).
+
+## Vj2: register-fused backward on Vj1d (user idea, built 2026-10-16)
+
+Vj1d with FA3's transposed layout: S^T = K·Q^T and dP^T = V·dO^T (M = the block's 64 keys; LSE and D indexed
+by column), so P^T and dS^T are already wgmma register-A fragments.
+- dV += P^T·dO and dK += dS^T·Q take A **from registers**; P never touches smem.
+- dS^T is stored once (stmatrix, Vj1d's layout) and read MN-major as dS for dQ = dS·K.
+- Everything else = Vj1d (TMA loads, deferred dQ reduces, prefetch, one-writer dK/dV + greduce, 2 blocks/SM).
+
+SASS vs Vj1d: 16 of 40 HGMMA now register-A; STSM 12 → 4; LDSM 4 → 0; one block barrier fewer per step.
+218 regs (= Vj1d), 0 spills, 106 KB smem (Vj1d 114 KB). In `gqa_bwd_vm1_test` (Vj1d vs Vj2 + dK/dV
+bit-identical check). Not bit-identical to Vj1d by construction (S^T vs S accumulation order); checked against
+the reference at 2e-2.
