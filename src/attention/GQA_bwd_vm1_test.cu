@@ -9,6 +9,10 @@
 //       - benchmarkKernel (per-iteration sync; same method gqa_bwd_baseline reports)
 //       - do_bench-style median (async queue, one sync; same method precision/cudnn_time.py uses
 //         for cuDNN, so "do_bench" lines are directly comparable to "cuDNN bwd-only")
+//    4. SUSTAINED mode (training-like): each kernel back-to-back for ~3 s after a 1 s warm-up, 2 s idle
+//       between kernels, A/B/A/B. Reports steady-state ms per backward, avg power and ENERGY per backward
+//       (NVML total-energy counter of the GPU this process runs on), end-of-window SM clock and
+//       throttle reasons. Under the 700 W cap, time per backward ~ energy per backward / 700 W.
 //
 //  Build:  cmake --build build --target gqa_bwd_vm1_test -j
 //  Run:    python3 precision/baseline_gqa.py B Hq Hkv
@@ -20,6 +24,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <chrono>
+#include <thread>
+#include <nvml.h>
 
 template<typename F>
 static float median_ms_dobench(F work, int iters = 100, int warmup = 25) {
@@ -45,6 +52,60 @@ static float median_ms_dobench(F work, int iters = 100, int warmup = 25) {
     CUDA_CHECK(cudaFree(flush));
     std::sort(t.begin(), t.end());
     return t[iters / 2];
+}
+
+// ---- sustained, power-capped measurement (NVML) ----
+struct NvmlGpu {
+    nvmlDevice_t dev{}; bool ok = false;
+    NvmlGpu() {
+        if (nvmlInit_v2() != NVML_SUCCESS) return;
+        char bus[32] = {0}; int cur = 0; cudaGetDevice(&cur);
+        if (cudaDeviceGetPCIBusId(bus, sizeof(bus), cur) != cudaSuccess) return;
+        ok = nvmlDeviceGetHandleByPciBusId_v2(bus, &dev) == NVML_SUCCESS;
+        if (ok) { unsigned idx = 0; nvmlDeviceGetIndex(dev, &idx); char nm[96] = {0}; nvmlDeviceGetName(dev, nm, 96);
+                  printf("NVML: measuring GPU %u (%s, PCI %s)\n", idx, nm, bus); }
+    }
+    ~NvmlGpu() { if (ok) nvmlShutdown(); }
+    unsigned long long energy_mJ() const { unsigned long long e = 0; nvmlDeviceGetTotalEnergyConsumption(dev, &e); return e; }
+    unsigned sm_mhz() const { unsigned c = 0; nvmlDeviceGetClockInfo(dev, NVML_CLOCK_SM, &c); return c; }
+    unsigned long long reasons() const { unsigned long long r = 0; nvmlDeviceGetCurrentClocksEventReasons(dev, &r); return r; }
+};
+static const char* reason_str(unsigned long long r) {   // NVML clocks-event reason bits
+    static char buf[160]; buf[0] = 0;
+    if (r & 0x4ULL)         strcat(buf, "SW-power-cap ");
+    if (r & 0x8ULL)         strcat(buf, "HW-slowdown ");
+    if (r & 0x20ULL)  strcat(buf, "SW-thermal ");
+    if (r & 0x40ULL)  strcat(buf, "HW-thermal ");
+    if (r & 0x80ULL) strcat(buf, "HW-power-brake ");
+    if (r & 0x2ULL) strcat(buf, "app-clocks ");
+    if (!buf[0]) strcat(buf, "none");
+    return buf;
+}
+// Back-to-back launches (no L2 flush, like a training step) for `secs` after `warm_s` of warm-up.
+template<typename F>
+static void sustained(const char* name, F work, float est_ms, const NvmlGpu& g, float warm_s = 1.0f, float secs = 3.0f) {
+    const int nWarm = std::max(10, (int)(warm_s * 1000.f / est_ms));
+    const int nRun  = std::max(20, (int)(secs   * 1000.f / est_ms));
+    for (int i = 0; i < nWarm; i++) work();
+    CUDA_CHECK(cudaDeviceSynchronize());
+    cudaEvent_t a, b; cudaEventCreate(&a); cudaEventCreate(&b);
+    const unsigned long long e0 = g.ok ? g.energy_mJ() : 0;
+    CUDA_CHECK(cudaEventRecord(a));
+    for (int i = 0; i < nRun; i++) work();
+    CUDA_CHECK(cudaEventRecord(b));
+    // sample clock + throttle reasons while the queued work is still running (after the sync the GPU idles)
+    std::this_thread::sleep_for(std::chrono::milliseconds((int)(secs * 500.f)));
+    const unsigned smv = g.ok ? g.sm_mhz() : 0; const unsigned long long rsn = g.ok ? g.reasons() : 0;
+    CUDA_CHECK(cudaEventSynchronize(b));
+    const unsigned long long e1 = g.ok ? g.energy_mJ() : 0;
+    float ms = 0; cudaEventElapsedTime(&ms, a, b);
+    cudaEventDestroy(a); cudaEventDestroy(b);
+    const double per = ms / nRun, joules = (e1 - e0) / 1000.0;
+    if (g.ok)
+        printf("SUSTAINED %s  %.4f ms/bwd  %7.1f W avg  %.3f J/bwd  (%d launches, %.2f s)  mid-run SM %u MHz  [%s]\n",
+               name, per, joules / (ms / 1000.0), joules / nRun, nRun, ms / 1000.0, smv, reason_str(rsn));
+    else
+        printf("SUSTAINED %s  %.4f ms/bwd  (%d launches, %.2f s)  [NVML unavailable]\n", name, per, nRun, ms / 1000.0);
 }
 
 int main(int argc, char** argv) {
@@ -149,6 +210,17 @@ int main(int argc, char** argv) {
                nm[k], t[k][1], t[k][0], t[k][1], t[k][2], t[k][1] - t[0][1]);
     printf("(vs Vj1d: negative = faster than Vj1d)\n");
     printf("Compare with: python3 precision/cudnn_time.py %d %d %d   (line 'cuDNN bwd-only')\n", B, Hq, Hkv);
+
+    {   // ---- sustained, power-capped: A/B/A/B with 2 s idle between, so each starts from the same state
+        NvmlGpu g;
+        printf("\n== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==\n");
+        for (int r = 0; r < 2; r++) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            sustained("Vj1d", vj1d, t[0][1], g);
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            sustained("Vj2 ", vj2,  t[1][1], g);
+        }
+    }
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));

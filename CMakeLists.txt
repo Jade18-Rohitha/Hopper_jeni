@@ -50,7 +50,7 @@ target_link_libraries(gqa_bwd_baseline PRIVATE CUDA::cuda_driver)
 
 # standalone head-to-head: Vm1 vs Vj1d backward (individual test before any sweep)
 add_kernel(gqa_bwd_vm1_test  src/attention/GQA_bwd_vm1_test.cu)
-target_link_libraries(gqa_bwd_vm1_test PRIVATE CUDA::cuda_driver)
+target_link_libraries(gqa_bwd_vm1_test PRIVATE CUDA::cuda_driver CUDA::nvml)   # NVML: sustained-mode energy
 
 # fwd+bwd chain: V62 forward -> Vj1d backward (vs cuDNN sdpa fwd+bwd)
 add_kernel(gqa_fwd_bwd  src/attention/GQA_fwd_bwd.cu)

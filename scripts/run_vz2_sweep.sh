@@ -7,6 +7,8 @@
 #   usage:  bash scripts/run_vz2_sweep.sh
 # ============================================================================
 set -euo pipefail
+GPU=${GPU:-1}                                  # nvidia-smi index (PCI order); only this GPU is touched
+export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$GPU
 cd "$(dirname "$0")/.."          # -> Hopper/
 
 CONFIGS=("12 4" "16 4" "24 8" "32 8")   # "Hq Hkv"
@@ -17,8 +19,8 @@ echo "== building gqa_bwd =="
 cmake --build build --target gqa_bwd -j
 
 echo "== locking clocks (pm on, gpu clock 1980 MHz) =="
-sudo nvidia-smi -pm 1        >/dev/null
-sudo nvidia-smi -lgc 1980    >/dev/null
+sudo nvidia-smi -i "$GPU" -pm 1        >/dev/null
+sudo nvidia-smi -i "$GPU" -lgc 1980    >/dev/null
 
 run_all() {
   for cfg in "${CONFIGS[@]}"; do
@@ -37,7 +39,7 @@ run_all() {
 run_all 2>&1 | tee "$LOG"
 
 echo "== resetting clocks =="
-sudo nvidia-smi -rgc >/dev/null || true
+sudo nvidia-smi -i "$GPU" -rgc >/dev/null || true
 
 echo ""
 echo "== sweep complete -> $LOG =="

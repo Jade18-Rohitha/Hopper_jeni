@@ -234,3 +234,17 @@ the reference at 2e-2.
 Median of medians: Vj1d 2.768, **Vj2 2.700 ms (−0.068, −2.5%)**; per-run Δ −0.056 to −0.087. All correct,
 dK/dV bit-identical. First version to beat Vj1d. Next: 8×18 confirmation, then the 12-shape sweep
 (Vj2 now wired into `gqa_fwd_bwd` + `median_summary.py`).
+
+**8×18 (Hkv=9), locked clock, 6 runs: Vj2 LOSES 0/6** — Vj1d 4.115, Vj2 4.384 ms (+0.27, +6.5%). So Vj2's gain is
+shape-dependent (8×12: −0.068, 6/6). Same per-head kernel at both shapes; 8×18 has 9,216 blocks vs 6,144 and
+Vj1d was L2-bound (80%) there. Sweep on hold. Next: ncu Vj1d + Vj2 at 8×18 in one report
+(`ncu_vj2_vs_vj1d_B8_Hq18_Hkv9`), optional N=3 sweep to map which shapes win.
+
+**Why Vj2 lost at 8×18 (nsys + nvidia-smi, 2026-10-16):** as a kernel Vj2 is faster (ncu 3.432 vs 3.584 ms, −4.2%;
+nsys: each timed block starts at ~3.50 ms vs Vj1d's ~3.65). Within ~10 launches the GPU hits its **700 W power cap**
+(SW power cap; SM 1830 → 1500–1815 MHz) and Vj2 slows to 4.0–4.3 ms while Vj1d stays ~3.6–3.8. Under the cap,
+time ≈ energy / 700 W, so Vj2 likely uses more energy per backward (unconfirmed why; register-A wgmma is a guess).
+Also found: commands said GPU 3 but the user runs on **GPU 1**, so `-lgc 1980` never applied (max seen 1830 MHz),
+and the sweep scripts locked/reset clocks on **all** GPUs (GPU 0 runs someone else's job). Fixed: scripts take
+`GPU=` (default 1) and touch only that GPU; `gqa_bwd_vm1_test` gained a **SUSTAINED** mode (back-to-back ~3 s per
+kernel, A/B/A/B with 2 s idle) reporting ms/bwd, avg W and **J/bwd** from NVML's energy counter.
