@@ -64,6 +64,49 @@ profiles by 2/3):**
 - `gqa_bwd_vm1_test` now checks and times Vj1d, Vm1, Vm2, Vm3 (round-robin, do_bench median of 3) + dK/dV
   bit-identical check for each Vm.
 
+**H200 result 2026-10-16 (8×12):** all correct, all bit-identical dK/dV.
+
+| Kernel | do_bench ms | vs Vj1d | step effect |
+|---|---|---|---|
+| Vj1d | 2.789 | — | |
+| Vm1 | 3.561 | +0.772 | |
+| Vm2 (compile-time WG addressing) | 3.123 | +0.334 | −0.437 ms |
+| Vm3 (+ parallel dQ combine) | 3.104 | +0.315 | −0.019 ms |
+
+Fix 1 was real; fix 2 barely mattered, so the barrier stall around the combine wasn't the combine's own cost.
+Leading hypothesis (unconfirmed): the two WGs run in **lockstep**: both on the tensor cores at once, then both
+in softmax at once, whereas Vj1d's 2 independent blocks/SM drift apart and overlap ALU with tensor work. Next:
+ncu Vj1d + Vm3 at locked 1980 MHz in one report (`ncu_vm3_vs_vj1d_B8_Hq12_Hkv4`). If confirmed → **Vm4**:
+ping-pong staggered WGs (WG1 half a step behind), double-buffered Q/dO with mbarrier handoffs, and a dQ
+handoff where WG0 stores + signals and WG1 adds + issues the single reduce (no block barriers).
+
+**Cleanup 2026-10-16 (user: remove versions that don't work out, keep everything up to Vj1d):** Vm1 and Vm2
+removed from the code (`GQA_bwd.cu`, the test, the `gqa_fwd_bwd` chain, `median_summary.py`). Vm3 kept as its
+own kernel `gqa_bwd_vm3` (no template flag) only as the base for Vm4; it goes too if it never beats Vj1d.
+Nothing new is in the sweep until a standalone win.
+
+**ncu Vj1d vs Vm3, same report, 8×12, ~1.82 GHz (2026-10-16, `ncu_vm3_vs_vj1d_B8_Hq12_Hkv4`):**
+
+| | Vj1d | Vm3 |
+|---|---|---|
+| Duration | 2.421 ms | 2.816 ms (+0.395) |
+| L2 reads / reduce-adds | 216 M / 204 M | 114 M / 104 M (halved) |
+| L2 throughput | 79% | 36% |
+| Instructions | 615.7 M | 649.9 M (+5.5%) |
+| Tensor pipe | 43.9% | 38.4% |
+| long_scoreboard / short_scoreboard / mio_throttle / barrier | 1.38 / 0.74 / 0.44 / 1.57 | 0.79 / 1.34 / 0.72 / 2.03 |
+
+The load-wait saving (−0.59) is eaten by shared-memory-pipe stalls (+0.88). SASS attribution: the dQ combine
+(`A += B`, LDS.128 → STS.128) = **18.6% of Vm3's stall samples**, the doubled dQ staging stores (STS.64) another 10%.
+cuDNN per 128-key step: 32 KB smem stores + 32 KB loads, 18.6 BAR.SYNC, 113 mbarrier ops; Vm3: 96 KB + 64 KB,
+65 BAR.SYNC, 10 mbarrier ops, 64 fence + MEMBAR.ALL.CTA.
+
+**Vm4 (= Vm4a) built:** dQ D-half h owned by WG h; the non-owner stores its partial once, the owner adds in place
+(read-modify-write) and issues that half's reduce. 96 KB smem/step (Vm3 160 KB), 4 block barriers/step (Vm3 6),
+proxy fence only in the owner, no stage B. 218 regs, 0 spills, 162 KB smem. In `gqa_bwd_vm1_test` next to Vm3.
+If it still loses and the stalls move to barriers: **Vm4b** = mbarrier handoffs instead of block barriers +
+double-buffered Q/dO (uses the freed 32 KB), i.e. cuDNN's sync style.
+
 | | Vj1d | Vm1 |
 |---|---|---|
 | Grid | (S/64, Hq, B) | **(S/128, Hq, B)** |
