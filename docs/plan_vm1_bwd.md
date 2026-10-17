@@ -263,3 +263,9 @@ together). N=128 MN-major B spans two 128B-swizzle blocks: CUTLASS canonical B12
 SASS: 8× m64n128 regA + 4× m64n128 smemA tnspA.tnspB + 16× m64n64 (= cuDNN's mix); 7 block barriers (Vj2 9).
 250 regs (→256 allocated: exactly fills 2 blocks/SM), 0 spills, 106 KB smem. In `gqa_bwd_vm1_test`
 (Vj1d vs Vj2 vs Vj3 + bit-identical check + sustained). **The LBO value is validated only by the H200 CHECKs.**
+
+**H200 result 2026-10-17 (8×12, GPU 1, 1980 MHz held): Vj3 CORRECT (n128 LBO=8192 descriptor validated) + dK/dV
+bit-identical, and the fastest of ours.** do_bench: Vj1d 2.773, Vj2 2.694, **Vj3 2.572 ms (−0.201)**. Sustained:
+Vj1d 2.833, Vj2 2.760, **Vj3 2.667 ms (−0.166, −5.9%)**; energy 2.12 / 2.08 / **1.98 J**. Gap to cuDNN at 8×12 ≈ 0.34 ms
+(cuDNN sustained 2.330 from 10-16 on GPU 1 at 1830 MHz — needs a same-day remeasure). Vj3 wired into
+`gqa_fwd_bwd` + `median_summary.py` for the next sweep.
