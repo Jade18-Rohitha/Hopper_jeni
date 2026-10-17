@@ -11,9 +11,11 @@ Plus SUSTAINED cuDNN bwd-only (same protocol as gqa_bwd_vm1_test): 2 s idle, 1 s
 autograd.grad, 2 windows; ms/bwd, avg W and J/bwd from NVML's energy counter of the GPU torch runs on.
 
 usage: python precision/cudnn_time.py B Hq Hkv     (after baseline_gqa.py B Hq Hkv)
+       CUDNN_SUSTAINED=0 python precision/cudnn_time.py ...   # skip the sustained windows (sweeps)
 """
 import ctypes
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -123,6 +125,8 @@ def sustained(name, fn, est_ms, nv, warm_s=1.0, secs=3.0):
         print(f"SUSTAINED {name}  {ms/n:.4f} ms/bwd  ({n} launches, {ms/1000:.2f} s)")
 
 
+if os.environ.get("CUDNN_SUSTAINED", "1") == "0":
+    sys.exit(0)
 qa, ka, va = leaves()
 o = sdpa(qa, ka, va, SDPBackend.CUDNN_ATTENTION)
 bwd_only = lambda: torch.autograd.grad(o, (qa, ka, va), do, retain_graph=True)

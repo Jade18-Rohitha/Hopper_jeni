@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Apples-to-apples vs cuDNN, N-run median-of-medians (default N=12), locked clock.
+# Apples-to-apples vs cuDNN, N-run median (default N=25), SM clock locked at 1980 MHz.
+# RULE (2026-10-17, user): full sweep = clock fixed at 1980, cuDNN and ours interleaved, 25 runs per shape,
+# report the median. The actual SM clock is logged for the whole sweep (nvidia-smi, 500 ms) and summarized at
+# the end, so a lock that didn't hold (power cap / wrong GPU) is visible, not assumed.
 #
 #   OURS  (build/bin/gqa_fwd_bwd):  V62 fwd | Vj1d, Vj1, Vj2 bwd | V62+Vj1d/Vj1/Vj2 chained fwd+bwd
 #   cuDNN (precision/cudnn_time.py): fwd    | bwd-only | sdpa(...).backward(dO)
@@ -9,15 +12,15 @@
 # rep, async queue, one sync), backend forced to cuDNN. Runs are INTERLEAVED (ours,
 # cuDNN, ours, cuDNN, ...) so thermal drift hits both equally.
 #
-#   usage:  bash scripts/run_median12.sh            # all 12 shapes, N=12, on GPU 1
-#           N=5 SHAPES="8 12 4;4 24 8" GPU=1 bash scripts/run_median12.sh
+#   usage:  GPU=2 bash scripts/run_median12.sh       # all 12 shapes, N=25
+#           N=5 SHAPES="8 12 4;4 24 8" GPU=2 bash scripts/run_median12.sh
 #   GPU = nvidia-smi index of the ONE GPU to use (PCI order); only that GPU's clocks are touched.
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."          # -> Hopper/
 
-N=${N:-12}
-GPU=${GPU:-1}
+N=${N:-25}
+GPU=${GPU:?set GPU=<nvidia-smi index>, e.g. GPU=2 bash scripts/run_median12.sh}
 export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$GPU
 SHAPES=${SHAPES:-"2 12 4;4 12 4;8 12 4;2 16 4;4 16 4;8 16 4;2 24 8;4 24 8;8 24 8;2 32 8;4 32 8;8 32 8"}
 LOG="reports/median${N}_$(date +%Y%m%d_%H%M%S).log"
@@ -28,8 +31,12 @@ cmake --build build --target gqa_fwd_bwd -j
 echo "== GPU $GPU: locking clocks (pm on, gpu clock 1980 MHz); other GPUs untouched =="
 sudo nvidia-smi -i "$GPU" -pm 1     >/dev/null
 sudo nvidia-smi -i "$GPU" -lgc 1980 >/dev/null
-trap 'sudo nvidia-smi -i "$GPU" -rgc >/dev/null || true' EXIT
-nvidia-smi -i "$GPU" --query-gpu=index,name,pci.bus_id,clocks.sm,clocks.max.sm,power.draw --format=csv
+nvidia-smi -i "$GPU" --query-gpu=index,name,pci.bus_id,clocks.sm,clocks.max.sm,power.limit,power.draw --format=csv
+SMI="${LOG%.log}_smi.csv"
+nvidia-smi -i "$GPU" --query-gpu=timestamp,clocks.sm,power.draw,temperature.gpu,clocks_event_reasons.active \
+    --format=csv,noheader,nounits -lms 500 > "$SMI" &
+SMI_PID=$!
+trap 'kill $SMI_PID 2>/dev/null; sudo nvidia-smi -i "$GPU" -rgc >/dev/null || true' EXIT
 
 IFS=';' read -ra SH <<< "$SHAPES"
 {
@@ -41,11 +48,32 @@ for s in "${SH[@]}"; do
   for r in $(seq 1 "$N"); do
     echo "## run $r"
     ./build/bin/gqa_fwd_bwd "$B" "$HQ" "$HKV" | grep -E "^OURS"
-    python3 precision/cudnn_time.py "$B" "$HQ" "$HKV" | grep -E "^cuDNN |^# "
+    CUDNN_SUSTAINED=0 python3 precision/cudnn_time.py "$B" "$HQ" "$HKV" | grep -E "^cuDNN |^# "
   done
 done
 } 2>&1 | tee "$LOG"
 
 echo ""
 python3 scripts/median_summary.py "$LOG"
-echo "== log: $LOG =="
+kill $SMI_PID 2>/dev/null || true
+echo ""
+echo "== SM clock during the sweep (GPU $GPU, samples with power > 300 W = under load) =="
+python3 - "$SMI" <<'EOF'
+import sys, collections
+R = {0x1: "idle", 0x4: "SW-power-cap", 0x8: "HW-slowdown", 0x20: "SW-thermal", 0x40: "HW-thermal", 0x80: "HW-power-brake"}
+clk, why = [], collections.Counter()
+for line in open(sys.argv[1]):
+    f = [x.strip() for x in line.split(",")]
+    if len(f) < 5: continue
+    try: c, p, r = int(f[1]), float(f[2]), int(f[4], 16)
+    except ValueError: continue
+    if p < 300: continue
+    clk.append(c); why[" + ".join(n for b, n in R.items() if r & b) or "none"] += 1
+if not clk: print("no loaded samples"); sys.exit()
+clk.sort(); n = len(clk)
+at = sum(c >= 1980 for c in clk)
+print(f"loaded samples: {n}   at 1980 MHz: {at} ({100*at/n:.0f}%)   min {clk[0]}  median {clk[n//2]}  max {clk[-1]} MHz")
+print("throttle reasons:", ", ".join(f"{k} {100*v/n:.0f}%" for k, v in why.most_common()))
+print("RULE CHECK:", "clock held at 1980" if at == n else "clock did NOT hold at 1980 for all loaded samples -- see above")
+EOF
+echo "== log: $LOG   clock log: $SMI =="
