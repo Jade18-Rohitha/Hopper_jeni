@@ -16105,6 +16105,275 @@ void launch_gqa_backward_vj2(
     convert_dq_accum_to_bf16_v6<<<cG,cB>>>(reinterpret_cast<const float4*>(d_dqa), reinterpret_cast<uint2*>(d_dQ), dqN4);
 }
 
+// ============================================================================
+//  Vj3 — Vj2 with N=128 wgmma for dV, dK and dQ (cuDNN's instruction shapes, SASS-confirmed 2026-10-17:
+//  per 64-key q-step cuDNN issues 8x m64n128k16 register-A [dV, dK] + 4x m64n128k16 smem-A tnspA.tnspB [dQ],
+//  where Vj2 issues 16 + 8 m64n64k16). Same math as Vj2; one instruction covers the whole head dim D=128:
+//    * half the wgmma instructions for dV/dK/dQ (12 vs 24 per step)
+//    * dQ reads its A operand (dS from smem) ONCE instead of twice (Vj2 read it per D-half)
+//    * dQ is one m64n128 -> both stage stores + 4 reduces together: 3 block barriers/step (Vj2: 5)
+//  N=128 transposed (MN-major) B spans TWO 128B-swizzle blocks: CUTLASS canonical B128 MN-major layout
+//  ((8,8,m),(8,k)):((1,8,LBO),(64,SBO)) [16-B units] -> LBO = stride between 64-col blocks = 8192 B (our TMA
+//  boxes sit at +4096 elems), SBO = 1024 B (8 rows x 128 B, unchanged). Accumulator layout of one m64n128
+//  = the two m64n64 halves concatenated, so epilogue/stage code is unchanged.
+// ============================================================================
+__device__ __forceinline__ uint64_t make_desc_sw128_MN_n128(const bf16* smem_ptr) {
+    uint32_t addr = (uint32_t)__cvta_generic_to_shared(smem_ptr);
+    uint64_t d = 0;
+    d |= (uint64_t)((addr >> 4) & 0x3FFFu);   // start_address        [13:0]
+    d |= (uint64_t)(8192 >> 4) << 16;         // leading_byte_offset  [29:16] = 8192 B between 64-col blocks
+    d |= (uint64_t)(1024 >> 4) << 32;         // stride_byte_offset   [45:32] = 1024 B between 8-row groups
+    d |= (uint64_t)1u << 62;                  // layout_type = B128   [63:62]
+    return d;
+}
+// m64n128k16, A = 4 bf16x2 registers, B = MN-major (trans-b=1) descriptor, accumulate.
+__device__ __forceinline__ void wgmma_m64n128k16_rA_tB(float d[64], uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3,
+                                                       uint64_t descB) {
+    asm volatile(
+        "wgmma.mma_async.sync.aligned.m64n128k16.f32.bf16.bf16 "
+        "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31,%32,%33,%34,%35,%36,%37,%38,%39,%40,%41,%42,%43,%44,%45,%46,%47,%48,%49,%50,%51,%52,%53,%54,%55,%56,%57,%58,%59,%60,%61,%62,%63}, "
+        "{%64,%65,%66,%67}, %68, 1, 1, 1, 1;\n"   // scaleD, scaleA, scaleB, transB=1
+        : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]),
+          "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7]),
+          "+f"(d[8]), "+f"(d[9]), "+f"(d[10]), "+f"(d[11]),
+          "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]),
+          "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]),
+          "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]),
+          "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]),
+          "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31]),
+          "+f"(d[32]), "+f"(d[33]), "+f"(d[34]), "+f"(d[35]),
+          "+f"(d[36]), "+f"(d[37]), "+f"(d[38]), "+f"(d[39]),
+          "+f"(d[40]), "+f"(d[41]), "+f"(d[42]), "+f"(d[43]),
+          "+f"(d[44]), "+f"(d[45]), "+f"(d[46]), "+f"(d[47]),
+          "+f"(d[48]), "+f"(d[49]), "+f"(d[50]), "+f"(d[51]),
+          "+f"(d[52]), "+f"(d[53]), "+f"(d[54]), "+f"(d[55]),
+          "+f"(d[56]), "+f"(d[57]), "+f"(d[58]), "+f"(d[59]),
+          "+f"(d[60]), "+f"(d[61]), "+f"(d[62]), "+f"(d[63])
+        : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "l"(descB));
+}
+// m64n128k16, A and B both smem descriptors, both transposed (MN-major).
+__device__ __forceinline__ void wgmma_m64n128k16_tAtB(float d[64], uint64_t descA, uint64_t descB) {
+    asm volatile(
+        "wgmma.mma_async.sync.aligned.m64n128k16.f32.bf16.bf16 "
+        "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31,%32,%33,%34,%35,%36,%37,%38,%39,%40,%41,%42,%43,%44,%45,%46,%47,%48,%49,%50,%51,%52,%53,%54,%55,%56,%57,%58,%59,%60,%61,%62,%63}, "
+        "%64, %65, 1, 1, 1, 1, 1;\n"              // scaleD, scaleA, scaleB, transA=1, transB=1
+        : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]),
+          "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7]),
+          "+f"(d[8]), "+f"(d[9]), "+f"(d[10]), "+f"(d[11]),
+          "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]),
+          "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]),
+          "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]),
+          "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]),
+          "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31]),
+          "+f"(d[32]), "+f"(d[33]), "+f"(d[34]), "+f"(d[35]),
+          "+f"(d[36]), "+f"(d[37]), "+f"(d[38]), "+f"(d[39]),
+          "+f"(d[40]), "+f"(d[41]), "+f"(d[42]), "+f"(d[43]),
+          "+f"(d[44]), "+f"(d[45]), "+f"(d[46]), "+f"(d[47]),
+          "+f"(d[48]), "+f"(d[49]), "+f"(d[50]), "+f"(d[51]),
+          "+f"(d[52]), "+f"(d[53]), "+f"(d[54]), "+f"(d[55]),
+          "+f"(d[56]), "+f"(d[57]), "+f"(d[58]), "+f"(d[59]),
+          "+f"(d[60]), "+f"(d[61]), "+f"(d[62]), "+f"(d[63])
+        : "l"(descA), "l"(descB));
+}
+// acc(64 keys x 128 d) += Areg(64 keys x 64 q) · B(64 q x 128 d, MN-major, 2 swizzle blocks). Issue only.
+__device__ __forceinline__ void gemm_regA_n128_issue_vj3(float acc[64], uint32_t ar0[8], uint32_t ar1[8], const bf16* B_sw) {
+    fence_regs8_vj2(ar0); fence_regs8_vj2(ar1);
+    fence_operandN<64>(acc);
+    wgmma_fence();
+#pragma unroll
+    for (int j = 0; j < 4; j++)
+        wgmma_m64n128k16_rA_tB(acc, ar0[2*j], ar1[2*j], ar0[2*j+1], ar1[2*j+1], make_desc_sw128_MN_n128(B_sw + j * 1024));
+    wgmma_commit();
+}
+// dq(64 q x 128 d) = dS (sDS holds dS^T, read MN-major) · K (64 keys x 128 d, MN-major, 2 blocks). Issue only.
+__device__ __forceinline__ void gemm_dQ_n128_issue_vj3(float dq[64], uint64_t descDSmn_base, uint64_t descK128_base) {
+    fence_proxy_async_shared();
+    fence_operandN<64>(dq);
+    wgmma_fence();
+#pragma unroll
+    for (int k = 0; k < 4; k++)
+        wgmma_m64n128k16_tAtB(dq, descDSmn_base + (uint64_t)(k * 128), descK128_base + (uint64_t)(k * 128));
+    wgmma_commit();
+}
+
+template<int Br, int Bc, int D>
+__global__ void __launch_bounds__(128, 1)
+gqa_bwd_vj3(
+    const __grid_constant__ CUtensorMap tma_K,  const __grid_constant__ CUtensorMap tma_V,
+    const __grid_constant__ CUtensorMap tma_Q,  const __grid_constant__ CUtensorMap tma_dO,
+    const __grid_constant__ CUtensorMap tma_dV_st, const __grid_constant__ CUtensorMap tma_dK_st,
+    const __grid_constant__ CUtensorMap tma_dq_red,
+    const float* __restrict__ LSE, const float* __restrict__ Drow,
+    int B, int Hq, int Hkv, int G, int S, float scale) {
+    const int kt = blockIdx.x, hq = blockIdx.y, b = blockIdx.z;
+    const int hkv = hq / G;
+    const int wtid = threadIdx.x;
+    const int nQ = S / Br;
+    const int k_row0 = kt * Bc;
+    const float scale2 = scale * LOG2E_V29;
+
+    __shared__ __align__(1024) bf16  sK_sw[Bc*D], sV_sw[Bc*D], sQ_sw[Br*D], sdO_sw[Br*D];
+    __shared__ __align__(1024) bf16  sDS[Br*64];                // holds dS^T
+    __shared__ __align__(1024) float sStage[2][Br*64];
+    __shared__ __align__(16)   float sLSE[Br], sD[Br];
+    __shared__ __align__(8) uint64_t mbar_kv, mbar_qo;
+
+    if (wtid == 0) { mbar_init_v4(&mbar_kv, 1); mbar_init_v4(&mbar_qo, 1); }
+    __syncthreads();
+
+    const uint64_t descK    = make_desc_sw128_K (sK_sw);       // S^T  A (K-major)
+    const uint64_t descV    = make_desc_sw128_K (sV_sw);       // dP^T A
+    const uint64_t descQ    = make_desc_sw128_K (sQ_sw);       // S^T  B (K-major)
+    const uint64_t descdO   = make_desc_sw128_K (sdO_sw);      // dP^T B
+    const uint64_t descK128 = make_desc_sw128_MN_n128(sK_sw);  // dQ B: K full D, MN-major, 2 blocks
+    const uint64_t descDSmn = make_desc_sw128_MN(sDS);         // dS^T stored -> MN-major read = dS
+
+    const uint32_t kvRow = (uint32_t)((b*Hkv+hkv)*S + k_row0);
+    if (wtid == 0) {
+        mbar_expect_tx_v4(&mbar_kv, (uint32_t)(Bc*64*sizeof(bf16))*4);
+        tma_load_2d_v4(&tma_K, sK_sw,       &mbar_kv, 0,  kvRow);
+        tma_load_2d_v4(&tma_K, sK_sw+64*64, &mbar_kv, 64, kvRow);
+        tma_load_2d_v4(&tma_V, sV_sw,       &mbar_kv, 0,  kvRow);
+        tma_load_2d_v4(&tma_V, sV_sw+64*64, &mbar_kv, 64, kvRow);
+    }
+    mbar_wait_v4(&mbar_kv, 0);
+
+    float dv[64], dk[64];
+    zeroN<64>(dv); zeroN<64>(dk);
+
+    const int nIter = nQ - kt;
+    auto issue = [&](int it) {
+        const int q = kt + it;
+        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
+        const long lb = (long)(b*Hq+hq)*S + (long)q*Br;
+        if (wtid == 0) {
+            mbar_expect_tx_v4(&mbar_qo, (uint32_t)(Br*D*sizeof(bf16))*2);
+            tma_load_2d_v4(&tma_Q,  sQ_sw,        &mbar_qo, 0,  qRow);
+            tma_load_2d_v4(&tma_Q,  sQ_sw+64*64,  &mbar_qo, 64, qRow);
+            tma_load_2d_v4(&tma_dO, sdO_sw,       &mbar_qo, 0,  qRow);
+            tma_load_2d_v4(&tma_dO, sdO_sw+64*64, &mbar_qo, 64, qRow);
+        }
+        if (wtid < Br) { sLSE[wtid] = LSE[lb+wtid]; sD[wtid] = Drow[lb+wtid]; }
+    };
+    uint32_t qopar = 0;
+    issue(0);
+    __syncthreads();                                   // publish sLSE/sD of tile 0
+
+    for (int it = 0; it < nIter; it++) {
+        const int q = kt + it;
+        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
+        mbar_wait_v4(&mbar_qo, qopar); qopar ^= 1;
+
+        float acc[32];   zeroN<32>(acc);
+        float dPacc[32]; zeroN<32>(dPacc);
+        gemm_T_issue_vj2(acc,   descK, descQ);         // S^T   (group 1)
+        gemm_T_issue_vj2(dPacc, descV, descdO);        // dP^T  (group 2)
+        wgmma_wait1();
+        fence_operandN<32>(acc);
+        uint32_t pP0[8], pP1[8];
+        if (q == kt) pT_regs_vj2<true >(acc, sLSE, wtid, q*Br, k_row0, scale2, pP0, pP1);
+        else         pT_regs_vj2<false>(acc, sLSE, wtid, 0, 0, scale2, pP0, pP1);
+        gemm_regA_n128_issue_vj3(dv, pP0, pP1, sdO_sw);       // dV += P^T dO   (group 3, one n128)
+        wgmma_wait1();                                 // dP^T ready (dV may still run)
+        fence_operandN<32>(dPacc);
+        uint32_t ds0[8], ds1[8];
+        dsT_regs_store_vj2(pP0, pP1, dPacc, sD, sDS, wtid, ds0, ds1);
+        gemm_regA_n128_issue_vj3(dk, ds0, ds1, sQ_sw);        // dK += dS^T Q   (group 4, one n128)
+        __syncthreads();                               // sDS visible to the whole warpgroup
+
+        float dq[64]; zeroN<64>(dq);
+        gemm_dQ_n128_issue_vj3(dq, descDSmn, descK128);       // dQ = dS K      (group 5, one n128)
+        if (wtid == 0) tma_bulk_wait0_v43();           // drain PREV step's reduces before reusing sStage
+        wgmma_wait0();
+        fence_operandN<64>(dv); fence_operandN<64>(dk); fence_operandN<64>(dq);
+        fence_regs8_vj2(pP0); fence_regs8_vj2(pP1); fence_regs8_vj2(ds0); fence_regs8_vj2(ds1);
+        __syncthreads();                               // all done reading sQ/sdO/sDS/sLSE/sD; stages free
+        if (it + 1 < nIter) issue(it + 1);
+        store_acc_sw128_f32(dq,      sStage[0], wtid, scale);
+        store_acc_sw128_f32(dq + 32, sStage[1], wtid, scale);
+        __syncthreads(); fence_proxy_async_shared();   // (also publishes next sLSE/sD)
+        if (wtid == 0) {
+            tma_reduce_add_2d_v43(&tma_dq_red, sStage[0],       0,  qRow);
+            tma_reduce_add_2d_v43(&tma_dq_red, sStage[0]+64*32, 32, qRow);
+            tma_reduce_add_2d_v43(&tma_dq_red, sStage[1],       64, qRow);
+            tma_reduce_add_2d_v43(&tma_dq_red, sStage[1]+64*32, 96, qRow);
+            tma_store_commit_v34();
+        }
+    }
+    if (wtid == 0) tma_bulk_wait0_v43();
+    __syncthreads();
+    fence_operandN<64>(dv);
+    stage_acc_bf16_s<64,64>(dv,    sQ_sw + 0,    wtid, 1.0f);
+    stage_acc_bf16_s<64,64>(dv+32, sQ_sw + 4096, wtid, 1.0f);
+    fence_operandN<64>(dk);
+    stage_acc_bf16_s<64,64>(dk,    sdO_sw + 0,    wtid, scale);
+    stage_acc_bf16_s<64,64>(dk+32, sdO_sw + 4096, wtid, scale);
+    __syncthreads(); fence_proxy_async_shared();
+    const uint32_t hqRow = (uint32_t)((b*Hq+hq)*S + k_row0);
+    if (wtid == 0) {
+        tma_store_2d_v34(&tma_dV_st, sQ_sw + 0,    0,  hqRow);
+        tma_store_2d_v34(&tma_dV_st, sQ_sw + 4096, 64, hqRow);
+        tma_store_2d_v34(&tma_dK_st, sdO_sw + 0,    0,  hqRow);
+        tma_store_2d_v34(&tma_dK_st, sdO_sw + 4096, 64, hqRow);
+        tma_store_commit_v34(); tma_store_wait_v34();
+    }
+}
+
+template<int Br, int Bc, int D>
+void launch_gqa_backward_vj3(
+    const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+    const bf16 *d_dO, const float *d_LSE,
+    bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+    int B, int Hq, int Hkv, int G, int S, float scale) {
+    auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+        CUtensorMap desc{}; uint64_t gS[2]={(uint64_t)D,total_rows}; uint64_t gT[1]={(uint64_t)D*sizeof(bf16)};
+        uint32_t bx[2]={64u,tile_rows}, eS[2]={1,1};
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)ptr,gS,gT,bx,eS,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"sw128 vj3: %s\n",e);exit(1);} return desc; };
+    auto make_tma_out = [&](const bf16* ptr, uint64_t rows) {
+        CUtensorMap desc{}; uint64_t gS[2]={(uint64_t)D,rows}; uint64_t gT[1]={(uint64_t)D*sizeof(bf16)};
+        uint32_t bx[2]={64u,64u}, eS[2]={1,1};
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,2,(void*)ptr,gS,gT,bx,eS,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"out vj3: %s\n",e);exit(1);} return desc; };
+    auto make_tma_red = [&](const float* ptr, uint64_t rows) {
+        CUtensorMap desc{}; uint64_t gS[2]={(uint64_t)D,rows}; uint64_t gT[1]={(uint64_t)D*sizeof(float)};
+        uint32_t bx[2]={32u,64u}, eS[2]={1,1};
+        CUresult r=cuTensorMapEncodeTiled(&desc,CU_TENSOR_MAP_DATA_TYPE_FLOAT32,2,(void*)ptr,gS,gT,bx,eS,
+            CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_128B,CU_TENSOR_MAP_L2_PROMOTION_L2_256B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if(r!=CUDA_SUCCESS){const char*e;cuGetErrorString(r,&e);fprintf(stderr,"red vj3: %s\n",e);exit(1);} return desc; };
+
+    const uint64_t Rq=(uint64_t)B*Hq*S, Rkv=(uint64_t)B*Hkv*S;
+    CUtensorMap tK=make_tma_sw128(d_K,Rkv,Bc), tV=make_tma_sw128(d_V,Rkv,Bc);
+    CUtensorMap tQ=make_tma_sw128(d_Q,Rq,Br),  tdO=make_tma_sw128(d_dO,Rq,Br);
+    // Vj1d: one-writer bf16 PARTIAL dK/dV [B,Hq,S,D]; a fixed-order greduce (no atomics) sums the G heads
+    // DETERMINISTICALLY -> bit-identical dK/dV. Trade vs Vj1: the ~69us greduce pass instead of the atomic reduce.
+    const long partN=(long)B*Hq*S*D; static bf16 *d_dKp=nullptr,*d_dVp=nullptr; static long pcap=0;
+    if(partN>pcap){ if(d_dKp)CUDA_CHECK(cudaFree(d_dKp)); if(d_dVp)CUDA_CHECK(cudaFree(d_dVp));
+        CUDA_CHECK(cudaMalloc(&d_dKp,partN*sizeof(bf16))); CUDA_CHECK(cudaMalloc(&d_dVp,partN*sizeof(bf16))); pcap=partN; }
+    CUtensorMap tdV=make_tma_out(d_dVp,Rq), tdK=make_tma_out(d_dKp,Rq);
+
+    const long drowN=(long)B*Hq*S; static float* d_Drow=nullptr; static long drc=0;
+    if(drowN>drc){ if(d_Drow)CUDA_CHECK(cudaFree(d_Drow)); CUDA_CHECK(cudaMalloc(&d_Drow,drowN*sizeof(float))); drc=drowN; }
+    const long dqN=(long)B*Hq*S*D; static float* d_dqa=nullptr; static long dqc=0;
+    if(dqN>dqc){ if(d_dqa)CUDA_CHECK(cudaFree(d_dqa)); CUDA_CHECK(cudaMalloc(&d_dqa,dqN*sizeof(float))); dqc=dqN; }
+    CUDA_CHECK(cudaMemset(d_dqa,0,dqN*sizeof(float)));
+    CUtensorMap tRed=make_tma_red(d_dqa,(uint64_t)B*Hq*S);
+
+    const int dBlock=256; const long dGrid=(drowN+(dBlock/32)-1)/(dBlock/32);
+    compute_drowsum_v22<<<(unsigned)dGrid,dBlock>>>(d_dO,d_O,d_Drow,drowN);
+
+    dim3 GRID(S/Bc, Hq, B);   // Vj1 per-hq: 3x the CTAs (Hq not Hkv) to fill the GPU at low B
+    gqa_bwd_vj3<Br,Bc,D><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale);
+    // fixed-order deterministic G-head reduction (no atomics) -> bit-identical dK/dV.
+    dim3 grGRID(S/8, Hkv, B);
+    gqa_dkdv_greduce<<<grGRID,128>>>(d_dVp, d_dV, Hq, Hkv, G, S);
+    gqa_dkdv_greduce<<<grGRID,128>>>(d_dKp, d_dK, Hq, Hkv, G, S);
+    const int cB=256; const long dqN4=dqN/4; const int cG=(int)((dqN4+cB-1)/cB);
+    convert_dq_accum_to_bf16_v6<<<cG,cB>>>(reinterpret_cast<const float4*>(d_dqa), reinterpret_cast<uint2*>(d_dQ), dqN4);
+}
+
 #ifndef GQA_BWD_NO_MAIN   // defined by GQA_fwd_bwd.cu, which reuses Vj1/Vj1d
 int main(int argc, char** argv){
     std::cout << "GQA Backward — precision test  [Hopper SM_90 / H200]\n";

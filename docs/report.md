@@ -11,6 +11,39 @@
 
 ---
 
+## 2026-10-17: sustained 12-shape board — Vj2 beats Vj1d on all 12 shapes (GPU 2, 1980 MHz held)
+
+`reports/sustained12_gpu2_20261017_120145.log`: every kernel on **GPU 2** (NVML-verified), SM clock **1980 MHz**
+throughout (8×32 dipped to 1965). Sustained protocol (2 s idle, 1 s warm-up, ~3 s back-to-back, 2 windows,
+mean of the 2) for cuDNN (`cudnn_time.py`) and ours (`gqa_bwd_vm1_test`). All CHECKs passed, dK/dV
+bit-identical. Δ in ms.
+
+| B×Hq (Hkv) | cuDNN | Vj1d | **Vj2** | **Vj2 − Vj1d** | Vj2 − cuDNN | J/bwd cuDNN / Vj2 |
+|---|---|---|---|---|---|---|
+| 2×12 (4) | 0.639 | 0.777 | **0.756** | **−0.021** | +0.118 | 0.48 / 0.57 |
+| 4×12 (4) | 1.212 | 1.483 | **1.448** | **−0.035** | +0.236 | 0.92 / 1.10 |
+| 8×12 (4) | 2.356 | 2.889 | **2.820** | **−0.070** | +0.464 | 1.76 / 2.10 |
+| 2×16 (4) | 0.826 | 1.013 | **0.981** | **−0.032** | +0.155 | 0.62 / 0.74 |
+| 4×16 (4) | 1.591 | 1.949 | **1.899** | **−0.049** | +0.309 | 1.20 / 1.43 |
+| 8×16 (4) | 3.113 | 3.817 | **3.725** | **−0.092** | +0.612 | 2.34 / 2.75 |
+| 2×24 (8) | 1.210 | 1.485 | **1.445** | **−0.040** | +0.235 | 0.92 / 1.10 |
+| 4×24 (8) | 2.355 | 2.886 | **2.814** | **−0.072** | +0.460 | 1.78 / 2.10 |
+| 8×24 (8) | 4.634 | 5.681 | **5.555** | **−0.126** | +0.921 | 3.43 / 4.04 |
+| 2×32 (8) | 1.580 | 1.941 | **1.891** | **−0.050** | +0.311 | 1.19 / 1.42 |
+| 4×32 (8) | 3.102 | 3.809 | **3.711** | **−0.098** | +0.609 | 2.31 / 2.76 |
+| 8×32 (8) | 6.162 | 7.532 | **7.369** | **−0.162** | +1.208 | 4.50 / 5.27 |
+
+- **Vj2 beats Vj1d on all 12 shapes (−2.2 to −2.8%)**; the single do_bench run per shape agrees 12/12.
+- **cuDNN leads everywhere by a near-constant ratio: Vj2 takes ~18–20% longer** (+0.12 ms at 2×12 up to
+  +1.21 ms at 8×32).
+- **Vj2's energy per backward is ~19% higher at every shape, the same ratio as its time.** The clock held at
+  1980, so it's not throttling: the kernel simply runs ~19% longer at the same power. Next profile = whole-kernel time.
+- GPU 2 runs at 1980 MHz; GPU 1's 1830 MHz (10-16) was specific to that GPU.
+- Next: the full-sweep rule run (`GPU=2 bash scripts/run_median12.sh`: 1980 MHz, 25 interleaved runs, median,
+  with a clock RULE CHECK), then profile Vj2 vs cuDNN at 8×12.
+
+---
+
 ## Today — 2026-10-16: the 128-key line closed, register fusion (Vj2) is the first win over Vj1d
 
 All numbers: H200, GPU 1, S=4096 D=128 causal bf16. Δ = candidate − Vj1d in ms (negative = faster). Every
@@ -212,7 +245,7 @@ ones:
 - It **took over the small shapes** too (2×16, 2×24, 2×32 all now Vj1, beating both V44 and cuDNN).
 - It **won 8×12** — the shape I never once won all week. 12-run median-of-medians Vj1 2.865 vs cuDNN
   2.933, 7/12 head-to-head. It's a thermal-dependent win (cuDNN's cool floor ~2.77 still edges Vj1's,
-  but cuDNN throttles under sustained load to 2.9–3.0 while Vj1 holds 2.80–2.93), and Vj1 is far
+    but cuDNN throttles under sustained load to 2.9–3.0 while Vj1 holds 2.80–2.93), and Vj1 is far
   steadier there than Vz2 (std 0.03 vs 0.25 ms). The nemesis is down.
 - On the big shapes it's simply **faster than Vz2** (8×16 3.65 vs 3.80, 8×24 5.50 vs 5.72, 8×32 7.29 vs
   7.44), so it takes those crowns outright.

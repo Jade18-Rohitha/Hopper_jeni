@@ -248,3 +248,18 @@ Also found: commands said GPU 3 but the user runs on **GPU 1**, so `-lgc 1980` n
 and the sweep scripts locked/reset clocks on **all** GPUs (GPU 0 runs someone else's job). Fixed: scripts take
 `GPU=` (default 1) and touch only that GPU; `gqa_bwd_vm1_test` gained a **SUSTAINED** mode (back-to-back ~3 s per
 kernel, A/B/A/B with 2 s idle) reporting ms/bwd, avg W and **J/bwd** from NVML's energy counter.
+
+## Vj3: N=128 wgmma for dV, dK, dQ (built 2026-10-17)
+
+cuDNN SASS at 8×12 (2026-10-17) showed Vj2's math is exactly cuDNN's (transposed layout, register-A dV/dK,
+smem dS for dQ) but cuDNN uses **m64n128k16** for dV, dK and dQ where Vj2 uses two m64n64k16 halves. ncu at 8×12:
+Vj2 553 M instructions vs cuDNN 540 M, same ~7.7 cycles/instruction, but cuDNN keeps 10 warps/SM active vs 7.9,
+tensor 59% vs 46%, L2 64% vs 81% (half the L2 bytes), stalls gmma 0.16 vs 0.51 and mio 0.13 vs 0.44.
+
+Vj3 = Vj2 with one m64n128 per k-step for dV/dK (register A) and dQ (dq[64], both stage stores + 4 reduces
+together). N=128 MN-major B spans two 128B-swizzle blocks: CUTLASS canonical B128 MN-major layout
+((8,8,m),(8,k)):((1,8,LBO),(64,SBO)) → **LBO = 8192 B** (our TMA boxes at +4096 elems), SBO = 1024 B. This is the
+"multi-atom MN-major" case the August notes avoided as unvalidated; cuDNN uses it.
+SASS: 8× m64n128 regA + 4× m64n128 smemA tnspA.tnspB + 16× m64n64 (= cuDNN's mix); 7 block barriers (Vj2 9).
+250 regs (→256 allocated: exactly fills 2 blocks/SM), 0 spills, 106 KB smem. In `gqa_bwd_vm1_test`
+(Vj1d vs Vj2 vs Vj3 + bit-identical check + sustained). **The LBO value is validated only by the H200 CHECKs.**

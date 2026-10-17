@@ -12,7 +12,7 @@
 # rep, async queue, one sync), backend forced to cuDNN. Runs are INTERLEAVED (ours,
 # cuDNN, ours, cuDNN, ...) so thermal drift hits both equally.
 #
-#   usage:  GPU=2 bash scripts/run_median12.sh       # all 12 shapes, N=25
+#   usage:  GPU=2 bash scripts/run_median12.sh       # all 18 shapes, N=25
 #           N=5 SHAPES="8 12 4;4 24 8" GPU=2 bash scripts/run_median12.sh
 #   GPU = nvidia-smi index of the ONE GPU to use (PCI order); only that GPU's clocks are touched.
 # ============================================================================
@@ -22,7 +22,8 @@ cd "$(dirname "$0")/.."          # -> Hopper/
 N=${N:-25}
 GPU=${GPU:?set GPU=<nvidia-smi index>, e.g. GPU=2 bash scripts/run_median12.sh}
 export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$GPU
-SHAPES=${SHAPES:-"2 12 4;4 12 4;8 12 4;2 16 4;4 16 4;8 16 4;2 24 8;4 24 8;8 24 8;2 32 8;4 32 8;8 32 8"}
+# 18 shapes: the original 12 + Hq:Hkv = 18:6 and 18:9 (added 2026-10-17), B = 2, 4, 8
+SHAPES=${SHAPES:-"2 12 4;4 12 4;8 12 4;2 16 4;4 16 4;8 16 4;2 18 6;4 18 6;8 18 6;2 18 9;4 18 9;8 18 9;2 24 8;4 24 8;8 24 8;2 32 8;4 32 8;8 32 8"}
 LOG="reports/median${N}_$(date +%Y%m%d_%H%M%S).log"
 
 echo "== building gqa_fwd_bwd =="
