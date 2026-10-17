@@ -11,12 +11,68 @@
 
 ---
 
-## 2026-10-17: sustained 12-shape board — Vj2 beats Vj1d on all 12 shapes (GPU 2, 1980 MHz held)
+## Today — 2026-10-17: Vj3 (cuDNN's wgmma shapes) is our best; official 18-shape board at a held clock
 
-`reports/sustained12_gpu2_20261017_120145.log`: every kernel on **GPU 2** (NVML-verified), SM clock **1980 MHz**
-throughout (8×32 dipped to 1965). Sustained protocol (2 s idle, 1 s warm-up, ~3 s back-to-back, 2 windows,
-mean of the 2) for cuDNN (`cudnn_time.py`) and ours (`gqa_bwd_vm1_test`). All CHECKs passed, dK/dV
-bit-identical. Δ in ms.
+All runs on the H200 box; Δ in ms; every candidate passed dQ/dK/dV vs the PyTorch reference (2e-2) and dK/dV
+bit-identical over 6 runs. Details: [plan_vm1_bwd.md](plan_vm1_bwd.md).
+
+### 1. Official board: 25-run medians, 18 shapes, clock HELD at 1605 MHz (GPU 1)
+
+`reports/median25_gpu1_1605MHz_20261017_130940.log` (+ `_smi.csv`). Rule (user, 10-17): clock fixed, cuDNN and ours
+interleaved, 25 runs per shape, median. **RULE CHECK: 3614/3614 loaded samples at 1605 MHz, throttle reasons: none.**
+All correctness checks passed. Method = do_bench (L2 flush per rep), cuDNN backend forced, same inputs.
+
+**Backward:**
+
+| B×Hq (Hkv) | cuDNN | Vj1d | Vj2 | **Vj3** | **Vj3 − Vj1d** | Vj3 − cuDNN | wins vs cuDNN |
+|---|---|---|---|---|---|---|---|
+| 2×12 (4) | 0.675 | 0.854 | 0.809 | **0.773** | **−0.081** | +0.098 | 0/25 |
+| 4×12 (4) | 1.230 | 1.575 | 1.499 | **1.427** | **−0.148** | +0.197 | 0/25 |
+| 8×12 (4) | 2.338 | 3.010 | 2.868 | **2.724** | **−0.286** | +0.386 | 0/25 |
+| 2×16 (4) | 0.858 | 1.091 | 1.035 | **0.988** | **−0.103** | +0.130 | 0/25 |
+| 4×16 (4) | 1.594 | 2.047 | 1.944 | **1.852** | **−0.195** | +0.258 | 0/25 |
+| 8×16 (4) | 3.069 | 3.957 | 3.762 | **3.576** | **−0.381** | +0.507 | 0/25 |
+| 2×18 (6) | 0.952 | 1.214 | 1.153 | **1.099** | **−0.115** | +0.147 | 0/25 |
+| 4×18 (6) | 1.783 | 2.293 | 2.179 | **2.073** | **−0.220** | +0.290 | 0/25 |
+| 8×18 (6) | 3.443 | 4.450 | 4.235 | **4.024** | **−0.426** | +0.582 | 0/25 |
+| 2×18 (9) | 0.955 | 1.218 | 1.157 | **1.103** | **−0.115** | +0.148 | 0/25 |
+| 4×18 (9) | 1.787 | 2.301 | 2.185 | **2.081** | **−0.220** | +0.294 | 0/25 |
+| 8×18 (9) | 3.452 | 4.464 | 4.249 | **4.039** | **−0.425** | +0.587 | 0/25 |
+| 2×24 (8) | 1.229 | 1.575 | 1.499 | **1.427** | **−0.148** | +0.198 | 0/25 |
+| 4×24 (8) | 2.337 | 3.011 | 2.868 | **2.724** | **−0.287** | +0.387 | 0/25 |
+| 8×24 (8) | 4.550 | 5.888 | 5.598 | **5.325** | **−0.563** | +0.775 | 0/25 |
+| 2×32 (8) | 1.593 | 2.048 | 1.944 | **1.852** | **−0.196** | +0.259 | 0/25 |
+| 4×32 (8) | 3.066 | 3.957 | 3.762 | **3.575** | **−0.382** | +0.510 | 0/25 |
+| 8×32 (8) | 6.009 | 7.782 | 7.401 | **7.029** | **−0.753** | +1.020 | 0/25 |
+
+- **Vj3 is our fastest backward on all 18 shapes: −9.5 to −9.7% vs Vj1d** (Vj2: −4.9 to −5.3%), in every one of 25
+  runs. The ladder Vj1d → Vj2 → Vj3 is monotonic at every shape.
+- **cuDNN still leads everywhere: Vj3 takes 14.5–17% longer** (+0.10 ms at 2×12 to +1.02 ms at 8×32). Down from
+  26–30% for Vj1d.
+- The 18:6 and 18:9 shapes behave like their siblings (G doesn't matter for these per-head kernels).
+- **Forward + backward (V62 + Vj3)** is our best training step on all 18 shapes: +0.08 ms (2×12) to +1.16 ms (8×32)
+  behind cuDNN. The V62 forward is even with cuDNN at small/mid shapes, behind at large B×Hq (−0.08 to −0.17 ms at
+  8×18 / 8×24 / 8×32), and newly measured behind at 2×18 (−0.025, 0/25).
+
+### 2. Vj3 — what changed and why
+
+cuDNN's backward SASS at 8×12 (ncu, `reports/ncu_cudnn_bwd_B8_Hq12_Hkv4`) showed **Vj2's math is exactly cuDNN's**
+(transposed layout: S^T = K·Q^T, P^T and dS^T as register-A wgmma operands for dV and dK, only dS stored for dQ) but
+cuDNN issues **m64n128k16** for dV, dK and dQ where Vj2 issues two m64n64k16 halves. Same 8×12 profile: Vj2 553 M
+instructions vs cuDNN 540 M at the same ~7.7 cycles each, but cuDNN keeps 10 warps/SM active vs 7.9 (tensor pipe
+59% vs 46%) and moves half the L2 bytes (L2 64% vs 81%).
+
+**Vj3 = Vj2 with one m64n128 per k-step for dV, dK and dQ** — cuDNN's exact wgmma mix (8× n128 register-A + 4× n128
+smem-A + 16× n64 per step). The N=128 transposed B spans two 128-byte swizzle blocks; the descriptor needs
+**LBO = 8192 B** (CUTLASS canonical B128 MN-major layout). August's notes had avoided this "multi-atom" case as
+unvalidated — it is now validated on the H200. Also: dQ reads dS from smem once instead of twice, 7 block barriers
+instead of 9. 250 registers (exactly fills 2 blocks/SM), 0 spills, 106 KB smem.
+Single-shape check (8×12, GPU 1, 1980 MHz, sustained): Vj1d 2.833, Vj2 2.760, **Vj3 2.667 ms**; energy 2.12 / 2.08 /
+**1.98 J** per backward.
+
+### 3. Sustained 12-shape board (GPU 2, 1980 MHz held) — before Vj3
+
+`reports/sustained12_gpu2_20261017_120145.log`: back-to-back ~3 s per kernel, 2 windows, NVML energy.
 
 | B×Hq (Hkv) | cuDNN | Vj1d | **Vj2** | **Vj2 − Vj1d** | Vj2 − cuDNN | J/bwd cuDNN / Vj2 |
 |---|---|---|---|---|---|---|
@@ -33,14 +89,29 @@ bit-identical. Δ in ms.
 | 4×32 (8) | 3.102 | 3.809 | **3.711** | **−0.098** | +0.609 | 2.31 / 2.76 |
 | 8×32 (8) | 6.162 | 7.532 | **7.369** | **−0.162** | +1.208 | 4.50 / 5.27 |
 
-- **Vj2 beats Vj1d on all 12 shapes (−2.2 to −2.8%)**; the single do_bench run per shape agrees 12/12.
-- **cuDNN leads everywhere by a near-constant ratio: Vj2 takes ~18–20% longer** (+0.12 ms at 2×12 up to
-  +1.21 ms at 8×32).
-- **Vj2's energy per backward is ~19% higher at every shape, the same ratio as its time.** The clock held at
-  1980, so it's not throttling: the kernel simply runs ~19% longer at the same power. Next profile = whole-kernel time.
-- GPU 2 runs at 1980 MHz; GPU 1's 1830 MHz (10-16) was specific to that GPU.
-- Next: the full-sweep rule run (`GPU=2 bash scripts/run_median12.sh`: 1980 MHz, 25 interleaved runs, median,
-  with a clock RULE CHECK), then profile Vj2 vs cuDNN at 8×12.
+- Vj2 beat Vj1d on all 12 shapes (−2.2 to −2.8%); cuDNN led by ~18–20% with ~19% less energy per backward.
+
+### 4. Measurement: the clock rule
+
+- First 25-run sweep (`reports/median25_20261017_093203.log`, 12 shapes, GPU not recorded) **failed the 1980 MHz rule**:
+  0% of loaded samples at 1980, median 1785 MHz, 700 W power cap active 79% of the time. In that power-capped
+  run Vj2 lost to Vj1d on the large shapes (8×12 +0.235, 8×24 +0.191 ms) — the same power-cap interaction seen on
+  10-16 at 8×18. Superseded by the held-clock board above.
+- Rule amended (user chose option 2): lock the **highest clock that holds under sweep load**, found per GPU with
+  `GPU=<n> bash scripts/find_stable_clock.sh` → 1605 MHz on GPU 1. `run_median12.sh` takes `GPU=` (required) and
+  `CLOCK=`, logs the SM clock every 500 ms and ends with a RULE CHECK. Absolute times at 1605 MHz are higher than at
+  1980; all comparisons are within one run.
+- GPU 2 held 1980 MHz in sustained mode; GPU 1 held 1980 in the single-shape test but not under the sweep's
+  continuous load.
+
+### Where it stands / next
+
+- **Best of ours: Vj3** (backward) and **V62 + Vj3** (training step). Gap to cuDNN: 14.5–17% backward.
+- Remaining structural difference vs cuDNN: its 128-key, 2-compute-warpgroup work items (half the L2 traffic, 10
+  warps/SM). The Vm line (10-16) tried that shape on Vj1d's math and lost; with Vj3's math (n128, register-A) it is
+  worth revisiting, but register budget (Vj3 = 250 regs/thread) is the obstacle — cuDNN does it in 168.
+- Next: profile Vj3 at 8×12 against cuDNN (registers, issue rate, L2), then decide between a register-lean Vj3
+  and a cluster/multicast variant that halves Q/dO L2 reads while keeping 2 blocks/SM.
 
 ---
 

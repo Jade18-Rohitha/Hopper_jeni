@@ -1,0 +1,252 @@
+############ SHAPE B=2 Hq=12 Hkv=4
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  0.7697 ms   (runs 0.7658 0.7697 0.7716)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  0.7383 ms   (runs 0.7366 0.7383 0.7431)   vs Vj1d -0.0314 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  0.7757 ms/bwd    758.6 W avg  0.589 J/bwd  (3897 launches, 3.02 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   0.7548 ms/bwd    755.6 W avg  0.570 J/bwd  (4063 launches, 3.07 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj1d  0.7785 ms/bwd    748.4 W avg  0.583 J/bwd  (3897 launches, 3.03 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   0.7582 ms/bwd    764.6 W avg  0.580 J/bwd  (4063 launches, 3.08 s)  mid-run SM 1980 MHz  [none]
+cuDNN bwd-only  0.6131 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  0.6386 ms/bwd    760.4 W avg  0.486 J/bwd  (4848 launches, 3.10 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  0.6391 ms/bwd    756.9 W avg  0.484 J/bwd  (4848 launches, 3.10 s)  mid-run SM 1980 MHz
+############ SHAPE B=4 Hq=12 Hkv=4
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  1.4283 ms   (runs 1.4226 1.4283 1.4298)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  1.3869 ms   (runs 1.3741 1.3869 1.3917)   vs Vj1d -0.0413 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  1.4802 ms/bwd    755.9 W avg  1.119 J/bwd  (2100 launches, 3.11 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   1.4464 ms/bwd    760.2 W avg  1.100 J/bwd  (2163 launches, 3.13 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj1d  1.4850 ms/bwd    749.5 W avg  1.113 J/bwd  (2100 launches, 3.12 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   1.4495 ms/bwd    754.8 W avg  1.094 J/bwd  (2163 launches, 3.14 s)  mid-run SM 1980 MHz  [none]
+cuDNN bwd-only  1.1163 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  1.2113 ms/bwd    766.5 W avg  0.928 J/bwd  (2596 launches, 3.14 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  1.2125 ms/bwd    759.4 W avg  0.921 J/bwd  (2596 launches, 3.15 s)  mid-run SM 1980 MHz
+############ SHAPE B=8 Hq=12 Hkv=4
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  2.7829 ms   (runs 2.7714 2.7829 2.8244)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  2.7273 ms   (runs 2.7140 2.7273 2.7456)   vs Vj1d -0.0556 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  2.8841 ms/bwd    746.5 W avg  2.153 J/bwd  (1078 launches, 3.11 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   2.8162 ms/bwd    741.5 W avg  2.088 J/bwd  (1099 launches, 3.10 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj1d  2.8948 ms/bwd    752.2 W avg  2.178 J/bwd  (1078 launches, 3.12 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   2.8237 ms/bwd    747.9 W avg  2.112 J/bwd  (1099 launches, 3.10 s)  mid-run SM 1980 MHz  [none]
+cuDNN bwd-only  2.1750 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  2.3560 ms/bwd    744.8 W avg  1.755 J/bwd  (1316 launches, 3.10 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  2.3564 ms/bwd    748.3 W avg  1.763 J/bwd  (1316 launches, 3.10 s)  mid-run SM 1980 MHz
+############ SHAPE B=2 Hq=16 Hkv=4
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  0.9828 ms   (runs 0.9764 0.9828 0.9842)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  0.9443 ms   (runs 0.9387 0.9443 0.9449)   vs Vj1d -0.0385 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  1.0119 ms/bwd    756.3 W avg  0.765 J/bwd  (3052 launches, 3.09 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   0.9843 ms/bwd    756.5 W avg  0.745 J/bwd  (3177 launches, 3.13 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj1d  1.0146 ms/bwd    759.2 W avg  0.770 J/bwd  (3052 launches, 3.10 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   0.9784 ms/bwd    759.0 W avg  0.743 J/bwd  (3177 launches, 3.11 s)  mid-run SM 1980 MHz  [none]
+cuDNN bwd-only  0.7782 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  0.8240 ms/bwd    755.9 W avg  0.623 J/bwd  (3716 launches, 3.06 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  0.8286 ms/bwd    750.6 W avg  0.622 J/bwd  (3716 launches, 3.08 s)  mid-run SM 1980 MHz
+############ SHAPE B=4 Hq=16 Hkv=4
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  1.8713 ms   (runs 1.8703 1.8713 1.8849)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  1.8267 ms   (runs 1.8227 1.8267 1.9026)   vs Vj1d -0.0446 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  1.9473 ms/bwd    751.8 W avg  1.464 J/bwd  (1603 launches, 3.12 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   1.8983 ms/bwd    751.1 W avg  1.426 J/bwd  (1642 launches, 3.12 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj1d  1.9502 ms/bwd    750.7 W avg  1.464 J/bwd  (1603 launches, 3.13 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   1.9003 ms/bwd    757.8 W avg  1.440 J/bwd  (1642 launches, 3.12 s)  mid-run SM 1980 MHz  [none]
+cuDNN bwd-only  1.4446 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  1.5892 ms/bwd    761.9 W avg  1.211 J/bwd  (1959 launches, 3.11 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  1.5918 ms/bwd    750.7 W avg  1.195 J/bwd  (1959 launches, 3.12 s)  mid-run SM 1980 MHz
+############ SHAPE B=8 Hq=16 Hkv=4
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  3.6855 ms   (runs 3.6652 3.6855 3.7115)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  3.6110 ms   (runs 3.5928 3.6110 3.6140)   vs Vj1d -0.0745 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  3.8135 ms/bwd    750.4 W avg  2.862 J/bwd  (813 launches, 3.10 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   3.7226 ms/bwd    742.8 W avg  2.765 J/bwd  (830 launches, 3.09 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj1d  3.8211 ms/bwd    747.5 W avg  2.856 J/bwd  (813 launches, 3.11 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   3.7273 ms/bwd    733.7 W avg  2.735 J/bwd  (830 launches, 3.09 s)  mid-run SM 1980 MHz  [none]
+cuDNN bwd-only  2.7768 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  3.1115 ms/bwd    748.6 W avg  2.329 J/bwd  (990 launches, 3.08 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  3.1140 ms/bwd    753.8 W avg  2.347 J/bwd  (990 launches, 3.08 s)  mid-run SM 1980 MHz
+############ SHAPE B=2 Hq=24 Hkv=8
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  1.4230 ms   (runs 1.4183 1.4230 1.4377)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  1.3911 ms   (runs 1.3819 1.3911 1.3959)   vs Vj1d -0.0319 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  1.4841 ms/bwd    749.5 W avg  1.112 J/bwd  (2108 launches, 3.13 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   1.4449 ms/bwd    762.5 W avg  1.102 J/bwd  (2156 launches, 3.12 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj1d  1.4856 ms/bwd    745.4 W avg  1.107 J/bwd  (2108 launches, 3.13 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   1.4449 ms/bwd    763.7 W avg  1.103 J/bwd  (2156 launches, 3.12 s)  mid-run SM 1980 MHz  [none]
+cuDNN bwd-only  1.1165 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  1.2083 ms/bwd    762.1 W avg  0.921 J/bwd  (2545 launches, 3.08 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  1.2115 ms/bwd    757.7 W avg  0.918 J/bwd  (2545 launches, 3.08 s)  mid-run SM 1980 MHz
+############ SHAPE B=4 Hq=24 Hkv=8
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  2.7864 ms   (runs 2.7705 2.7864 2.8046)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  2.7256 ms   (runs 2.7247 2.7256 2.7346)   vs Vj1d -0.0608 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  2.8872 ms/bwd    744.0 W avg  2.148 J/bwd  (1076 launches, 3.11 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   2.8137 ms/bwd    748.7 W avg  2.107 J/bwd  (1100 launches, 3.10 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj1d  2.8858 ms/bwd    743.0 W avg  2.144 J/bwd  (1076 launches, 3.11 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   2.8152 ms/bwd    744.8 W avg  2.097 J/bwd  (1100 launches, 3.10 s)  mid-run SM 1980 MHz  [none]
+cuDNN bwd-only  2.1639 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  2.3516 ms/bwd    756.5 W avg  1.779 J/bwd  (1325 launches, 3.12 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  2.3582 ms/bwd    757.3 W avg  1.786 J/bwd  (1325 launches, 3.12 s)  mid-run SM 1980 MHz
+############ SHAPE B=8 Hq=24 Hkv=8
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  5.6427 ms   (runs 5.4763 5.6427 5.7199)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  5.5141 ms   (runs 5.4600 5.5141 5.5236)   vs Vj1d -0.1285 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  5.6753 ms/bwd    728.6 W avg  4.135 J/bwd  (531 launches, 3.01 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   5.5572 ms/bwd    728.9 W avg  4.051 J/bwd  (544 launches, 3.02 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj1d  5.6868 ms/bwd    732.4 W avg  4.165 J/bwd  (531 launches, 3.02 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   5.5524 ms/bwd    725.7 W avg  4.029 J/bwd  (544 launches, 3.02 s)  mid-run SM 1980 MHz  [none]
+cuDNN bwd-only  4.2157 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  4.6340 ms/bwd    740.0 W avg  3.429 J/bwd  (668 launches, 3.10 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  4.6331 ms/bwd    742.4 W avg  3.440 J/bwd  (668 launches, 3.09 s)  mid-run SM 1980 MHz
+############ SHAPE B=2 Hq=32 Hkv=8
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  1.8739 ms   (runs 1.8636 1.8739 1.8780)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  1.8218 ms   (runs 1.8148 1.8218 1.8225)   vs Vj1d -0.0521 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  1.9370 ms/bwd    759.4 W avg  1.471 J/bwd  (1600 launches, 3.10 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   1.8895 ms/bwd    747.9 W avg  1.413 J/bwd  (1646 launches, 3.11 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj1d  1.9446 ms/bwd    754.7 W avg  1.468 J/bwd  (1600 launches, 3.11 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   1.8929 ms/bwd    756.7 W avg  1.432 J/bwd  (1646 launches, 3.12 s)  mid-run SM 1980 MHz  [none]
+cuDNN bwd-only  1.4431 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  1.5774 ms/bwd    753.2 W avg  1.188 J/bwd  (1994 launches, 3.15 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  1.5835 ms/bwd    752.4 W avg  1.191 J/bwd  (1994 launches, 3.16 s)  mid-run SM 1980 MHz
+############ SHAPE B=4 Hq=32 Hkv=8
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  3.6794 ms   (runs 3.6511 3.6794 3.7048)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  3.5912 ms   (runs 3.5813 3.5912 3.6415)   vs Vj1d -0.0882 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  3.8076 ms/bwd    750.1 W avg  2.856 J/bwd  (815 launches, 3.10 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   3.7075 ms/bwd    743.8 W avg  2.758 J/bwd  (835 launches, 3.10 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj1d  3.8106 ms/bwd    743.1 W avg  2.832 J/bwd  (815 launches, 3.11 s)  mid-run SM 1980 MHz  [none]
+SUSTAINED Vj2   3.7149 ms/bwd    743.9 W avg  2.764 J/bwd  (835 launches, 3.10 s)  mid-run SM 1980 MHz  [none]
+cuDNN bwd-only  2.7737 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  3.1003 ms/bwd    739.8 W avg  2.294 J/bwd  (1002 launches, 3.11 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  3.1043 ms/bwd    749.5 W avg  2.327 J/bwd  (1002 launches, 3.11 s)  mid-run SM 1980 MHz
+############ SHAPE B=8 Hq=32 Hkv=8
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+[0mCHECK Vj2  dK/dV bit-identical over 6 runs: Values match!
+OURS bwd Vj1d   do_bench median-of-3  7.3122 ms   (runs 7.2440 7.3122 7.3218)   vs Vj1d +0.0000 ms
+OURS bwd Vj2    do_bench median-of-3  7.1053 ms   (runs 7.0938 7.1053 7.1895)   vs Vj1d -0.2069 ms
+NVML: measuring GPU 2 (NVIDIA H200, PCI 0000:4C:00.0)
+== SUSTAINED (back-to-back ~3 s per kernel, after 1 s warm-up; 2 s idle between) ==
+SUSTAINED Vj1d  7.5207 ms/bwd    725.5 W avg  5.456 J/bwd  (410 launches, 3.08 s)  mid-run SM 1965 MHz  [SW-power-cap ]
+SUSTAINED Vj2   7.3605 ms/bwd    706.8 W avg  5.203 J/bwd  (422 launches, 3.11 s)  mid-run SM 1965 MHz  [SW-power-cap ]
+SUSTAINED Vj1d  7.5431 ms/bwd    724.3 W avg  5.463 J/bwd  (410 launches, 3.09 s)  mid-run SM 1965 MHz  [SW-power-cap ]
+SUSTAINED Vj2   7.3783 ms/bwd    723.1 W avg  5.335 J/bwd  (422 launches, 3.11 s)  mid-run SM 1965 MHz  [SW-power-cap ]
+cuDNN bwd-only  5.6751 ms
+NVML: measuring GPU 2 (PCI 00000000:4c:00.0)
+== SUSTAINED (back-to-back ~3 s, after 1 s warm-up; 2 s idle before each window) ==
+SUSTAINED cuDNN bwd-only  6.1610 ms/bwd    739.3 W avg  4.555 J/bwd  (506 launches, 3.12 s)  mid-run SM 1980 MHz
+SUSTAINED cuDNN bwd-only  6.1626 ms/bwd    720.9 W avg  4.442 J/bwd  (506 launches, 3.12 s)  mid-run SM 1980 MHz
