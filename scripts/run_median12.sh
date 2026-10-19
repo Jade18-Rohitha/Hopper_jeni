@@ -7,6 +7,7 @@
 # The actual SM clock is logged for the whole sweep (nvidia-smi, 500 ms) and checked against CLOCK at the end.
 #
 #   OURS  (build/bin/gqa_fwd_bwd):  V62 fwd | Vj1d, Vj1, Vj2, Vj3 bwd | V62+Vj1d/Vj1/Vj2/Vj3 chained fwd+bwd
+#   VG1   (colleague, same binary):  Vg1 fwd | Vg1 bwd | Vg1+Vg1 chained fwd+bwd (Vg1 bwd on Vg1 fwd's O/LSE)
 #   cuDNN (precision/cudnn_time.py): fwd    | bwd-only | sdpa(...).backward(dO)
 #
 # Both sides: SAME inputs (data/gqa_*.bin), triton.do_bench-style timing (L2 flush per
@@ -50,7 +51,7 @@ for s in "${SH[@]}"; do
   ./build/bin/gqa_fwd_bwd "$B" "$HQ" "$HKV" | grep -aE "CHECK|don't match|Ref:"   # correctness once
   for r in $(seq 1 "$N"); do
     echo "## run $r"
-    ./build/bin/gqa_fwd_bwd "$B" "$HQ" "$HKV" | grep -E "^OURS"
+    ./build/bin/gqa_fwd_bwd "$B" "$HQ" "$HKV" | grep -E "^OURS|^VG1"
     CUDNN_SUSTAINED=0 python3 precision/cudnn_time.py "$B" "$HQ" "$HKV" | grep -E "^cuDNN |^# "
   done
 done

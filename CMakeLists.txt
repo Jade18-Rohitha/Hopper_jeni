@@ -55,6 +55,10 @@ target_link_libraries(gqa_bwd_vm1_test PRIVATE CUDA::cuda_driver CUDA::nvml)   #
 # fwd+bwd chain: V62 forward -> Vj1d backward (vs cuDNN sdpa fwd+bwd)
 add_kernel(gqa_fwd_bwd  src/attention/GQA_fwd_bwd.cu)
 target_link_libraries(gqa_fwd_bwd PRIVATE CUDA::cuda_driver)
+# Vg1 = colleague's Hopper fwd/bwd (2026-10-19), unchanged, each its own translation unit; the allocator shim in
+# third_party/vg1 stands in for OwnTensor's device/CachingCudaAllocator.h.
+target_sources(gqa_fwd_bwd PRIVATE src/attention/GQA_fwd_sm90.cu src/attention/GQA_bwd_vj2_sm90.cu)
+target_include_directories(gqa_fwd_bwd PRIVATE ${CMAKE_SOURCE_DIR}/third_party/vg1 ${CMAKE_SOURCE_DIR}/src/attention)
 
 # (V45 standalone target removed)
 # add_kernel(gqa_fwd_v62  src/attention/GQA_fwd_ref.cu)

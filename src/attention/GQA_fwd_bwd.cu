@@ -1,5 +1,6 @@
 // ============================================================================
 //  GQA_fwd_bwd.cu  —  FORWARD + BACKWARD chain: V62 forward -> Vj1d | Vj1 | Vj2 | Vj3 backward  [H200, sm_90a]
+//  + Vg1 (colleague's kernels, 2026-10-19): Vg1 fwd -> Vg1 bwd, checked and timed the same way (prints VG1 lines).
 //
 //  Apples-to-apples with cuDNN's training step (sdpa(...).backward(dO)): our V62 forward
 //  produces O + LSE, and the backward (Vj1d = deterministic dK/dV, Vj1 = atomic TMA-reduce dK/dV)
@@ -16,6 +17,7 @@
 #define GQA_BWD_NO_MAIN
 #include "GQA_bwd.cu"            // Vj1d + Vj1: launch_gqa_backward_vj1d / _vj1 <Br,Bc,D> (same code the sweep times)
 #include "GQA_fwd_ref.cu"        // V62:  launch_gqa_v62
+#include "vg1_api.h"             // Vg1 fwd/bwd (separate translation units: GQA_fwd_sm90.cu, GQA_bwd_vj2_sm90.cu)
 
 #include <algorithm>
 #include <cstring>
@@ -103,29 +105,37 @@ int main(int argc, char** argv) {
                                                          B,Hq,Hkv,G,S,scale); };
     auto bwd3 = [&]() { launch_gqa_backward_vj3<Br,Bc,D>(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,
                                                          B,Hq,Hkv,G,S,scale); };
+    auto fwdg = [&]() { OwnTensor::cuda::gqa_v62_causal_launch_d128(d_Q, d_K, d_V, d_O, d_LSE,
+                                                                    B, Hq, Hkv, S, scale, 0, nullptr, 0); };
+    auto bwdg = [&]() { OwnTensor::cuda::gqa_vj2_causal_bwd_launch_d128(d_Q,d_K,d_V,d_O,d_dO,d_LSE,d_dQ,d_dK,d_dV,
+                                                         B,Hq,Hkv,G,S,scale, nullptr, 0, nullptr, 0); };
 
     // ── correctness: chained (bwd consumes OUR forward's O/LSE) ──
     auto toF = [](const bf16 *d, size_t n) {
         std::vector<bf16> h(n); CUDA_CHECK(cudaMemcpy(h.data(), d, n*sizeof(bf16), cudaMemcpyDeviceToHost));
         std::vector<float> f(n); for (size_t i = 0; i < n; ++i) f[i] = __bfloat162float(h[i]); return f;
     };
-    fwd(); CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
-    {
+    auto checkFwd = [&](const char *name, auto launch) {
+        CUDA_CHECK(cudaMemset(d_O, 0, Nq*sizeof(bf16)));
+        CUDA_CHECK(cudaMemset(d_LSE, 0, Nlse*sizeof(float)));
+        launch(); CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
         std::vector<float> o = toF(d_O, Nq), lse(Nlse);
         CUDA_CHECK(cudaMemcpy(lse.data(), d_LSE, Nlse*sizeof(float), cudaMemcpyDeviceToHost));
-        printf("-- V62 forward vs PyTorch reference --\n");
+        printf("-- %s forward vs PyTorch reference --\n", name);
         reportPrecision("  O  ", h_Oref.data(),   o.data(),   Nq);
         reportPrecision("  LSE", h_LSEref.data(), lse.data(), Nlse);
-        std::cout << "CHECK V62 O:      "; checkResult(h_Oref.data(),   o.data(),   Nq,   2e-2f, 2e-2f);
-        std::cout << "CHECK V62 LSE:    "; checkResult(h_LSEref.data(), lse.data(), Nlse, 2e-2f, 2e-2f);
-    }
+        std::cout << "CHECK " << name << " O:      "; checkResult(h_Oref.data(),   o.data(),   Nq,   2e-2f, 2e-2f);
+        std::cout << "CHECK " << name << " LSE:    "; checkResult(h_LSEref.data(), lse.data(), Nlse, 2e-2f, 2e-2f);
+    };
+    const char* fwdSrc = "V62";                        // whose O/LSE the backward checks consume
+    checkFwd("V62", fwd);
     auto checkBwd = [&](const char *name, auto launch) {
         CUDA_CHECK(cudaMemset(d_dQ, 0, Nq*sizeof(bf16)));
         CUDA_CHECK(cudaMemset(d_dK, 0, Nkv*sizeof(bf16)));
         CUDA_CHECK(cudaMemset(d_dV, 0, Nkv*sizeof(bf16)));
         launch(); CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize());
         std::vector<float> dq = toF(d_dQ, Nq), dk = toF(d_dK, Nkv), dv = toF(d_dV, Nkv);
-        printf("-- %s backward on V62's O/LSE vs PyTorch reference --\n", name);
+        printf("-- %s backward on %s's O/LSE vs PyTorch reference --\n", name, fwdSrc);
         reportPrecision("  dQ", h_dQref.data(), dq.data(), Nq);
         reportPrecision("  dK", h_dKref.data(), dk.data(), Nkv);
         reportPrecision("  dV", h_dVref.data(), dv.data(), Nkv);
@@ -158,6 +168,18 @@ int main(int argc, char** argv) {
     printf("OURS fwd+bwd V62+Vj2      %.4f ms\n", t_fb2);
     printf("OURS bwd Vj3              %.4f ms\n", t_b3);
     printf("OURS fwd+bwd V62+Vj3      %.4f ms\n", t_fb3);
+
+    // ── Vg1 (colleague): its forward's O/LSE feed its backward, same checks, same timing ──
+    printf("\n");
+    fwdSrc = "Vg1";
+    checkFwd("Vg1", fwdg);                             // leaves Vg1's O/LSE in d_O / d_LSE
+    checkBwd("Vg1 ", bwdg);
+    const float t_fg  = median_ms_dobench(fwdg);
+    const float t_bg  = median_ms_dobench(bwdg);
+    const float t_fbg = median_ms_dobench([&]() { fwdg(); bwdg(); });
+    printf("VG1 fwd Vg1               %.4f ms\n", t_fg);
+    printf("VG1 bwd Vg1               %.4f ms\n", t_bg);
+    printf("VG1 fwd+bwd Vg1+Vg1       %.4f ms\n", t_fbg);
 
     CUDA_CHECK(cudaFree(d_Q));  CUDA_CHECK(cudaFree(d_K));  CUDA_CHECK(cudaFree(d_V));
     CUDA_CHECK(cudaFree(d_O));  CUDA_CHECK(cudaFree(d_dO)); CUDA_CHECK(cudaFree(d_LSE));
