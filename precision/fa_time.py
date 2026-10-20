@@ -22,12 +22,15 @@ import importlib
 import math
 import os
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
 import torch
 import triton.testing
 
+# FA4's CuTe DSL warns on every JIT call that its aux_data argument is not a JitArgument (harmless, floods the logs)
+warnings.filterwarnings("ignore", message=r"Argument aux_data .* cannot be converted to a JitArgument")
 B, Hq, Hkv = (int(a) for a in sys.argv[1:4])
 S, D = 4096, 128
 DATA = Path(__file__).parent.parent / "data"
