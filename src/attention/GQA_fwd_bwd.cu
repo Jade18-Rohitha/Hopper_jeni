@@ -1,6 +1,7 @@
 // ============================================================================
 //  GQA_fwd_bwd.cu  —  FORWARD + BACKWARD chain: V62 forward -> Vj1d | Vj1 | Vj2 | Vj3 backward  [H200, sm_90a]
 //  + Vg1 (colleague's kernels, 2026-10-19): Vg1 fwd -> Vg1 bwd, checked and timed the same way (prints VG1 lines).
+//  VG1_ONLY=1 ./gqa_fwd_bwd B Hq Hkv runs only Vg1 (for the Vg1 vs FA3/FA4 sweep).
 //
 //  Apples-to-apples with cuDNN's training step (sdpa(...).backward(dO)): our V62 forward
 //  produces O + LSE, and the backward (Vj1d = deterministic dK/dV, Vj1 = atomic TMA-reduce dK/dV)
@@ -128,7 +129,6 @@ int main(int argc, char** argv) {
         std::cout << "CHECK " << name << " LSE:    "; checkResult(h_LSEref.data(), lse.data(), Nlse, 2e-2f, 2e-2f);
     };
     const char* fwdSrc = "V62";                        // whose O/LSE the backward checks consume
-    checkFwd("V62", fwd);
     auto checkBwd = [&](const char *name, auto launch) {
         CUDA_CHECK(cudaMemset(d_dQ, 0, Nq*sizeof(bf16)));
         CUDA_CHECK(cudaMemset(d_dK, 0, Nkv*sizeof(bf16)));
@@ -143,6 +143,11 @@ int main(int argc, char** argv) {
         std::cout << "CHECK " << name << " dK:  "; checkResult(h_dKref.data(), dk.data(), Nkv, 2e-2f, 2e-2f);
         std::cout << "CHECK " << name << " dV:  "; checkResult(h_dVref.data(), dv.data(), Nkv, 2e-2f, 2e-2f);
     };
+    // VG1_ONLY=1: skip our kernels (V62, Vj1d..Vj3) -- used by scripts/run_vg1_vs_fa.sh
+    const char* vg1_env = getenv("VG1_ONLY");
+    const bool vg1_only = vg1_env && atoi(vg1_env) != 0;
+    if (!vg1_only) {
+    checkFwd("V62", fwd);
     checkBwd("Vj1d", bwd);
     checkBwd("Vj1 ", bwd1);
     checkBwd("Vj2 ", bwd2);
@@ -168,6 +173,7 @@ int main(int argc, char** argv) {
     printf("OURS fwd+bwd V62+Vj2      %.4f ms\n", t_fb2);
     printf("OURS bwd Vj3              %.4f ms\n", t_b3);
     printf("OURS fwd+bwd V62+Vj3      %.4f ms\n", t_fb3);
+    }   // !vg1_only
 
     // ── Vg1 (colleague): its forward's O/LSE feed its backward, same checks, same timing ──
     printf("\n");
