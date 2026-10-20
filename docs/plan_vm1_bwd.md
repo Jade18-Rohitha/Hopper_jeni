@@ -269,3 +269,6 @@ bit-identical, and the fastest of ours.** do_bench: Vj1d 2.773, Vj2 2.694, **Vj3
 Vj1d 2.833, Vj2 2.760, **Vj3 2.667 ms (−0.166, −5.9%)**; energy 2.12 / 2.08 / **1.98 J**. Gap to cuDNN at 8×12 ≈ 0.34 ms
 (cuDNN sustained 2.330 from 10-16 on GPU 1 at 1830 MHz — needs a same-day remeasure). Vj3 wired into
 `gqa_fwd_bwd` + `median_summary.py` for the next sweep.
+
+**Reports cleanup 2026-10-20:** the raw ncu/nsys files named above for the Vm line and the 8×18 Vj2 power-cap
+investigation were removed from `reports/`; the numbers recorded in this doc are the record.

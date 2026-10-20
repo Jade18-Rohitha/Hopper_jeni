@@ -10,7 +10,7 @@ Data collection only, no optimization yet. GPU 3, no fixed clocks (SM clock abou
 > (see `plan_vm1_bwd.md` step 0):** cuDNN's work item is 128 keys (2 compute warpgroups × 64 keys, sharing one
 > Q/dO load and one dQ reduce per q-step, 132 persistent blocks); Vj1d covers 64.
 
-Reports in `reports/`:
+Reports in `reports/` (raw profiles removed 2026-10-20 in the reports cleanup; the numbers in this doc are the record):
 - `ncu_vj1d_B8_Hq18_Hkv9.ncu-repz`, `ncu_vj1d_B8_Hq18_Hkv6.ncu-repz`: Vj1d main kernel, full metric set
 - `ncu_vj1d_all_B8_Hq18_Hkv9.ncu-repz`, `ncu_vj1d_all_B8_Hq18_Hkv6.ncu-repz`: all 5 kernels of one Vj1d backward
 - `ncu_cudnn_bwd_B8_Hq18_Hkv9.ncu-repz`, `ncu_cudnn_bwd_B8_Hq18_Hkv6.ncu-repz`: cuDNN backward kernel, full metric set

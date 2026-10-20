@@ -11,6 +11,203 @@
 
 ---
 
+## Today — 2026-10-20: Vg1 vs cuDNN, all 18 shapes — Vg1 faster on every shape, every run (fwd, bwd, fwd+bwd)
+
+Vg1 = the colleague's Hopper GQA forward + backward (see 2026-10-19). All numbers: causal, bf16, S=4096, D=128, cuDNN
+backend forced, same inputs, interleaved runs, **median of 25 runs per shape**, SM clock locked at **1530 MHz**.
+All correctness checks passed on all 18 shapes (Vg1 O, LSE, dQ, dK, dV vs the PyTorch reference, tol 2e-2).
+
+Sources (two runs, same clock, combined):
+- 11 shapes (2×12 … 4×18:9): `reports/median25_gpu1_1530MHz_20261019_200003.log`, host p032 GPU 1 — clock held
+  **100%** (2170/2170 loaded samples, no throttling).
+- 7 shapes (8×18:9 … 8×32): `reports/median25_gpu4_1530MHz_20261020_112558.log`, GPU 4 — clock held **99.6%**
+  (2565/2576 samples; 11 dipped as low as 1305 MHz under the power cap, so the strict RULE CHECK reports a miss).
+- Each row is one run on one GPU; cuDNN and Vg1 in a row were measured together. Rows from the two GPUs should not be
+  compared with each other in absolute ms.
+
+**1. Forward — Vg1 DERIVED** (Vg1 fwd = Vg1 fwd+bwd − Vg1 bwd, per run; the measured Vg1 fwd line was lost to the sweep bug, see below)
+
+| B×Hq (Hkv) | run | cuDNN (ms) | **Vg1** (ms) | Δ = cuDNN − Vg1 (ms) | Vg1 vs cuDNN | wins |
+|---|---|---|---|---|---|---|
+| 2×12 (4) | GPU 1 | 0.247 | **0.161** | +0.086 | -34.7% | 25/25 |
+| 4×12 (4) | GPU 1 | 0.440 | **0.321** | +0.118 | -26.9% | 25/25 |
+| 8×12 (4) | GPU 1 | 0.828 | **0.636** | +0.192 | -23.2% | 25/25 |
+| 2×16 (4) | GPU 1 | 0.311 | **0.215** | +0.096 | -30.7% | 25/25 |
+| 4×16 (4) | GPU 1 | 0.531 | **0.426** | +0.105 | -19.7% | 25/25 |
+| 8×16 (4) | GPU 1 | 1.088 | **0.850** | +0.239 | -21.9% | 25/25 |
+| 2×18 (6) | GPU 1 | 0.320 | **0.242** | +0.078 | -24.3% | 25/25 |
+| 4×18 (6) | GPU 1 | 0.591 | **0.479** | +0.111 | -18.9% | 25/25 |
+| 8×18 (6) | GPU 1 | 1.216 | **0.954** | +0.262 | -21.5% | 25/25 |
+| 2×18 (9) | GPU 1 | 0.342 | **0.261** | +0.081 | -23.7% | 25/25 |
+| 4×18 (9) | GPU 1 | 0.633 | **0.479** | +0.154 | -24.4% | 25/25 |
+| 8×18 (9) | GPU 4 | 1.214 | **0.955** | +0.260 | -21.4% | 25/25 |
+| 2×24 (8) | GPU 4 | 0.439 | **0.321** | +0.118 | -26.9% | 25/25 |
+| 4×24 (8) | GPU 4 | 0.829 | **0.637** | +0.192 | -23.1% | 25/25 |
+| 8×24 (8) | GPU 4 | 1.495 | **1.267** | +0.228 | -15.3% | 25/25 |
+| 2×32 (8) | GPU 4 | 0.568 | **0.426** | +0.141 | -24.9% | 25/25 |
+| 4×32 (8) | GPU 4 | 1.088 | **0.845** | +0.243 | -22.3% | 25/25 |
+| 8×32 (8) | GPU 4 | 2.122 | **1.694** | +0.428 | -20.2% | 25/25 |
+
+**2. Backward**
+
+| B×Hq (Hkv) | run | cuDNN (ms) | **Vg1** (ms) | Δ = cuDNN − Vg1 (ms) | Vg1 vs cuDNN | wins |
+|---|---|---|---|---|---|---|
+| 2×12 (4) | GPU 1 | 0.704 | **0.539** | +0.164 | -23.3% | 25/25 |
+| 4×12 (4) | GPU 1 | 1.284 | **1.050** | +0.234 | -18.2% | 25/25 |
+| 8×12 (4) | GPU 1 | 2.439 | **2.067** | +0.372 | -15.3% | 25/25 |
+| 2×16 (4) | GPU 1 | 0.894 | **0.704** | +0.190 | -21.3% | 25/25 |
+| 4×16 (4) | GPU 1 | 1.663 | **1.381** | +0.282 | -17.0% | 25/25 |
+| 8×16 (4) | GPU 1 | 3.203 | **2.725** | +0.478 | -14.9% | 25/25 |
+| 2×18 (6) | GPU 1 | 0.993 | **0.843** | +0.150 | -15.1% | 25/25 |
+| 4×18 (6) | GPU 1 | 1.860 | **1.558** | +0.302 | -16.2% | 25/25 |
+| 8×18 (6) | GPU 1 | 3.590 | **3.077** | +0.513 | -14.3% | 25/25 |
+| 2×18 (9) | GPU 1 | 0.995 | **0.847** | +0.149 | -14.9% | 25/25 |
+| 4×18 (9) | GPU 1 | 1.864 | **1.566** | +0.298 | -16.0% | 25/25 |
+| 8×18 (9) | GPU 4 | 3.603 | **3.092** | +0.511 | -14.2% | 25/25 |
+| 2×24 (8) | GPU 4 | 1.284 | **1.050** | +0.234 | -18.3% | 25/25 |
+| 4×24 (8) | GPU 4 | 2.437 | **2.066** | +0.371 | -15.2% | 25/25 |
+| 8×24 (8) | GPU 4 | 4.747 | **4.093** | +0.654 | -13.8% | 25/25 |
+| 2×32 (8) | GPU 4 | 1.662 | **1.380** | +0.282 | -17.0% | 25/25 |
+| 4×32 (8) | GPU 4 | 3.199 | **2.725** | +0.474 | -14.8% | 25/25 |
+| 8×32 (8) | GPU 4 | 6.271 | **5.412** | +0.859 | -13.7% | 25/25 |
+
+**3. Forward + backward (training step)**
+
+| B×Hq (Hkv) | run | cuDNN (ms) | **Vg1** (ms) | Δ = cuDNN − Vg1 (ms) | Vg1 vs cuDNN | wins |
+|---|---|---|---|---|---|---|
+| 2×12 (4) | GPU 1 | 0.929 | **0.700** | +0.229 | -24.6% | 25/25 |
+| 4×12 (4) | GPU 1 | 1.690 | **1.371** | +0.319 | -18.9% | 25/25 |
+| 8×12 (4) | GPU 1 | 3.212 | **2.703** | +0.510 | -15.9% | 25/25 |
+| 2×16 (4) | GPU 1 | 1.181 | **0.920** | +0.262 | -22.1% | 25/25 |
+| 4×16 (4) | GPU 1 | 2.195 | **1.807** | +0.387 | -17.7% | 25/25 |
+| 8×16 (4) | GPU 1 | 4.220 | **3.575** | +0.644 | -15.3% | 25/25 |
+| 2×18 (6) | GPU 1 | 1.310 | **1.085** | +0.224 | -17.1% | 25/25 |
+| 4×18 (6) | GPU 1 | 2.450 | **2.038** | +0.412 | -16.8% | 25/25 |
+| 8×18 (6) | GPU 1 | 4.732 | **4.031** | +0.701 | -14.8% | 25/25 |
+| 2×18 (9) | GPU 1 | 1.312 | **1.108** | +0.205 | -15.6% | 25/25 |
+| 4×18 (9) | GPU 1 | 2.456 | **2.045** | +0.411 | -16.7% | 25/25 |
+| 8×18 (9) | GPU 4 | 4.740 | **4.046** | +0.694 | -14.6% | 25/25 |
+| 2×24 (8) | GPU 4 | 1.689 | **1.372** | +0.317 | -18.8% | 25/25 |
+| 4×24 (8) | GPU 4 | 3.209 | **2.704** | +0.506 | -15.8% | 25/25 |
+| 8×24 (8) | GPU 4 | 6.245 | **5.359** | +0.886 | -14.2% | 25/25 |
+| 2×32 (8) | GPU 4 | 2.191 | **1.807** | +0.384 | -17.5% | 25/25 |
+| 4×32 (8) | GPU 4 | 4.215 | **3.570** | +0.644 | -15.3% | 25/25 |
+| 8×32 (8) | GPU 4 | 8.267 | **7.106** | +1.161 | -14.0% | 25/25 |
+
+**Summary**
+
+| | Vg1 vs cuDNN, all 18 shapes | runs won |
+|---|---|---|
+| Forward (derived) | **15–35% faster** (+0.08 to +0.43 ms) | 25/25 on every shape |
+| Backward | **14–23% faster** (+0.15 to +0.86 ms) | 25/25 on every shape |
+| Forward + backward | **14–25% faster** (+0.21 to +1.16 ms) | 25/25 on every shape |
+
+**The colleague's claim is confirmed: Vg1 beats cuDNN on all 18 shapes, forward, backward and training step, in every
+one of 25 runs.**
+
+**How table 1 is derived:** the measured `VG1 fwd` line was dropped from both logs by the sweep bug described on
+10-19 (the test's color-reset code started that line, and the sweep's `grep "^VG1"` skipped it; the fix was not yet
+pushed when these runs were made). So per run, Vg1 fwd = (Vg1 fwd+bwd) − (Vg1 bwd), both measured in that run.
+Checked on our own kernels, where all three are measured: over all 450 runs, (V62+Vj3) − Vj3 matches the measured
+V62 forward with a median error of 0.5% (90th percentile 1.4%) — far below Vg1's 15–35% margin. A rerun with the
+fixed build will replace it with measured numbers.
+
+---
+
+## Today — 2026-10-19: colleague's Vg1 beats cuDNN on every shape measured so far (11 of 18, sweep continues)
+
+**Vg1** = a colleague's Hopper GQA forward + backward, added to our sweep unchanged:
+- **Vg1 fwd** = `src/attention/GQA_fwd_sm90.cu` (a newer V62: persistent 132 CTAs, 3 warpgroups, m64n128 P@V)
+- **Vg1 bwd** = `src/attention/GQA_bwd_vj2_sm90.cu` (FA3's head-dim-128 causal structure: 128 keys per block,
+  64 queries per step, 384 threads = loader warp + dQ-writer warp + 2 compute warpgroups, setmaxnreg 24/240,
+  register-A dV/dK, 1-D bulk reduce of a fragment-order fp32 dQ). **168 registers, 0 spills.**
+- Integration: each file compiled as its own translation unit and linked into `gqa_fwd_bwd`; a 20-line shim
+  (`third_party/vg1/device/CachingCudaAllocator.h`) stands in for their framework's allocator. Vg1 bwd consumes
+  **Vg1 fwd's own O/LSE**. Checked against the same PyTorch reference and timed exactly like ours, interleaved with
+  cuDNN (backend forced), same inputs. Its timed region covers the full backward (prep + main + 2 greduce + dQ
+  convert), the same work as cuDNN's `autograd.grad`.
+- **Correctness:** Vg1 passes every check (O, LSE, dQ, dK, dV) on all 11 shapes run; error equal to or slightly
+  lower than ours (8×12: dQ max 1.47e-3 vs 1.95e-3, dK 3.9e-3 vs 7.8e-3 — it computes dS from fp32 P).
+
+### Partial official board: 11 of 18 shapes, 25-run medians, clock HELD at 1530 MHz (host p032, GPU 1)
+
+`reports/median25_gpu1_1530MHz_20261019_200003.log` (+ `_smi.csv`). **RULE CHECK: 2170/2170 loaded samples at
+1530 MHz, throttle reasons: none.** All correctness checks passed. Δ = cuDNN − kernel in ms (+ = faster than cuDNN).
+
+| B×Hq (Hkv) | cuDNN bwd | Vj3 (ours) | **Vg1 bwd** | **Vg1 Δ** | cuDNN fwd+bwd | V62+Vj3 | **Vg1+Vg1** | **Vg1 Δ** |
+|---|---|---|---|---|---|---|---|---|
+| 2×12 (4) | 0.704 | 0.803 | **0.539** | **+0.164** 25/25 | 0.929 | 1.013 | **0.700** | **+0.229** 25/25 |
+| 4×12 (4) | 1.284 | 1.481 | **1.050** | **+0.234** 25/25 | 1.690 | 1.891 | **1.371** | **+0.319** 25/25 |
+| 8×12 (4) | 2.439 | 2.828 | **2.067** | **+0.372** 25/25 | 3.212 | 3.638 | **2.703** | **+0.510** 25/25 |
+| 2×16 (4) | 0.894 | 1.026 | **0.704** | **+0.190** 25/25 | 1.181 | 1.303 | **0.920** | **+0.262** 25/25 |
+| 4×16 (4) | 1.663 | 1.924 | **1.381** | **+0.282** 25/25 | 2.195 | 2.469 | **1.807** | **+0.387** 25/25 |
+| 8×16 (4) | 3.203 | 3.715 | **2.725** | **+0.478** 25/25 | 4.220 | 4.790 | **3.575** | **+0.644** 25/25 |
+| 2×18 (6) | 0.993 | 1.141 | **0.843** | **+0.150** 25/25 | 1.310 | 1.484 | **1.085** | **+0.224** 25/25 |
+| 4×18 (6) | 1.860 | 2.153 | **1.558** | **+0.302** 25/25 | 2.450 | 2.763 | **2.038** | **+0.412** 25/25 |
+| 8×18 (6) | 3.590 | 4.177 | **3.077** | **+0.513** 25/25 | 4.732 | 5.388 | **4.031** | **+0.701** 25/25 |
+| 2×18 (9) | 0.995 | 1.144 | **0.847** | **+0.149** 25/25 | 1.312 | 1.486 | **1.108** | **+0.205** 25/25 |
+| 4×18 (9) | 1.864 | 2.159 | **1.566** | **+0.298** 25/25 | 2.456 | 2.769 | **2.045** | **+0.411** 25/25 |
+
+**All kernels, backward (ms, 25-run median, 1530 MHz):**
+
+| B×Hq (Hkv) | cuDNN | Vj1d | Vj1 | Vj2 | Vj3 | **Vg1** | best |
+|---|---|---|---|---|---|---|---|
+| 2×12 (4) | 0.704 | 0.882 | 0.870 | 0.838 | 0.803 | **0.539** | Vg1 |
+| 4×12 (4) | 1.284 | 1.627 | 1.603 | 1.556 | 1.481 | **1.050** | Vg1 |
+| 8×12 (4) | 2.439 | 3.110 | 3.068 | 2.980 | 2.828 | **2.067** | Vg1 |
+| 2×16 (4) | 0.894 | 1.128 | 1.112 | 1.074 | 1.026 | **0.704** | Vg1 |
+| 4×16 (4) | 1.663 | 2.116 | 2.088 | 2.021 | 1.924 | **1.381** | Vg1 |
+| 8×16 (4) | 3.203 | 4.088 | 4.040 | 3.912 | 3.715 | **2.725** | Vg1 |
+| 2×18 (6) | 0.993 | 1.255 | 1.236 | 1.197 | 1.141 | **0.843** | Vg1 |
+| 4×18 (6) | 1.860 | 2.369 | 2.334 | 2.264 | 2.153 | **1.558** | Vg1 |
+| 8×18 (6) | 3.590 | 4.595 | 4.532 | 4.401 | 4.177 | **3.077** | Vg1 |
+| 2×18 (9) | 0.995 | 1.260 | 1.240 | 1.201 | 1.144 | **0.847** | Vg1 |
+| 4×18 (9) | 1.864 | 2.376 | 2.342 | 2.269 | 2.159 | **1.566** | Vg1 |
+
+**All kernels, forward + backward = training step (ms):**
+
+| B×Hq (Hkv) | cuDNN | V62+Vj1d | V62+Vj1 | V62+Vj2 | V62+Vj3 | **Vg1+Vg1** | best |
+|---|---|---|---|---|---|---|---|
+| 2×12 (4) | 0.929 | 1.093 | 1.081 | 1.049 | 1.013 | **0.700** | Vg1+Vg1 |
+| 4×12 (4) | 1.690 | 2.038 | 2.014 | 1.967 | 1.891 | **1.371** | Vg1+Vg1 |
+| 8×12 (4) | 3.212 | 3.924 | 3.881 | 3.792 | 3.638 | **2.703** | Vg1+Vg1 |
+| 2×16 (4) | 1.181 | 1.407 | 1.390 | 1.351 | 1.303 | **0.920** | Vg1+Vg1 |
+| 4×16 (4) | 2.195 | 2.662 | 2.633 | 2.566 | 2.469 | **1.807** | Vg1+Vg1 |
+| 8×16 (4) | 4.220 | 5.165 | 5.118 | 4.988 | 4.790 | **3.575** | Vg1+Vg1 |
+| 2×18 (6) | 1.310 | 1.599 | 1.580 | 1.540 | 1.484 | **1.085** | Vg1+Vg1 |
+| 4×18 (6) | 2.450 | 2.981 | 2.946 | 2.875 | 2.763 | **2.038** | Vg1+Vg1 |
+| 8×18 (6) | 4.732 | 5.808 | 5.744 | 5.613 | 5.388 | **4.031** | Vg1+Vg1 |
+| 2×18 (9) | 1.312 | 1.603 | 1.584 | 1.544 | 1.486 | **1.108** | Vg1+Vg1 |
+| 4×18 (9) | 2.456 | 2.989 | 2.954 | 2.881 | 2.769 | **2.045** | Vg1+Vg1 |
+
+- **Vg1 bwd beats cuDNN on all 11 shapes, in every one of 25 runs: 14–23% faster** (+0.15 to +0.51 ms).
+- **Vg1 fwd+bwd (a full training step) beats cuDNN on all 11, 25/25: 15–25% faster** (+0.21 to +0.70 ms).
+- **Our Vj3 vs Vg1: Vj3 takes 35–49% longer than Vg1 bwd** (8×12: 2.828 vs 2.067 ms). Ranking on every shape:
+  Vg1 < cuDNN < Vj3 < Vj2 < Vj1 < Vj1d. The colleague's claim holds so far.
+- **Vg1 fwd numbers are missing from this run (sweep bug, fixed):** the test's colored "Values match!" output ends
+  with a terminal reset code that lands at the start of the next printed line; for Vg1 that line was
+  `VG1 fwd …`, so the sweep's `grep "^VG1"` dropped it in every run. Fixed twice: the binary prints a blank line after
+  Vg1's checks, and the script strips color codes before grepping. Vg1 bwd and fwd+bwd lines were not affected.
+- Our V62 forward vs cuDNN at 1530 MHz: within ±0.03 ms on these 11 shapes (wins 2×12, 2×16; loses 2×18 0/25 to 1/25).
+
+### Clock
+
+- **GPU 4 on p032 held no clock ≥1605 MHz** under sweep load (`find_stable_clock.sh`: 1980/1905 0%, 1830 19%,
+  1755 15%, 1680 59%, 1605 88%; dips to ~1250 MHz) → moved to **GPU 1 on p032**, where **1530 MHz held 100%**.
+- The stable clock is specific to each GPU and host; absolute times here (1530 MHz) are higher than the 10-17 board
+  (1605 MHz, different host) and must not be mixed with it. Comparisons within this run are fair.
+
+### Remaining (next session)
+
+1. The other 7 shapes (8×18:9 was started, 0 runs recorded):
+   `SHAPES="8 18 9;2 24 8;4 24 8;8 24 8;2 32 8;4 32 8;8 32 8" GPU=1 CLOCK=1530 bash scripts/run_median12.sh`
+   (pull first: it includes the Vg1-fwd fix).
+2. Vg1 fwd for the 11 shapes above: rerun them with the fixed build if the forward comparison is needed.
+3. Study Vg1 bwd: how its compute path fits **168 registers with 0 spills** (cuDNN: 168; our Vj3: 250; our Vm5
+   attempt at the same 3-warpgroup shape spilled at 168).
+
+---
+
 ## Today — 2026-10-17: Vj3 (cuDNN's wgmma shapes) is our best; official 18-shape board at a held clock
 
 All runs on the H200 box; Δ in ms; every candidate passed dQ/dK/dV vs the PyTorch reference (2e-2) and dK/dV
@@ -93,7 +290,7 @@ Single-shape check (8×12, GPU 1, 1980 MHz, sustained): Vj1d 2.833, Vj2 2.760, *
 
 ### 4. Measurement: the clock rule
 
-- First 25-run sweep (`reports/median25_20261017_093203.log`, 12 shapes, GPU not recorded) **failed the 1980 MHz rule**:
+- First 25-run sweep (`median25_20261017_093203.log`, log removed 2026-10-20 — summarized here; 12 shapes, GPU not recorded) **failed the 1980 MHz rule**:
   0% of loaded samples at 1980, median 1785 MHz, 700 W power cap active 79% of the time. In that power-capped
   run Vj2 lost to Vj1d on the large shapes (8×12 +0.235, 8×24 +0.191 ms) — the same power-cap interaction seen on
   10-16 at 8×18. Superseded by the held-clock board above.
@@ -201,7 +398,7 @@ reduce L2 traffic, Vj1d's limit at 80%), with energy per backward next to time.
 greduce + dQ convert; O/LSE precomputed). The backend was also never forced to cuDNN. So the old
 "12/12" compared our backward against cuDNN's forward+backward.
 
-**Corrected board — MEASURED on H200, 2026-10-12** (`reports/vz2_sweep_20261012_091718.log`, locked
+**Corrected board — MEASURED on H200, 2026-10-12** (`vz2_sweep_20261012_091718.log`, log no longer kept; locked
 1980 MHz, cuDNN backend forced — `native enable_gqa`, its dQ/dK/dV match default SDPA bit-for-bit, so
 the old default path *was* cuDNN). cuDNN bwd = `autograd.grad` on a pre-built graph (do_bench).
 Negative = slower than cuDNN. Single sweep; 12-run medians: `bash scripts/run_median12.sh`.

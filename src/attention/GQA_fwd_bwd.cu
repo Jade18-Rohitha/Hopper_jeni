@@ -174,6 +174,8 @@ int main(int argc, char** argv) {
     fwdSrc = "Vg1";
     checkFwd("Vg1", fwdg);                             // leaves Vg1's O/LSE in d_O / d_LSE
     checkBwd("Vg1 ", bwdg);
+    printf("\n");                                     // absorbs checkResult's trailing color reset (else the next
+                                                      // line starts with ESC[0m and the sweep's grep drops it)
     const float t_fg  = median_ms_dobench(fwdg);
     const float t_bg  = median_ms_dobench(bwdg);
     const float t_fbg = median_ms_dobench([&]() { fwdg(); bwdg(); });

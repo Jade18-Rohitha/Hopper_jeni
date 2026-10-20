@@ -1,0 +1,4621 @@
+############ SHAPE B=2 Hq=12 Hkv=4
+CHECK V62 O:      [32mValues match!
+[0mCHECK V62 LSE:    [32mValues match!
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj1  dQ:  [32mValues match!
+[0mCHECK Vj1  dK:  [32mValues match!
+[0mCHECK Vj1  dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+CHECK Vj3  dQ:  [32mValues match!
+[0mCHECK Vj3  dK:  [32mValues match!
+[0mCHECK Vj3  dV:  [32mValues match!
+CHECK Vg1 O:      [32mValues match!
+[0mCHECK Vg1 LSE:    [32mValues match!
+CHECK Vg1  dQ:  [32mValues match!
+[0mCHECK Vg1  dK:  [32mValues match!
+[0mCHECK Vg1  dV:  [32mValues match!
+## run 1
+OURS fwd V62              0.2133 ms
+OURS bwd Vj1d             0.8824 ms
+OURS fwd+bwd V62+Vj1d     1.0943 ms
+OURS bwd Vj1              0.8708 ms
+OURS fwd+bwd V62+Vj1      1.0813 ms
+OURS bwd Vj2              0.8372 ms
+OURS fwd+bwd V62+Vj2      1.0464 ms
+OURS bwd Vj3              0.8023 ms
+OURS fwd+bwd V62+Vj3      1.0125 ms
+VG1 bwd Vg1               0.5400 ms
+VG1 fwd+bwd Vg1+Vg1       0.7026 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2298 ms
+cuDNN bwd-only  0.7059 ms
+cuDNN fwd+bwd   0.9309 ms
+## run 2
+OURS fwd V62              0.2127 ms
+OURS bwd Vj1d             0.8809 ms
+OURS fwd+bwd V62+Vj1d     1.0927 ms
+OURS bwd Vj1              0.8718 ms
+OURS fwd+bwd V62+Vj1      1.0813 ms
+OURS bwd Vj2              0.8380 ms
+OURS fwd+bwd V62+Vj2      1.0488 ms
+OURS bwd Vj3              0.8032 ms
+OURS fwd+bwd V62+Vj3      1.0129 ms
+VG1 bwd Vg1               0.5389 ms
+VG1 fwd+bwd Vg1+Vg1       0.7009 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2473 ms
+cuDNN bwd-only  0.7034 ms
+cuDNN fwd+bwd   0.9292 ms
+## run 3
+OURS fwd V62              0.2125 ms
+OURS bwd Vj1d             0.8848 ms
+OURS fwd+bwd V62+Vj1d     1.0931 ms
+OURS bwd Vj1              0.8681 ms
+OURS fwd+bwd V62+Vj1      1.0796 ms
+OURS bwd Vj2              0.8380 ms
+OURS fwd+bwd V62+Vj2      1.0472 ms
+OURS bwd Vj3              0.8030 ms
+OURS fwd+bwd V62+Vj3      1.0137 ms
+VG1 bwd Vg1               0.5398 ms
+VG1 fwd+bwd Vg1+Vg1       0.6996 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2457 ms
+cuDNN bwd-only  0.7051 ms
+cuDNN fwd+bwd   0.9314 ms
+## run 4
+OURS fwd V62              0.2138 ms
+OURS bwd Vj1d             0.8822 ms
+OURS fwd+bwd V62+Vj1d     1.0940 ms
+OURS bwd Vj1              0.8707 ms
+OURS fwd+bwd V62+Vj1      1.0807 ms
+OURS bwd Vj2              0.8377 ms
+OURS fwd+bwd V62+Vj2      1.0460 ms
+OURS bwd Vj3              0.8019 ms
+OURS fwd+bwd V62+Vj3      1.0122 ms
+VG1 bwd Vg1               0.5383 ms
+VG1 fwd+bwd Vg1+Vg1       0.7002 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2466 ms
+cuDNN bwd-only  0.7061 ms
+cuDNN fwd+bwd   0.9301 ms
+## run 5
+OURS fwd V62              0.2128 ms
+OURS bwd Vj1d             0.8812 ms
+OURS fwd+bwd V62+Vj1d     1.0943 ms
+OURS bwd Vj1              0.8690 ms
+OURS fwd+bwd V62+Vj1      1.0811 ms
+OURS bwd Vj2              0.8387 ms
+OURS fwd+bwd V62+Vj2      1.0495 ms
+OURS bwd Vj3              0.8031 ms
+OURS fwd+bwd V62+Vj3      1.0108 ms
+VG1 bwd Vg1               0.5396 ms
+VG1 fwd+bwd Vg1+Vg1       0.7014 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2483 ms
+cuDNN bwd-only  0.7034 ms
+cuDNN fwd+bwd   0.9297 ms
+## run 6
+OURS fwd V62              0.2140 ms
+OURS bwd Vj1d             0.8821 ms
+OURS fwd+bwd V62+Vj1d     1.0921 ms
+OURS bwd Vj1              0.8691 ms
+OURS fwd+bwd V62+Vj1      1.0815 ms
+OURS bwd Vj2              0.8380 ms
+OURS fwd+bwd V62+Vj2      1.0487 ms
+OURS bwd Vj3              0.8040 ms
+OURS fwd+bwd V62+Vj3      1.0130 ms
+VG1 bwd Vg1               0.5396 ms
+VG1 fwd+bwd Vg1+Vg1       0.7018 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2473 ms
+cuDNN bwd-only  0.7039 ms
+cuDNN fwd+bwd   0.9283 ms
+## run 7
+OURS fwd V62              0.2127 ms
+OURS bwd Vj1d             0.8815 ms
+OURS fwd+bwd V62+Vj1d     1.0915 ms
+OURS bwd Vj1              0.8695 ms
+OURS fwd+bwd V62+Vj1      1.0799 ms
+OURS bwd Vj2              0.8377 ms
+OURS fwd+bwd V62+Vj2      1.0495 ms
+OURS bwd Vj3              0.8060 ms
+OURS fwd+bwd V62+Vj3      1.0113 ms
+VG1 bwd Vg1               0.5395 ms
+VG1 fwd+bwd Vg1+Vg1       0.6995 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2294 ms
+cuDNN bwd-only  0.7030 ms
+cuDNN fwd+bwd   0.9283 ms
+## run 8
+OURS fwd V62              0.2140 ms
+OURS bwd Vj1d             0.8834 ms
+OURS fwd+bwd V62+Vj1d     1.0958 ms
+OURS bwd Vj1              0.8701 ms
+OURS fwd+bwd V62+Vj1      1.0831 ms
+OURS bwd Vj2              0.8387 ms
+OURS fwd+bwd V62+Vj2      1.0492 ms
+OURS bwd Vj3              0.8027 ms
+OURS fwd+bwd V62+Vj3      1.0113 ms
+VG1 bwd Vg1               0.5398 ms
+VG1 fwd+bwd Vg1+Vg1       0.7024 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2292 ms
+cuDNN bwd-only  0.7046 ms
+cuDNN fwd+bwd   0.9324 ms
+## run 9
+OURS fwd V62              0.2128 ms
+OURS bwd Vj1d             0.8827 ms
+OURS fwd+bwd V62+Vj1d     1.0944 ms
+OURS bwd Vj1              0.8695 ms
+OURS fwd+bwd V62+Vj1      1.0821 ms
+OURS bwd Vj2              0.8390 ms
+OURS fwd+bwd V62+Vj2      1.0466 ms
+OURS bwd Vj3              0.8012 ms
+OURS fwd+bwd V62+Vj3      1.0145 ms
+VG1 bwd Vg1               0.5405 ms
+VG1 fwd+bwd Vg1+Vg1       0.7003 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2490 ms
+cuDNN bwd-only  0.7025 ms
+cuDNN fwd+bwd   0.9287 ms
+## run 10
+OURS fwd V62              0.2131 ms
+OURS bwd Vj1d             0.8817 ms
+OURS fwd+bwd V62+Vj1d     1.0945 ms
+OURS bwd Vj1              0.8730 ms
+OURS fwd+bwd V62+Vj1      1.0825 ms
+OURS bwd Vj2              0.8384 ms
+OURS fwd+bwd V62+Vj2      1.0493 ms
+OURS bwd Vj3              0.8038 ms
+OURS fwd+bwd V62+Vj3      1.0144 ms
+VG1 bwd Vg1               0.5387 ms
+VG1 fwd+bwd Vg1+Vg1       0.7029 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2289 ms
+cuDNN bwd-only  0.7037 ms
+cuDNN fwd+bwd   0.9292 ms
+## run 11
+OURS fwd V62              0.2126 ms
+OURS bwd Vj1d             0.8802 ms
+OURS fwd+bwd V62+Vj1d     1.0912 ms
+OURS bwd Vj1              0.8684 ms
+OURS fwd+bwd V62+Vj1      1.0810 ms
+OURS bwd Vj2              0.8378 ms
+OURS fwd+bwd V62+Vj2      1.0495 ms
+OURS bwd Vj3              0.8044 ms
+OURS fwd+bwd V62+Vj3      1.0131 ms
+VG1 bwd Vg1               0.5396 ms
+VG1 fwd+bwd Vg1+Vg1       0.6994 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2496 ms
+cuDNN bwd-only  0.7034 ms
+cuDNN fwd+bwd   0.9295 ms
+## run 12
+OURS fwd V62              0.2127 ms
+OURS bwd Vj1d             0.8818 ms
+OURS fwd+bwd V62+Vj1d     1.0911 ms
+OURS bwd Vj1              0.8704 ms
+OURS fwd+bwd V62+Vj1      1.0808 ms
+OURS bwd Vj2              0.8382 ms
+OURS fwd+bwd V62+Vj2      1.0482 ms
+OURS bwd Vj3              0.8039 ms
+OURS fwd+bwd V62+Vj3      1.0098 ms
+VG1 bwd Vg1               0.5383 ms
+VG1 fwd+bwd Vg1+Vg1       0.6992 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2285 ms
+cuDNN bwd-only  0.7036 ms
+cuDNN fwd+bwd   0.9288 ms
+## run 13
+OURS fwd V62              0.2126 ms
+OURS bwd Vj1d             0.8811 ms
+OURS fwd+bwd V62+Vj1d     1.0933 ms
+OURS bwd Vj1              0.8688 ms
+OURS fwd+bwd V62+Vj1      1.0789 ms
+OURS bwd Vj2              0.8379 ms
+OURS fwd+bwd V62+Vj2      1.0479 ms
+OURS bwd Vj3              0.8022 ms
+OURS fwd+bwd V62+Vj3      1.0149 ms
+VG1 bwd Vg1               0.5380 ms
+VG1 fwd+bwd Vg1+Vg1       0.7022 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2469 ms
+cuDNN bwd-only  0.7036 ms
+cuDNN fwd+bwd   0.9301 ms
+## run 14
+OURS fwd V62              0.2127 ms
+OURS bwd Vj1d             0.8820 ms
+OURS fwd+bwd V62+Vj1d     1.0931 ms
+OURS bwd Vj1              0.8695 ms
+OURS fwd+bwd V62+Vj1      1.0786 ms
+OURS bwd Vj2              0.8381 ms
+OURS fwd+bwd V62+Vj2      1.0481 ms
+OURS bwd Vj3              0.8036 ms
+OURS fwd+bwd V62+Vj3      1.0149 ms
+VG1 bwd Vg1               0.5400 ms
+VG1 fwd+bwd Vg1+Vg1       0.7004 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2475 ms
+cuDNN bwd-only  0.7046 ms
+cuDNN fwd+bwd   0.9313 ms
+## run 15
+OURS fwd V62              0.2139 ms
+OURS bwd Vj1d             0.8865 ms
+OURS fwd+bwd V62+Vj1d     1.0937 ms
+OURS bwd Vj1              0.8706 ms
+OURS fwd+bwd V62+Vj1      1.0816 ms
+OURS bwd Vj2              0.8380 ms
+OURS fwd+bwd V62+Vj2      1.0523 ms
+OURS bwd Vj3              0.8034 ms
+OURS fwd+bwd V62+Vj3      1.0161 ms
+VG1 bwd Vg1               0.5390 ms
+VG1 fwd+bwd Vg1+Vg1       0.7000 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2295 ms
+cuDNN bwd-only  0.7047 ms
+cuDNN fwd+bwd   0.9293 ms
+## run 16
+OURS fwd V62              0.2134 ms
+OURS bwd Vj1d             0.8803 ms
+OURS fwd+bwd V62+Vj1d     1.0926 ms
+OURS bwd Vj1              0.8698 ms
+OURS fwd+bwd V62+Vj1      1.0816 ms
+OURS bwd Vj2              0.8398 ms
+OURS fwd+bwd V62+Vj2      1.0476 ms
+OURS bwd Vj3              0.8029 ms
+OURS fwd+bwd V62+Vj3      1.0125 ms
+VG1 bwd Vg1               0.5394 ms
+VG1 fwd+bwd Vg1+Vg1       0.7002 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2473 ms
+cuDNN bwd-only  0.7038 ms
+cuDNN fwd+bwd   0.9314 ms
+## run 17
+OURS fwd V62              0.2127 ms
+OURS bwd Vj1d             0.8815 ms
+OURS fwd+bwd V62+Vj1d     1.0951 ms
+OURS bwd Vj1              0.8692 ms
+OURS fwd+bwd V62+Vj1      1.0810 ms
+OURS bwd Vj2              0.8380 ms
+OURS fwd+bwd V62+Vj2      1.0525 ms
+OURS bwd Vj3              0.8031 ms
+OURS fwd+bwd V62+Vj3      1.0129 ms
+VG1 bwd Vg1               0.5389 ms
+VG1 fwd+bwd Vg1+Vg1       0.7000 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2471 ms
+cuDNN bwd-only  0.7044 ms
+cuDNN fwd+bwd   0.9294 ms
+## run 18
+OURS fwd V62              0.2137 ms
+OURS bwd Vj1d             0.8808 ms
+OURS fwd+bwd V62+Vj1d     1.0971 ms
+OURS bwd Vj1              0.8704 ms
+OURS fwd+bwd V62+Vj1      1.0822 ms
+OURS bwd Vj2              0.8391 ms
+OURS fwd+bwd V62+Vj2      1.0489 ms
+OURS bwd Vj3              0.8045 ms
+OURS fwd+bwd V62+Vj3      1.0123 ms
+VG1 bwd Vg1               0.5386 ms
+VG1 fwd+bwd Vg1+Vg1       0.7016 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2466 ms
+cuDNN bwd-only  0.7027 ms
+cuDNN fwd+bwd   0.9285 ms
+## run 19
+OURS fwd V62              0.2127 ms
+OURS bwd Vj1d             0.8813 ms
+OURS fwd+bwd V62+Vj1d     1.0939 ms
+OURS bwd Vj1              0.8708 ms
+OURS fwd+bwd V62+Vj1      1.0827 ms
+OURS bwd Vj2              0.8395 ms
+OURS fwd+bwd V62+Vj2      1.0490 ms
+OURS bwd Vj3              0.8030 ms
+OURS fwd+bwd V62+Vj3      1.0126 ms
+VG1 bwd Vg1               0.5396 ms
+VG1 fwd+bwd Vg1+Vg1       0.7001 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2466 ms
+cuDNN bwd-only  0.7066 ms
+cuDNN fwd+bwd   0.9318 ms
+## run 20
+OURS fwd V62              0.2126 ms
+OURS bwd Vj1d             0.8803 ms
+OURS fwd+bwd V62+Vj1d     1.0947 ms
+OURS bwd Vj1              0.8685 ms
+OURS fwd+bwd V62+Vj1      1.0809 ms
+OURS bwd Vj2              0.8372 ms
+OURS fwd+bwd V62+Vj2      1.0479 ms
+OURS bwd Vj3              0.8045 ms
+OURS fwd+bwd V62+Vj3      1.0134 ms
+VG1 bwd Vg1               0.5377 ms
+VG1 fwd+bwd Vg1+Vg1       0.7018 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2472 ms
+cuDNN bwd-only  0.7036 ms
+cuDNN fwd+bwd   0.9314 ms
+## run 21
+OURS fwd V62              0.2138 ms
+OURS bwd Vj1d             0.8826 ms
+OURS fwd+bwd V62+Vj1d     1.0950 ms
+OURS bwd Vj1              0.8706 ms
+OURS fwd+bwd V62+Vj1      1.0789 ms
+OURS bwd Vj2              0.8380 ms
+OURS fwd+bwd V62+Vj2      1.0479 ms
+OURS bwd Vj3              0.8040 ms
+OURS fwd+bwd V62+Vj3      1.0145 ms
+VG1 bwd Vg1               0.5384 ms
+VG1 fwd+bwd Vg1+Vg1       0.7025 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2295 ms
+cuDNN bwd-only  0.7032 ms
+cuDNN fwd+bwd   0.9283 ms
+## run 22
+OURS fwd V62              0.2129 ms
+OURS bwd Vj1d             0.8823 ms
+OURS fwd+bwd V62+Vj1d     1.0907 ms
+OURS bwd Vj1              0.8700 ms
+OURS fwd+bwd V62+Vj1      1.0792 ms
+OURS bwd Vj2              0.8381 ms
+OURS fwd+bwd V62+Vj2      1.0484 ms
+OURS bwd Vj3              0.8019 ms
+OURS fwd+bwd V62+Vj3      1.0161 ms
+VG1 bwd Vg1               0.5400 ms
+VG1 fwd+bwd Vg1+Vg1       0.7007 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2461 ms
+cuDNN bwd-only  0.7033 ms
+cuDNN fwd+bwd   0.9309 ms
+## run 23
+OURS fwd V62              0.2127 ms
+OURS bwd Vj1d             0.8797 ms
+OURS fwd+bwd V62+Vj1d     1.0929 ms
+OURS bwd Vj1              0.8696 ms
+OURS fwd+bwd V62+Vj1      1.0806 ms
+OURS bwd Vj2              0.8375 ms
+OURS fwd+bwd V62+Vj2      1.0506 ms
+OURS bwd Vj3              0.8036 ms
+OURS fwd+bwd V62+Vj3      1.0108 ms
+VG1 bwd Vg1               0.5396 ms
+VG1 fwd+bwd Vg1+Vg1       0.6995 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2450 ms
+cuDNN bwd-only  0.7033 ms
+cuDNN fwd+bwd   0.9315 ms
+## run 24
+OURS fwd V62              0.2127 ms
+OURS bwd Vj1d             0.8828 ms
+OURS fwd+bwd V62+Vj1d     1.0923 ms
+OURS bwd Vj1              0.8693 ms
+OURS fwd+bwd V62+Vj1      1.0788 ms
+OURS bwd Vj2              0.8381 ms
+OURS fwd+bwd V62+Vj2      1.0501 ms
+OURS bwd Vj3              0.8026 ms
+OURS fwd+bwd V62+Vj3      1.0125 ms
+VG1 bwd Vg1               0.5379 ms
+VG1 fwd+bwd Vg1+Vg1       0.7017 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2464 ms
+cuDNN bwd-only  0.7040 ms
+cuDNN fwd+bwd   0.9294 ms
+## run 25
+OURS fwd V62              0.2127 ms
+OURS bwd Vj1d             0.8794 ms
+OURS fwd+bwd V62+Vj1d     1.0932 ms
+OURS bwd Vj1              0.8692 ms
+OURS fwd+bwd V62+Vj1      1.0787 ms
+OURS bwd Vj2              0.8383 ms
+OURS fwd+bwd V62+Vj2      1.0481 ms
+OURS bwd Vj3              0.8022 ms
+OURS fwd+bwd V62+Vj3      1.0099 ms
+VG1 bwd Vg1               0.5400 ms
+VG1 fwd+bwd Vg1+Vg1       0.6996 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2285 ms
+cuDNN bwd-only  0.7037 ms
+cuDNN fwd+bwd   0.9294 ms
+############ SHAPE B=4 Hq=12 Hkv=4
+CHECK V62 O:      [32mValues match!
+[0mCHECK V62 LSE:    [32mValues match!
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj1  dQ:  [32mValues match!
+[0mCHECK Vj1  dK:  [32mValues match!
+[0mCHECK Vj1  dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+CHECK Vj3  dQ:  [32mValues match!
+[0mCHECK Vj3  dK:  [32mValues match!
+[0mCHECK Vj3  dV:  [32mValues match!
+CHECK Vg1 O:      [32mValues match!
+[0mCHECK Vg1 LSE:    [32mValues match!
+CHECK Vg1  dQ:  [32mValues match!
+[0mCHECK Vg1  dK:  [32mValues match!
+[0mCHECK Vg1  dV:  [32mValues match!
+## run 1
+OURS fwd V62              0.4148 ms
+OURS bwd Vj1d             1.6278 ms
+OURS fwd+bwd V62+Vj1d     2.0369 ms
+OURS bwd Vj1              1.6036 ms
+OURS fwd+bwd V62+Vj1      2.0149 ms
+OURS bwd Vj2              1.5550 ms
+OURS fwd+bwd V62+Vj2      1.9666 ms
+OURS bwd Vj3              1.4804 ms
+OURS fwd+bwd V62+Vj3      1.8919 ms
+VG1 bwd Vg1               1.0490 ms
+VG1 fwd+bwd Vg1+Vg1       1.3720 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4407 ms
+cuDNN bwd-only  1.2839 ms
+cuDNN fwd+bwd   1.6918 ms
+## run 2
+OURS fwd V62              0.4145 ms
+OURS bwd Vj1d             1.6288 ms
+OURS fwd+bwd V62+Vj1d     2.0402 ms
+OURS bwd Vj1              1.6025 ms
+OURS fwd+bwd V62+Vj1      2.0114 ms
+OURS bwd Vj2              1.5559 ms
+OURS fwd+bwd V62+Vj2      1.9662 ms
+OURS bwd Vj3              1.4800 ms
+OURS fwd+bwd V62+Vj3      1.8889 ms
+VG1 bwd Vg1               1.0506 ms
+VG1 fwd+bwd Vg1+Vg1       1.3716 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4087 ms
+cuDNN bwd-only  1.2857 ms
+cuDNN fwd+bwd   1.6871 ms
+## run 3
+OURS fwd V62              0.4127 ms
+OURS bwd Vj1d             1.6229 ms
+OURS fwd+bwd V62+Vj1d     2.0371 ms
+OURS bwd Vj1              1.6015 ms
+OURS fwd+bwd V62+Vj1      2.0120 ms
+OURS bwd Vj2              1.5553 ms
+OURS fwd+bwd V62+Vj2      1.9664 ms
+OURS bwd Vj3              1.4816 ms
+OURS fwd+bwd V62+Vj3      1.8897 ms
+VG1 bwd Vg1               1.0489 ms
+VG1 fwd+bwd Vg1+Vg1       1.3705 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4398 ms
+cuDNN bwd-only  1.2861 ms
+cuDNN fwd+bwd   1.6897 ms
+## run 4
+OURS fwd V62              0.4128 ms
+OURS bwd Vj1d             1.6298 ms
+OURS fwd+bwd V62+Vj1d     2.0397 ms
+OURS bwd Vj1              1.6028 ms
+OURS fwd+bwd V62+Vj1      2.0155 ms
+OURS bwd Vj2              1.5556 ms
+OURS fwd+bwd V62+Vj2      1.9678 ms
+OURS bwd Vj3              1.4806 ms
+OURS fwd+bwd V62+Vj3      1.8919 ms
+VG1 bwd Vg1               1.0488 ms
+VG1 fwd+bwd Vg1+Vg1       1.3724 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4396 ms
+cuDNN bwd-only  1.2894 ms
+cuDNN fwd+bwd   1.6919 ms
+## run 5
+OURS fwd V62              0.4145 ms
+OURS bwd Vj1d             1.6274 ms
+OURS fwd+bwd V62+Vj1d     2.0380 ms
+OURS bwd Vj1              1.6028 ms
+OURS fwd+bwd V62+Vj1      2.0147 ms
+OURS bwd Vj2              1.5570 ms
+OURS fwd+bwd V62+Vj2      1.9666 ms
+OURS bwd Vj3              1.4814 ms
+OURS fwd+bwd V62+Vj3      1.8917 ms
+VG1 bwd Vg1               1.0505 ms
+VG1 fwd+bwd Vg1+Vg1       1.3698 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4394 ms
+cuDNN bwd-only  1.2853 ms
+cuDNN fwd+bwd   1.6904 ms
+## run 6
+OURS fwd V62              0.4127 ms
+OURS bwd Vj1d             1.6264 ms
+OURS fwd+bwd V62+Vj1d     2.0373 ms
+OURS bwd Vj1              1.6022 ms
+OURS fwd+bwd V62+Vj1      2.0140 ms
+OURS bwd Vj2              1.5563 ms
+OURS fwd+bwd V62+Vj2      1.9655 ms
+OURS bwd Vj3              1.4827 ms
+OURS fwd+bwd V62+Vj3      1.8915 ms
+VG1 bwd Vg1               1.0488 ms
+VG1 fwd+bwd Vg1+Vg1       1.3691 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4084 ms
+cuDNN bwd-only  1.2812 ms
+cuDNN fwd+bwd   1.6926 ms
+## run 7
+OURS fwd V62              0.4135 ms
+OURS bwd Vj1d             1.6253 ms
+OURS fwd+bwd V62+Vj1d     2.0373 ms
+OURS bwd Vj1              1.6010 ms
+OURS fwd+bwd V62+Vj1      2.0140 ms
+OURS bwd Vj2              1.5562 ms
+OURS fwd+bwd V62+Vj2      1.9659 ms
+OURS bwd Vj3              1.4810 ms
+OURS fwd+bwd V62+Vj3      1.8913 ms
+VG1 bwd Vg1               1.0497 ms
+VG1 fwd+bwd Vg1+Vg1       1.3720 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4402 ms
+cuDNN bwd-only  1.2840 ms
+cuDNN fwd+bwd   1.6921 ms
+## run 8
+OURS fwd V62              0.4128 ms
+OURS bwd Vj1d             1.6261 ms
+OURS fwd+bwd V62+Vj1d     2.0361 ms
+OURS bwd Vj1              1.6015 ms
+OURS fwd+bwd V62+Vj1      2.0135 ms
+OURS bwd Vj2              1.5564 ms
+OURS fwd+bwd V62+Vj2      1.9658 ms
+OURS bwd Vj3              1.4777 ms
+OURS fwd+bwd V62+Vj3      1.8912 ms
+VG1 bwd Vg1               1.0496 ms
+VG1 fwd+bwd Vg1+Vg1       1.3699 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4089 ms
+cuDNN bwd-only  1.2833 ms
+cuDNN fwd+bwd   1.6891 ms
+## run 9
+OURS fwd V62              0.4128 ms
+OURS bwd Vj1d             1.6268 ms
+OURS fwd+bwd V62+Vj1d     2.0385 ms
+OURS bwd Vj1              1.6022 ms
+OURS fwd+bwd V62+Vj1      2.0129 ms
+OURS bwd Vj2              1.5567 ms
+OURS fwd+bwd V62+Vj2      1.9656 ms
+OURS bwd Vj3              1.4812 ms
+OURS fwd+bwd V62+Vj3      1.8907 ms
+VG1 bwd Vg1               1.0510 ms
+VG1 fwd+bwd Vg1+Vg1       1.3704 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4404 ms
+cuDNN bwd-only  1.2868 ms
+cuDNN fwd+bwd   1.6931 ms
+## run 10
+OURS fwd V62              0.4142 ms
+OURS bwd Vj1d             1.6250 ms
+OURS fwd+bwd V62+Vj1d     2.0373 ms
+OURS bwd Vj1              1.6023 ms
+OURS fwd+bwd V62+Vj1      2.0121 ms
+OURS bwd Vj2              1.5567 ms
+OURS fwd+bwd V62+Vj2      1.9668 ms
+OURS bwd Vj3              1.4794 ms
+OURS fwd+bwd V62+Vj3      1.8916 ms
+VG1 bwd Vg1               1.0506 ms
+VG1 fwd+bwd Vg1+Vg1       1.3724 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4097 ms
+cuDNN bwd-only  1.2862 ms
+cuDNN fwd+bwd   1.6896 ms
+## run 11
+OURS fwd V62              0.4128 ms
+OURS bwd Vj1d             1.6269 ms
+OURS fwd+bwd V62+Vj1d     2.0368 ms
+OURS bwd Vj1              1.6017 ms
+OURS fwd+bwd V62+Vj1      2.0130 ms
+OURS bwd Vj2              1.5540 ms
+OURS fwd+bwd V62+Vj2      1.9670 ms
+OURS bwd Vj3              1.4800 ms
+OURS fwd+bwd V62+Vj3      1.8896 ms
+VG1 bwd Vg1               1.0485 ms
+VG1 fwd+bwd Vg1+Vg1       1.3701 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4427 ms
+cuDNN bwd-only  1.2835 ms
+cuDNN fwd+bwd   1.6931 ms
+## run 12
+OURS fwd V62              0.4131 ms
+OURS bwd Vj1d             1.6289 ms
+OURS fwd+bwd V62+Vj1d     2.0399 ms
+OURS bwd Vj1              1.6043 ms
+OURS fwd+bwd V62+Vj1      2.0170 ms
+OURS bwd Vj2              1.5565 ms
+OURS fwd+bwd V62+Vj2      1.9686 ms
+OURS bwd Vj3              1.4805 ms
+OURS fwd+bwd V62+Vj3      1.8916 ms
+VG1 bwd Vg1               1.0493 ms
+VG1 fwd+bwd Vg1+Vg1       1.3730 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4401 ms
+cuDNN bwd-only  1.2849 ms
+cuDNN fwd+bwd   1.6907 ms
+## run 13
+OURS fwd V62              0.4128 ms
+OURS bwd Vj1d             1.6265 ms
+OURS fwd+bwd V62+Vj1d     2.0389 ms
+OURS bwd Vj1              1.6025 ms
+OURS fwd+bwd V62+Vj1      2.0137 ms
+OURS bwd Vj2              1.5563 ms
+OURS fwd+bwd V62+Vj2      1.9680 ms
+OURS bwd Vj3              1.4815 ms
+OURS fwd+bwd V62+Vj3      1.8921 ms
+VG1 bwd Vg1               1.0494 ms
+VG1 fwd+bwd Vg1+Vg1       1.3728 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4102 ms
+cuDNN bwd-only  1.2863 ms
+cuDNN fwd+bwd   1.6928 ms
+## run 14
+OURS fwd V62              0.4127 ms
+OURS bwd Vj1d             1.6284 ms
+OURS fwd+bwd V62+Vj1d     2.0383 ms
+OURS bwd Vj1              1.6028 ms
+OURS fwd+bwd V62+Vj1      2.0157 ms
+OURS bwd Vj2              1.5548 ms
+OURS fwd+bwd V62+Vj2      1.9686 ms
+OURS bwd Vj3              1.4804 ms
+OURS fwd+bwd V62+Vj3      1.8904 ms
+VG1 bwd Vg1               1.0487 ms
+VG1 fwd+bwd Vg1+Vg1       1.3700 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4089 ms
+cuDNN bwd-only  1.2832 ms
+cuDNN fwd+bwd   1.6884 ms
+## run 15
+OURS fwd V62              0.4129 ms
+OURS bwd Vj1d             1.6288 ms
+OURS fwd+bwd V62+Vj1d     2.0365 ms
+OURS bwd Vj1              1.6039 ms
+OURS fwd+bwd V62+Vj1      2.0121 ms
+OURS bwd Vj2              1.5574 ms
+OURS fwd+bwd V62+Vj2      1.9679 ms
+OURS bwd Vj3              1.4807 ms
+OURS fwd+bwd V62+Vj3      1.8899 ms
+VG1 bwd Vg1               1.0493 ms
+VG1 fwd+bwd Vg1+Vg1       1.3707 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4401 ms
+cuDNN bwd-only  1.2821 ms
+cuDNN fwd+bwd   1.6900 ms
+## run 16
+OURS fwd V62              0.4129 ms
+OURS bwd Vj1d             1.6264 ms
+OURS fwd+bwd V62+Vj1d     2.0377 ms
+OURS bwd Vj1              1.6043 ms
+OURS fwd+bwd V62+Vj1      2.0146 ms
+OURS bwd Vj2              1.5553 ms
+OURS fwd+bwd V62+Vj2      1.9679 ms
+OURS bwd Vj3              1.4795 ms
+OURS fwd+bwd V62+Vj3      1.8897 ms
+VG1 bwd Vg1               1.0484 ms
+VG1 fwd+bwd Vg1+Vg1       1.3720 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4084 ms
+cuDNN bwd-only  1.2851 ms
+cuDNN fwd+bwd   1.6904 ms
+## run 17
+OURS fwd V62              0.4128 ms
+OURS bwd Vj1d             1.6282 ms
+OURS fwd+bwd V62+Vj1d     2.0406 ms
+OURS bwd Vj1              1.6043 ms
+OURS fwd+bwd V62+Vj1      2.0170 ms
+OURS bwd Vj2              1.5580 ms
+OURS fwd+bwd V62+Vj2      1.9667 ms
+OURS bwd Vj3              1.4830 ms
+OURS fwd+bwd V62+Vj3      1.8909 ms
+VG1 bwd Vg1               1.0515 ms
+VG1 fwd+bwd Vg1+Vg1       1.3721 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4409 ms
+cuDNN bwd-only  1.2821 ms
+cuDNN fwd+bwd   1.6925 ms
+## run 18
+OURS fwd V62              0.4130 ms
+OURS bwd Vj1d             1.6276 ms
+OURS fwd+bwd V62+Vj1d     2.0387 ms
+OURS bwd Vj1              1.6012 ms
+OURS fwd+bwd V62+Vj1      2.0187 ms
+OURS bwd Vj2              1.5576 ms
+OURS fwd+bwd V62+Vj2      1.9685 ms
+OURS bwd Vj3              1.4825 ms
+OURS fwd+bwd V62+Vj3      1.8912 ms
+VG1 bwd Vg1               1.0490 ms
+VG1 fwd+bwd Vg1+Vg1       1.3729 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4428 ms
+cuDNN bwd-only  1.2834 ms
+cuDNN fwd+bwd   1.6883 ms
+## run 19
+OURS fwd V62              0.4128 ms
+OURS bwd Vj1d             1.6271 ms
+OURS fwd+bwd V62+Vj1d     2.0374 ms
+OURS bwd Vj1              1.6013 ms
+OURS fwd+bwd V62+Vj1      2.0128 ms
+OURS bwd Vj2              1.5569 ms
+OURS fwd+bwd V62+Vj2      1.9653 ms
+OURS bwd Vj3              1.4830 ms
+OURS fwd+bwd V62+Vj3      1.8905 ms
+VG1 bwd Vg1               1.0505 ms
+VG1 fwd+bwd Vg1+Vg1       1.3698 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4103 ms
+cuDNN bwd-only  1.2840 ms
+cuDNN fwd+bwd   1.6887 ms
+## run 20
+OURS fwd V62              0.4148 ms
+OURS bwd Vj1d             1.6264 ms
+OURS fwd+bwd V62+Vj1d     2.0381 ms
+OURS bwd Vj1              1.6014 ms
+OURS fwd+bwd V62+Vj1      2.0150 ms
+OURS bwd Vj2              1.5567 ms
+OURS fwd+bwd V62+Vj2      1.9676 ms
+OURS bwd Vj3              1.4783 ms
+OURS fwd+bwd V62+Vj3      1.8917 ms
+VG1 bwd Vg1               1.0503 ms
+VG1 fwd+bwd Vg1+Vg1       1.3698 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4085 ms
+cuDNN bwd-only  1.2813 ms
+cuDNN fwd+bwd   1.6887 ms
+## run 21
+OURS fwd V62              0.4128 ms
+OURS bwd Vj1d             1.6291 ms
+OURS fwd+bwd V62+Vj1d     2.0402 ms
+OURS bwd Vj1              1.6034 ms
+OURS fwd+bwd V62+Vj1      2.0137 ms
+OURS bwd Vj2              1.5563 ms
+OURS fwd+bwd V62+Vj2      1.9679 ms
+OURS bwd Vj3              1.4837 ms
+OURS fwd+bwd V62+Vj3      1.8900 ms
+VG1 bwd Vg1               1.0513 ms
+VG1 fwd+bwd Vg1+Vg1       1.3711 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4414 ms
+cuDNN bwd-only  1.2826 ms
+cuDNN fwd+bwd   1.6895 ms
+## run 22
+OURS fwd V62              0.4129 ms
+OURS bwd Vj1d             1.6290 ms
+OURS fwd+bwd V62+Vj1d     2.0392 ms
+OURS bwd Vj1              1.6023 ms
+OURS fwd+bwd V62+Vj1      2.0130 ms
+OURS bwd Vj2              1.5566 ms
+OURS fwd+bwd V62+Vj2      1.9676 ms
+OURS bwd Vj3              1.4791 ms
+OURS fwd+bwd V62+Vj3      1.8893 ms
+VG1 bwd Vg1               1.0509 ms
+VG1 fwd+bwd Vg1+Vg1       1.3712 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4087 ms
+cuDNN bwd-only  1.2807 ms
+cuDNN fwd+bwd   1.6927 ms
+## run 23
+OURS fwd V62              0.4129 ms
+OURS bwd Vj1d             1.6259 ms
+OURS fwd+bwd V62+Vj1d     2.0400 ms
+OURS bwd Vj1              1.6030 ms
+OURS fwd+bwd V62+Vj1      2.0152 ms
+OURS bwd Vj2              1.5564 ms
+OURS fwd+bwd V62+Vj2      1.9672 ms
+OURS bwd Vj3              1.4819 ms
+OURS fwd+bwd V62+Vj3      1.8870 ms
+VG1 bwd Vg1               1.0508 ms
+VG1 fwd+bwd Vg1+Vg1       1.3721 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4423 ms
+cuDNN bwd-only  1.2911 ms
+cuDNN fwd+bwd   1.6887 ms
+## run 24
+OURS fwd V62              0.4130 ms
+OURS bwd Vj1d             1.6272 ms
+OURS fwd+bwd V62+Vj1d     2.0397 ms
+OURS bwd Vj1              1.6026 ms
+OURS fwd+bwd V62+Vj1      2.0150 ms
+OURS bwd Vj2              1.5552 ms
+OURS fwd+bwd V62+Vj2      1.9676 ms
+OURS bwd Vj3              1.4817 ms
+OURS fwd+bwd V62+Vj3      1.8918 ms
+VG1 bwd Vg1               1.0505 ms
+VG1 fwd+bwd Vg1+Vg1       1.3709 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4100 ms
+cuDNN bwd-only  1.2829 ms
+cuDNN fwd+bwd   1.6915 ms
+## run 25
+OURS fwd V62              0.4129 ms
+OURS bwd Vj1d             1.6271 ms
+OURS fwd+bwd V62+Vj1d     2.0420 ms
+OURS bwd Vj1              1.6024 ms
+OURS fwd+bwd V62+Vj1      2.0152 ms
+OURS bwd Vj2              1.5584 ms
+OURS fwd+bwd V62+Vj2      1.9661 ms
+OURS bwd Vj3              1.4796 ms
+OURS fwd+bwd V62+Vj3      1.8912 ms
+VG1 bwd Vg1               1.0506 ms
+VG1 fwd+bwd Vg1+Vg1       1.3708 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.4426 ms
+cuDNN bwd-only  1.2853 ms
+cuDNN fwd+bwd   1.6928 ms
+############ SHAPE B=8 Hq=12 Hkv=4
+CHECK V62 O:      [32mValues match!
+[0mCHECK V62 LSE:    [32mValues match!
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj1  dQ:  [32mValues match!
+[0mCHECK Vj1  dK:  [32mValues match!
+[0mCHECK Vj1  dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+CHECK Vj3  dQ:  [32mValues match!
+[0mCHECK Vj3  dK:  [32mValues match!
+[0mCHECK Vj3  dV:  [32mValues match!
+CHECK Vg1 O:      [32mValues match!
+[0mCHECK Vg1 LSE:    [32mValues match!
+CHECK Vg1  dQ:  [32mValues match!
+[0mCHECK Vg1  dK:  [32mValues match!
+[0mCHECK Vg1  dV:  [32mValues match!
+## run 1
+OURS fwd V62              0.8134 ms
+OURS bwd Vj1d             3.1102 ms
+OURS fwd+bwd V62+Vj1d     3.9255 ms
+OURS bwd Vj1              3.0655 ms
+OURS fwd+bwd V62+Vj1      3.8802 ms
+OURS bwd Vj2              2.9813 ms
+OURS fwd+bwd V62+Vj2      3.7919 ms
+OURS bwd Vj3              2.8270 ms
+OURS fwd+bwd V62+Vj3      3.6388 ms
+VG1 bwd Vg1               2.0647 ms
+VG1 fwd+bwd Vg1+Vg1       2.7045 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8333 ms
+cuDNN bwd-only  2.4459 ms
+cuDNN fwd+bwd   3.2075 ms
+## run 2
+OURS fwd V62              0.8157 ms
+OURS bwd Vj1d             3.1092 ms
+OURS fwd+bwd V62+Vj1d     3.9231 ms
+OURS bwd Vj1              3.0667 ms
+OURS fwd+bwd V62+Vj1      3.8791 ms
+OURS bwd Vj2              2.9800 ms
+OURS fwd+bwd V62+Vj2      3.7924 ms
+OURS bwd Vj3              2.8275 ms
+OURS fwd+bwd V62+Vj3      3.6384 ms
+VG1 bwd Vg1               2.0644 ms
+VG1 fwd+bwd Vg1+Vg1       2.6988 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8280 ms
+cuDNN bwd-only  2.4380 ms
+cuDNN fwd+bwd   3.2145 ms
+## run 3
+OURS fwd V62              0.8139 ms
+OURS bwd Vj1d             3.1128 ms
+OURS fwd+bwd V62+Vj1d     3.9251 ms
+OURS bwd Vj1              3.0676 ms
+OURS fwd+bwd V62+Vj1      3.8825 ms
+OURS bwd Vj2              2.9816 ms
+OURS fwd+bwd V62+Vj2      3.7926 ms
+OURS bwd Vj3              2.8292 ms
+OURS fwd+bwd V62+Vj3      3.6373 ms
+VG1 bwd Vg1               2.0665 ms
+VG1 fwd+bwd Vg1+Vg1       2.7048 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8309 ms
+cuDNN bwd-only  2.4457 ms
+cuDNN fwd+bwd   3.2069 ms
+## run 4
+OURS fwd V62              0.8130 ms
+OURS bwd Vj1d             3.1106 ms
+OURS fwd+bwd V62+Vj1d     3.9237 ms
+OURS bwd Vj1              3.0668 ms
+OURS fwd+bwd V62+Vj1      3.8790 ms
+OURS bwd Vj2              2.9787 ms
+OURS fwd+bwd V62+Vj2      3.7928 ms
+OURS bwd Vj3              2.8275 ms
+OURS fwd+bwd V62+Vj3      3.6375 ms
+VG1 bwd Vg1               2.0646 ms
+VG1 fwd+bwd Vg1+Vg1       2.6985 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8292 ms
+cuDNN bwd-only  2.4451 ms
+cuDNN fwd+bwd   3.2114 ms
+## run 5
+OURS fwd V62              0.8134 ms
+OURS bwd Vj1d             3.1109 ms
+OURS fwd+bwd V62+Vj1d     3.9234 ms
+OURS bwd Vj1              3.0675 ms
+OURS fwd+bwd V62+Vj1      3.8811 ms
+OURS bwd Vj2              2.9789 ms
+OURS fwd+bwd V62+Vj2      3.7931 ms
+OURS bwd Vj3              2.8279 ms
+OURS fwd+bwd V62+Vj3      3.6366 ms
+VG1 bwd Vg1               2.0679 ms
+VG1 fwd+bwd Vg1+Vg1       2.7043 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.7713 ms
+cuDNN bwd-only  2.4404 ms
+cuDNN fwd+bwd   3.2071 ms
+## run 6
+OURS fwd V62              0.8136 ms
+OURS bwd Vj1d             3.1123 ms
+OURS fwd+bwd V62+Vj1d     3.9227 ms
+OURS bwd Vj1              3.0658 ms
+OURS fwd+bwd V62+Vj1      3.8804 ms
+OURS bwd Vj2              2.9787 ms
+OURS fwd+bwd V62+Vj2      3.7943 ms
+OURS bwd Vj3              2.8300 ms
+OURS fwd+bwd V62+Vj3      3.6398 ms
+VG1 bwd Vg1               2.0655 ms
+VG1 fwd+bwd Vg1+Vg1       2.7048 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8290 ms
+cuDNN bwd-only  2.4481 ms
+cuDNN fwd+bwd   3.2109 ms
+## run 7
+OURS fwd V62              0.8154 ms
+OURS bwd Vj1d             3.1089 ms
+OURS fwd+bwd V62+Vj1d     3.9240 ms
+OURS bwd Vj1              3.0686 ms
+OURS fwd+bwd V62+Vj1      3.8787 ms
+OURS bwd Vj2              2.9793 ms
+OURS fwd+bwd V62+Vj2      3.7931 ms
+OURS bwd Vj3              2.8314 ms
+OURS fwd+bwd V62+Vj3      3.6376 ms
+VG1 bwd Vg1               2.0668 ms
+VG1 fwd+bwd Vg1+Vg1       2.6996 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8293 ms
+cuDNN bwd-only  2.4384 ms
+cuDNN fwd+bwd   3.2161 ms
+## run 8
+OURS fwd V62              0.8133 ms
+OURS bwd Vj1d             3.1095 ms
+OURS fwd+bwd V62+Vj1d     3.9235 ms
+OURS bwd Vj1              3.0682 ms
+OURS fwd+bwd V62+Vj1      3.8844 ms
+OURS bwd Vj2              2.9799 ms
+OURS fwd+bwd V62+Vj2      3.7926 ms
+OURS bwd Vj3              2.8285 ms
+OURS fwd+bwd V62+Vj3      3.6382 ms
+VG1 bwd Vg1               2.0681 ms
+VG1 fwd+bwd Vg1+Vg1       2.6990 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.7692 ms
+cuDNN bwd-only  2.4380 ms
+cuDNN fwd+bwd   3.2137 ms
+## run 9
+OURS fwd V62              0.8134 ms
+OURS bwd Vj1d             3.1105 ms
+OURS fwd+bwd V62+Vj1d     3.9227 ms
+OURS bwd Vj1              3.0688 ms
+OURS fwd+bwd V62+Vj1      3.8792 ms
+OURS bwd Vj2              2.9812 ms
+OURS fwd+bwd V62+Vj2      3.7907 ms
+OURS bwd Vj3              2.8290 ms
+OURS fwd+bwd V62+Vj3      3.6393 ms
+VG1 bwd Vg1               2.0673 ms
+VG1 fwd+bwd Vg1+Vg1       2.6987 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8276 ms
+cuDNN bwd-only  2.4403 ms
+cuDNN fwd+bwd   3.2131 ms
+## run 10
+OURS fwd V62              0.8160 ms
+OURS bwd Vj1d             3.1094 ms
+OURS fwd+bwd V62+Vj1d     3.9229 ms
+OURS bwd Vj1              3.0676 ms
+OURS fwd+bwd V62+Vj1      3.8806 ms
+OURS bwd Vj2              2.9805 ms
+OURS fwd+bwd V62+Vj2      3.7885 ms
+OURS bwd Vj3              2.8277 ms
+OURS fwd+bwd V62+Vj3      3.6367 ms
+VG1 bwd Vg1               2.0666 ms
+VG1 fwd+bwd Vg1+Vg1       2.7040 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.7692 ms
+cuDNN bwd-only  2.4402 ms
+cuDNN fwd+bwd   3.2149 ms
+## run 11
+OURS fwd V62              0.8133 ms
+OURS bwd Vj1d             3.1087 ms
+OURS fwd+bwd V62+Vj1d     3.9230 ms
+OURS bwd Vj1              3.0684 ms
+OURS fwd+bwd V62+Vj1      3.8818 ms
+OURS bwd Vj2              2.9811 ms
+OURS fwd+bwd V62+Vj2      3.7927 ms
+OURS bwd Vj3              2.8282 ms
+OURS fwd+bwd V62+Vj3      3.6384 ms
+VG1 bwd Vg1               2.0659 ms
+VG1 fwd+bwd Vg1+Vg1       2.7026 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8275 ms
+cuDNN bwd-only  2.4377 ms
+cuDNN fwd+bwd   3.2143 ms
+## run 12
+OURS fwd V62              0.8145 ms
+OURS bwd Vj1d             3.1101 ms
+OURS fwd+bwd V62+Vj1d     3.9237 ms
+OURS bwd Vj1              3.0669 ms
+OURS fwd+bwd V62+Vj1      3.8814 ms
+OURS bwd Vj2              2.9808 ms
+OURS fwd+bwd V62+Vj2      3.7907 ms
+OURS bwd Vj3              2.8280 ms
+OURS fwd+bwd V62+Vj3      3.6391 ms
+VG1 bwd Vg1               2.0674 ms
+VG1 fwd+bwd Vg1+Vg1       2.6991 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8318 ms
+cuDNN bwd-only  2.4464 ms
+cuDNN fwd+bwd   3.2085 ms
+## run 13
+OURS fwd V62              0.8153 ms
+OURS bwd Vj1d             3.1103 ms
+OURS fwd+bwd V62+Vj1d     3.9234 ms
+OURS bwd Vj1              3.0678 ms
+OURS fwd+bwd V62+Vj1      3.8794 ms
+OURS bwd Vj2              2.9804 ms
+OURS fwd+bwd V62+Vj2      3.7924 ms
+OURS bwd Vj3              2.8280 ms
+OURS fwd+bwd V62+Vj3      3.6389 ms
+VG1 bwd Vg1               2.0666 ms
+VG1 fwd+bwd Vg1+Vg1       2.7016 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8291 ms
+cuDNN bwd-only  2.4482 ms
+cuDNN fwd+bwd   3.2077 ms
+## run 14
+OURS fwd V62              0.8130 ms
+OURS bwd Vj1d             3.1102 ms
+OURS fwd+bwd V62+Vj1d     3.9215 ms
+OURS bwd Vj1              3.0682 ms
+OURS fwd+bwd V62+Vj1      3.8777 ms
+OURS bwd Vj2              2.9802 ms
+OURS fwd+bwd V62+Vj2      3.7896 ms
+OURS bwd Vj3              2.8276 ms
+OURS fwd+bwd V62+Vj3      3.6370 ms
+VG1 bwd Vg1               2.0664 ms
+VG1 fwd+bwd Vg1+Vg1       2.7041 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8296 ms
+cuDNN bwd-only  2.4383 ms
+cuDNN fwd+bwd   3.2131 ms
+## run 15
+OURS fwd V62              0.8134 ms
+OURS bwd Vj1d             3.1111 ms
+OURS fwd+bwd V62+Vj1d     3.9246 ms
+OURS bwd Vj1              3.0696 ms
+OURS fwd+bwd V62+Vj1      3.8803 ms
+OURS bwd Vj2              2.9789 ms
+OURS fwd+bwd V62+Vj2      3.7924 ms
+OURS bwd Vj3              2.8260 ms
+OURS fwd+bwd V62+Vj3      3.6406 ms
+VG1 bwd Vg1               2.0678 ms
+VG1 fwd+bwd Vg1+Vg1       2.6994 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8264 ms
+cuDNN bwd-only  2.4382 ms
+cuDNN fwd+bwd   3.2129 ms
+## run 16
+OURS fwd V62              0.8135 ms
+OURS bwd Vj1d             3.1107 ms
+OURS fwd+bwd V62+Vj1d     3.9226 ms
+OURS bwd Vj1              3.0671 ms
+OURS fwd+bwd V62+Vj1      3.8796 ms
+OURS bwd Vj2              2.9796 ms
+OURS fwd+bwd V62+Vj2      3.7909 ms
+OURS bwd Vj3              2.8282 ms
+OURS fwd+bwd V62+Vj3      3.6419 ms
+VG1 bwd Vg1               2.0666 ms
+VG1 fwd+bwd Vg1+Vg1       2.7035 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.7693 ms
+cuDNN bwd-only  2.4389 ms
+cuDNN fwd+bwd   3.2123 ms
+## run 17
+OURS fwd V62              0.8157 ms
+OURS bwd Vj1d             3.1138 ms
+OURS fwd+bwd V62+Vj1d     3.9250 ms
+OURS bwd Vj1              3.0676 ms
+OURS fwd+bwd V62+Vj1      3.8812 ms
+OURS bwd Vj2              2.9800 ms
+OURS fwd+bwd V62+Vj2      3.7898 ms
+OURS bwd Vj3              2.8309 ms
+OURS fwd+bwd V62+Vj3      3.6382 ms
+VG1 bwd Vg1               2.0651 ms
+VG1 fwd+bwd Vg1+Vg1       2.6999 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8323 ms
+cuDNN bwd-only  2.4444 ms
+cuDNN fwd+bwd   3.2081 ms
+## run 18
+OURS fwd V62              0.8133 ms
+OURS bwd Vj1d             3.1100 ms
+OURS fwd+bwd V62+Vj1d     3.9247 ms
+OURS bwd Vj1              3.0672 ms
+OURS fwd+bwd V62+Vj1      3.8799 ms
+OURS bwd Vj2              2.9812 ms
+OURS fwd+bwd V62+Vj2      3.7925 ms
+OURS bwd Vj3              2.8279 ms
+OURS fwd+bwd V62+Vj3      3.6361 ms
+VG1 bwd Vg1               2.0673 ms
+VG1 fwd+bwd Vg1+Vg1       2.7032 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8271 ms
+cuDNN bwd-only  2.4385 ms
+cuDNN fwd+bwd   3.2134 ms
+## run 19
+OURS fwd V62              0.8129 ms
+OURS bwd Vj1d             3.1066 ms
+OURS fwd+bwd V62+Vj1d     3.9224 ms
+OURS bwd Vj1              3.0647 ms
+OURS fwd+bwd V62+Vj1      3.8819 ms
+OURS bwd Vj2              2.9807 ms
+OURS fwd+bwd V62+Vj2      3.7910 ms
+OURS bwd Vj3              2.8297 ms
+OURS fwd+bwd V62+Vj3      3.6376 ms
+VG1 bwd Vg1               2.0671 ms
+VG1 fwd+bwd Vg1+Vg1       2.6996 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8264 ms
+cuDNN bwd-only  2.4374 ms
+cuDNN fwd+bwd   3.2124 ms
+## run 20
+OURS fwd V62              0.8130 ms
+OURS bwd Vj1d             3.1103 ms
+OURS fwd+bwd V62+Vj1d     3.9241 ms
+OURS bwd Vj1              3.0665 ms
+OURS fwd+bwd V62+Vj1      3.8821 ms
+OURS bwd Vj2              2.9812 ms
+OURS fwd+bwd V62+Vj2      3.7912 ms
+OURS bwd Vj3              2.8292 ms
+OURS fwd+bwd V62+Vj3      3.6383 ms
+VG1 bwd Vg1               2.0663 ms
+VG1 fwd+bwd Vg1+Vg1       2.6997 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8267 ms
+cuDNN bwd-only  2.4389 ms
+cuDNN fwd+bwd   3.2156 ms
+## run 21
+OURS fwd V62              0.8132 ms
+OURS bwd Vj1d             3.1084 ms
+OURS fwd+bwd V62+Vj1d     3.9224 ms
+OURS bwd Vj1              3.0685 ms
+OURS fwd+bwd V62+Vj1      3.8817 ms
+OURS bwd Vj2              2.9803 ms
+OURS fwd+bwd V62+Vj2      3.7931 ms
+OURS bwd Vj3              2.8302 ms
+OURS fwd+bwd V62+Vj3      3.6383 ms
+VG1 bwd Vg1               2.0635 ms
+VG1 fwd+bwd Vg1+Vg1       2.7035 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.7732 ms
+cuDNN bwd-only  2.4478 ms
+cuDNN fwd+bwd   3.2100 ms
+## run 22
+OURS fwd V62              0.8133 ms
+OURS bwd Vj1d             3.1101 ms
+OURS fwd+bwd V62+Vj1d     3.9222 ms
+OURS bwd Vj1              3.0687 ms
+OURS fwd+bwd V62+Vj1      3.8801 ms
+OURS bwd Vj2              2.9796 ms
+OURS fwd+bwd V62+Vj2      3.7914 ms
+OURS bwd Vj3              2.8322 ms
+OURS fwd+bwd V62+Vj3      3.6413 ms
+VG1 bwd Vg1               2.0665 ms
+VG1 fwd+bwd Vg1+Vg1       2.7037 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8284 ms
+cuDNN bwd-only  2.4388 ms
+cuDNN fwd+bwd   3.2129 ms
+## run 23
+OURS fwd V62              0.8130 ms
+OURS bwd Vj1d             3.1118 ms
+OURS fwd+bwd V62+Vj1d     3.9255 ms
+OURS bwd Vj1              3.0677 ms
+OURS fwd+bwd V62+Vj1      3.8820 ms
+OURS bwd Vj2              2.9791 ms
+OURS fwd+bwd V62+Vj2      3.7915 ms
+OURS bwd Vj3              2.8330 ms
+OURS fwd+bwd V62+Vj3      3.6400 ms
+VG1 bwd Vg1               2.0674 ms
+VG1 fwd+bwd Vg1+Vg1       2.7000 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.7697 ms
+cuDNN bwd-only  2.4380 ms
+cuDNN fwd+bwd   3.2120 ms
+## run 24
+OURS fwd V62              0.8132 ms
+OURS bwd Vj1d             3.1106 ms
+OURS fwd+bwd V62+Vj1d     3.9239 ms
+OURS bwd Vj1              3.0660 ms
+OURS fwd+bwd V62+Vj1      3.8806 ms
+OURS bwd Vj2              2.9808 ms
+OURS fwd+bwd V62+Vj2      3.7906 ms
+OURS bwd Vj3              2.8284 ms
+OURS fwd+bwd V62+Vj3      3.6400 ms
+VG1 bwd Vg1               2.0670 ms
+VG1 fwd+bwd Vg1+Vg1       2.7050 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8308 ms
+cuDNN bwd-only  2.4375 ms
+cuDNN fwd+bwd   3.2092 ms
+## run 25
+OURS fwd V62              0.8131 ms
+OURS bwd Vj1d             3.1110 ms
+OURS fwd+bwd V62+Vj1d     3.9248 ms
+OURS bwd Vj1              3.0668 ms
+OURS fwd+bwd V62+Vj1      3.8805 ms
+OURS bwd Vj2              2.9818 ms
+OURS fwd+bwd V62+Vj2      3.7908 ms
+OURS bwd Vj3              2.8303 ms
+OURS fwd+bwd V62+Vj3      3.6398 ms
+VG1 bwd Vg1               2.0666 ms
+VG1 fwd+bwd Vg1+Vg1       2.7037 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.8319 ms
+cuDNN bwd-only  2.4431 ms
+cuDNN fwd+bwd   3.2076 ms
+############ SHAPE B=2 Hq=16 Hkv=4
+CHECK V62 O:      [32mValues match!
+[0mCHECK V62 LSE:    [32mValues match!
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj1  dQ:  [32mValues match!
+[0mCHECK Vj1  dK:  [32mValues match!
+[0mCHECK Vj1  dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+CHECK Vj3  dQ:  [32mValues match!
+[0mCHECK Vj3  dK:  [32mValues match!
+[0mCHECK Vj3  dV:  [32mValues match!
+CHECK Vg1 O:      [32mValues match!
+[0mCHECK Vg1 LSE:    [32mValues match!
+CHECK Vg1  dQ:  [32mValues match!
+[0mCHECK Vg1  dK:  [32mValues match!
+[0mCHECK Vg1  dV:  [32mValues match!
+## run 1
+OURS fwd V62              0.2796 ms
+OURS bwd Vj1d             1.1276 ms
+OURS fwd+bwd V62+Vj1d     1.4060 ms
+OURS bwd Vj1              1.1118 ms
+OURS fwd+bwd V62+Vj1      1.3908 ms
+OURS bwd Vj2              1.0761 ms
+OURS fwd+bwd V62+Vj2      1.3526 ms
+OURS bwd Vj3              1.0281 ms
+OURS fwd+bwd V62+Vj3      1.3032 ms
+VG1 bwd Vg1               0.7041 ms
+VG1 fwd+bwd Vg1+Vg1       0.9225 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3114 ms
+cuDNN bwd-only  0.8946 ms
+cuDNN fwd+bwd   1.1827 ms
+## run 2
+OURS fwd V62              0.2796 ms
+OURS bwd Vj1d             1.1294 ms
+OURS fwd+bwd V62+Vj1d     1.4090 ms
+OURS bwd Vj1              1.1134 ms
+OURS fwd+bwd V62+Vj1      1.3894 ms
+OURS bwd Vj2              1.0764 ms
+OURS fwd+bwd V62+Vj2      1.3536 ms
+OURS bwd Vj3              1.0257 ms
+OURS fwd+bwd V62+Vj3      1.3034 ms
+VG1 bwd Vg1               0.7036 ms
+VG1 fwd+bwd Vg1+Vg1       0.9195 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3097 ms
+cuDNN bwd-only  0.8941 ms
+cuDNN fwd+bwd   1.1811 ms
+## run 3
+OURS fwd V62              0.2797 ms
+OURS bwd Vj1d             1.1297 ms
+OURS fwd+bwd V62+Vj1d     1.4075 ms
+OURS bwd Vj1              1.1118 ms
+OURS fwd+bwd V62+Vj1      1.3895 ms
+OURS bwd Vj2              1.0730 ms
+OURS fwd+bwd V62+Vj2      1.3532 ms
+OURS bwd Vj3              1.0252 ms
+OURS fwd+bwd V62+Vj3      1.3025 ms
+VG1 bwd Vg1               0.7036 ms
+VG1 fwd+bwd Vg1+Vg1       0.9216 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2884 ms
+cuDNN bwd-only  0.8941 ms
+cuDNN fwd+bwd   1.1798 ms
+## run 4
+OURS fwd V62              0.2804 ms
+OURS bwd Vj1d             1.1254 ms
+OURS fwd+bwd V62+Vj1d     1.4055 ms
+OURS bwd Vj1              1.1096 ms
+OURS fwd+bwd V62+Vj1      1.3914 ms
+OURS bwd Vj2              1.0735 ms
+OURS fwd+bwd V62+Vj2      1.3503 ms
+OURS bwd Vj3              1.0246 ms
+OURS fwd+bwd V62+Vj3      1.3045 ms
+VG1 bwd Vg1               0.7055 ms
+VG1 fwd+bwd Vg1+Vg1       0.9196 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2887 ms
+cuDNN bwd-only  0.8955 ms
+cuDNN fwd+bwd   1.1813 ms
+## run 5
+OURS fwd V62              0.2797 ms
+OURS bwd Vj1d             1.1254 ms
+OURS fwd+bwd V62+Vj1d     1.4074 ms
+OURS bwd Vj1              1.1091 ms
+OURS fwd+bwd V62+Vj1      1.3896 ms
+OURS bwd Vj2              1.0737 ms
+OURS fwd+bwd V62+Vj2      1.3512 ms
+OURS bwd Vj3              1.0257 ms
+OURS fwd+bwd V62+Vj3      1.3013 ms
+VG1 bwd Vg1               0.7041 ms
+VG1 fwd+bwd Vg1+Vg1       0.9192 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3095 ms
+cuDNN bwd-only  0.8960 ms
+cuDNN fwd+bwd   1.1814 ms
+## run 6
+OURS fwd V62              0.2794 ms
+OURS bwd Vj1d             1.1283 ms
+OURS fwd+bwd V62+Vj1d     1.4068 ms
+OURS bwd Vj1              1.1123 ms
+OURS fwd+bwd V62+Vj1      1.3897 ms
+OURS bwd Vj2              1.0735 ms
+OURS fwd+bwd V62+Vj2      1.3496 ms
+OURS bwd Vj3              1.0266 ms
+OURS fwd+bwd V62+Vj3      1.3014 ms
+VG1 bwd Vg1               0.7042 ms
+VG1 fwd+bwd Vg1+Vg1       0.9185 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3112 ms
+cuDNN bwd-only  0.8941 ms
+cuDNN fwd+bwd   1.1831 ms
+## run 7
+OURS fwd V62              0.2811 ms
+OURS bwd Vj1d             1.1290 ms
+OURS fwd+bwd V62+Vj1d     1.4072 ms
+OURS bwd Vj1              1.1131 ms
+OURS fwd+bwd V62+Vj1      1.3915 ms
+OURS bwd Vj2              1.0731 ms
+OURS fwd+bwd V62+Vj2      1.3516 ms
+OURS bwd Vj3              1.0280 ms
+OURS fwd+bwd V62+Vj3      1.3048 ms
+VG1 bwd Vg1               0.7047 ms
+VG1 fwd+bwd Vg1+Vg1       0.9197 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3130 ms
+cuDNN bwd-only  0.8940 ms
+cuDNN fwd+bwd   1.1824 ms
+## run 8
+OURS fwd V62              0.2795 ms
+OURS bwd Vj1d             1.1260 ms
+OURS fwd+bwd V62+Vj1d     1.4061 ms
+OURS bwd Vj1              1.1128 ms
+OURS fwd+bwd V62+Vj1      1.3896 ms
+OURS bwd Vj2              1.0729 ms
+OURS fwd+bwd V62+Vj2      1.3496 ms
+OURS bwd Vj3              1.0260 ms
+OURS fwd+bwd V62+Vj3      1.3026 ms
+VG1 bwd Vg1               0.7051 ms
+VG1 fwd+bwd Vg1+Vg1       0.9184 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2893 ms
+cuDNN bwd-only  0.8945 ms
+cuDNN fwd+bwd   1.1833 ms
+## run 9
+OURS fwd V62              0.2797 ms
+OURS bwd Vj1d             1.1310 ms
+OURS fwd+bwd V62+Vj1d     1.4068 ms
+OURS bwd Vj1              1.1100 ms
+OURS fwd+bwd V62+Vj1      1.3926 ms
+OURS bwd Vj2              1.0738 ms
+OURS fwd+bwd V62+Vj2      1.3527 ms
+OURS bwd Vj3              1.0273 ms
+OURS fwd+bwd V62+Vj3      1.3022 ms
+VG1 bwd Vg1               0.7042 ms
+VG1 fwd+bwd Vg1+Vg1       0.9224 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3118 ms
+cuDNN bwd-only  0.8971 ms
+cuDNN fwd+bwd   1.1843 ms
+## run 10
+OURS fwd V62              0.2796 ms
+OURS bwd Vj1d             1.1283 ms
+OURS fwd+bwd V62+Vj1d     1.4056 ms
+OURS bwd Vj1              1.1098 ms
+OURS fwd+bwd V62+Vj1      1.3897 ms
+OURS bwd Vj2              1.0732 ms
+OURS fwd+bwd V62+Vj2      1.3500 ms
+OURS bwd Vj3              1.0241 ms
+OURS fwd+bwd V62+Vj3      1.3051 ms
+VG1 bwd Vg1               0.7035 ms
+VG1 fwd+bwd Vg1+Vg1       0.9212 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3124 ms
+cuDNN bwd-only  0.8943 ms
+cuDNN fwd+bwd   1.1811 ms
+## run 11
+OURS fwd V62              0.2798 ms
+OURS bwd Vj1d             1.1274 ms
+OURS fwd+bwd V62+Vj1d     1.4069 ms
+OURS bwd Vj1              1.1140 ms
+OURS fwd+bwd V62+Vj1      1.3915 ms
+OURS bwd Vj2              1.0750 ms
+OURS fwd+bwd V62+Vj2      1.3500 ms
+OURS bwd Vj3              1.0265 ms
+OURS fwd+bwd V62+Vj3      1.3048 ms
+VG1 bwd Vg1               0.7062 ms
+VG1 fwd+bwd Vg1+Vg1       0.9214 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3100 ms
+cuDNN bwd-only  0.8944 ms
+cuDNN fwd+bwd   1.1798 ms
+## run 12
+OURS fwd V62              0.2797 ms
+OURS bwd Vj1d             1.1271 ms
+OURS fwd+bwd V62+Vj1d     1.4058 ms
+OURS bwd Vj1              1.1109 ms
+OURS fwd+bwd V62+Vj1      1.3921 ms
+OURS bwd Vj2              1.0738 ms
+OURS fwd+bwd V62+Vj2      1.3527 ms
+OURS bwd Vj3              1.0264 ms
+OURS fwd+bwd V62+Vj3      1.3028 ms
+VG1 bwd Vg1               0.7041 ms
+VG1 fwd+bwd Vg1+Vg1       0.9196 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2883 ms
+cuDNN bwd-only  0.8933 ms
+cuDNN fwd+bwd   1.1812 ms
+## run 13
+OURS fwd V62              0.2797 ms
+OURS bwd Vj1d             1.1272 ms
+OURS fwd+bwd V62+Vj1d     1.4051 ms
+OURS bwd Vj1              1.1131 ms
+OURS fwd+bwd V62+Vj1      1.3893 ms
+OURS bwd Vj2              1.0727 ms
+OURS fwd+bwd V62+Vj2      1.3515 ms
+OURS bwd Vj3              1.0250 ms
+OURS fwd+bwd V62+Vj3      1.3037 ms
+VG1 bwd Vg1               0.7060 ms
+VG1 fwd+bwd Vg1+Vg1       0.9199 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3124 ms
+cuDNN bwd-only  0.8967 ms
+cuDNN fwd+bwd   1.1804 ms
+## run 14
+OURS fwd V62              0.2797 ms
+OURS bwd Vj1d             1.1268 ms
+OURS fwd+bwd V62+Vj1d     1.4055 ms
+OURS bwd Vj1              1.1107 ms
+OURS fwd+bwd V62+Vj1      1.3904 ms
+OURS bwd Vj2              1.0738 ms
+OURS fwd+bwd V62+Vj2      1.3499 ms
+OURS bwd Vj3              1.0264 ms
+OURS fwd+bwd V62+Vj3      1.3028 ms
+VG1 bwd Vg1               0.7056 ms
+VG1 fwd+bwd Vg1+Vg1       0.9213 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2892 ms
+cuDNN bwd-only  0.8964 ms
+cuDNN fwd+bwd   1.1825 ms
+## run 15
+OURS fwd V62              0.2797 ms
+OURS bwd Vj1d             1.1274 ms
+OURS fwd+bwd V62+Vj1d     1.4060 ms
+OURS bwd Vj1              1.1112 ms
+OURS fwd+bwd V62+Vj1      1.3890 ms
+OURS bwd Vj2              1.0740 ms
+OURS fwd+bwd V62+Vj2      1.3517 ms
+OURS bwd Vj3              1.0286 ms
+OURS fwd+bwd V62+Vj3      1.3058 ms
+VG1 bwd Vg1               0.7038 ms
+VG1 fwd+bwd Vg1+Vg1       0.9226 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2896 ms
+cuDNN bwd-only  0.8941 ms
+cuDNN fwd+bwd   1.1804 ms
+## run 16
+OURS fwd V62              0.2799 ms
+OURS bwd Vj1d             1.1294 ms
+OURS fwd+bwd V62+Vj1d     1.4077 ms
+OURS bwd Vj1              1.1161 ms
+OURS fwd+bwd V62+Vj1      1.3892 ms
+OURS bwd Vj2              1.0726 ms
+OURS fwd+bwd V62+Vj2      1.3484 ms
+OURS bwd Vj3              1.0271 ms
+OURS fwd+bwd V62+Vj3      1.3014 ms
+VG1 bwd Vg1               0.7050 ms
+VG1 fwd+bwd Vg1+Vg1       0.9195 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3120 ms
+cuDNN bwd-only  0.8970 ms
+cuDNN fwd+bwd   1.1816 ms
+## run 17
+OURS fwd V62              0.2796 ms
+OURS bwd Vj1d             1.1258 ms
+OURS fwd+bwd V62+Vj1d     1.4067 ms
+OURS bwd Vj1              1.1120 ms
+OURS fwd+bwd V62+Vj1      1.3903 ms
+OURS bwd Vj2              1.0734 ms
+OURS fwd+bwd V62+Vj2      1.3495 ms
+OURS bwd Vj3              1.0236 ms
+OURS fwd+bwd V62+Vj3      1.3011 ms
+VG1 bwd Vg1               0.7049 ms
+VG1 fwd+bwd Vg1+Vg1       0.9189 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3107 ms
+cuDNN bwd-only  0.8945 ms
+cuDNN fwd+bwd   1.1825 ms
+## run 18
+OURS fwd V62              0.2796 ms
+OURS bwd Vj1d             1.1303 ms
+OURS fwd+bwd V62+Vj1d     1.4063 ms
+OURS bwd Vj1              1.1157 ms
+OURS fwd+bwd V62+Vj1      1.3915 ms
+OURS bwd Vj2              1.0737 ms
+OURS fwd+bwd V62+Vj2      1.3491 ms
+OURS bwd Vj3              1.0241 ms
+OURS fwd+bwd V62+Vj3      1.3012 ms
+VG1 bwd Vg1               0.7035 ms
+VG1 fwd+bwd Vg1+Vg1       0.9186 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3117 ms
+cuDNN bwd-only  0.8938 ms
+cuDNN fwd+bwd   1.1796 ms
+## run 19
+OURS fwd V62              0.2811 ms
+OURS bwd Vj1d             1.1269 ms
+OURS fwd+bwd V62+Vj1d     1.4054 ms
+OURS bwd Vj1              1.1124 ms
+OURS fwd+bwd V62+Vj1      1.3899 ms
+OURS bwd Vj2              1.0732 ms
+OURS fwd+bwd V62+Vj2      1.3500 ms
+OURS bwd Vj3              1.0257 ms
+OURS fwd+bwd V62+Vj3      1.3017 ms
+VG1 bwd Vg1               0.7034 ms
+VG1 fwd+bwd Vg1+Vg1       0.9196 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3112 ms
+cuDNN bwd-only  0.8953 ms
+cuDNN fwd+bwd   1.1807 ms
+## run 20
+OURS fwd V62              0.2798 ms
+OURS bwd Vj1d             1.1300 ms
+OURS fwd+bwd V62+Vj1d     1.4082 ms
+OURS bwd Vj1              1.1125 ms
+OURS fwd+bwd V62+Vj1      1.3932 ms
+OURS bwd Vj2              1.0763 ms
+OURS fwd+bwd V62+Vj2      1.3535 ms
+OURS bwd Vj3              1.0275 ms
+OURS fwd+bwd V62+Vj3      1.3016 ms
+VG1 bwd Vg1               0.7055 ms
+VG1 fwd+bwd Vg1+Vg1       0.9200 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3121 ms
+cuDNN bwd-only  0.8953 ms
+cuDNN fwd+bwd   1.1806 ms
+## run 21
+OURS fwd V62              0.2796 ms
+OURS bwd Vj1d             1.1284 ms
+OURS fwd+bwd V62+Vj1d     1.4067 ms
+OURS bwd Vj1              1.1097 ms
+OURS fwd+bwd V62+Vj1      1.3892 ms
+OURS bwd Vj2              1.0727 ms
+OURS fwd+bwd V62+Vj2      1.3517 ms
+OURS bwd Vj3              1.0277 ms
+OURS fwd+bwd V62+Vj3      1.3035 ms
+VG1 bwd Vg1               0.7038 ms
+VG1 fwd+bwd Vg1+Vg1       0.9192 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2898 ms
+cuDNN bwd-only  0.8949 ms
+cuDNN fwd+bwd   1.1817 ms
+## run 22
+OURS fwd V62              0.2796 ms
+OURS bwd Vj1d             1.1275 ms
+OURS fwd+bwd V62+Vj1d     1.4043 ms
+OURS bwd Vj1              1.1110 ms
+OURS fwd+bwd V62+Vj1      1.3874 ms
+OURS bwd Vj2              1.0748 ms
+OURS fwd+bwd V62+Vj2      1.3502 ms
+OURS bwd Vj3              1.0265 ms
+OURS fwd+bwd V62+Vj3      1.3043 ms
+VG1 bwd Vg1               0.7044 ms
+VG1 fwd+bwd Vg1+Vg1       0.9196 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.2901 ms
+cuDNN bwd-only  0.8943 ms
+cuDNN fwd+bwd   1.1808 ms
+## run 23
+OURS fwd V62              0.2808 ms
+OURS bwd Vj1d             1.1310 ms
+OURS fwd+bwd V62+Vj1d     1.4097 ms
+OURS bwd Vj1              1.1127 ms
+OURS fwd+bwd V62+Vj1      1.3945 ms
+OURS bwd Vj2              1.0755 ms
+OURS fwd+bwd V62+Vj2      1.3507 ms
+OURS bwd Vj3              1.0275 ms
+OURS fwd+bwd V62+Vj3      1.3028 ms
+VG1 bwd Vg1               0.7060 ms
+VG1 fwd+bwd Vg1+Vg1       0.9195 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3108 ms
+cuDNN bwd-only  0.8939 ms
+cuDNN fwd+bwd   1.1800 ms
+## run 24
+OURS fwd V62              0.2796 ms
+OURS bwd Vj1d             1.1296 ms
+OURS fwd+bwd V62+Vj1d     1.4110 ms
+OURS bwd Vj1              1.1135 ms
+OURS fwd+bwd V62+Vj1      1.3916 ms
+OURS bwd Vj2              1.0742 ms
+OURS fwd+bwd V62+Vj2      1.3506 ms
+OURS bwd Vj3              1.0274 ms
+OURS fwd+bwd V62+Vj3      1.3032 ms
+VG1 bwd Vg1               0.7040 ms
+VG1 fwd+bwd Vg1+Vg1       0.9211 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3137 ms
+cuDNN bwd-only  0.8937 ms
+cuDNN fwd+bwd   1.1798 ms
+## run 25
+OURS fwd V62              0.2797 ms
+OURS bwd Vj1d             1.1291 ms
+OURS fwd+bwd V62+Vj1d     1.4067 ms
+OURS bwd Vj1              1.1150 ms
+OURS fwd+bwd V62+Vj1      1.3917 ms
+OURS bwd Vj2              1.0735 ms
+OURS fwd+bwd V62+Vj2      1.3508 ms
+OURS bwd Vj3              1.0261 ms
+OURS fwd+bwd V62+Vj3      1.3017 ms
+VG1 bwd Vg1               0.7041 ms
+VG1 fwd+bwd Vg1+Vg1       0.9234 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3104 ms
+cuDNN bwd-only  0.8947 ms
+cuDNN fwd+bwd   1.1804 ms
+############ SHAPE B=4 Hq=16 Hkv=4
+CHECK V62 O:      [32mValues match!
+[0mCHECK V62 LSE:    [32mValues match!
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj1  dQ:  [32mValues match!
+[0mCHECK Vj1  dK:  [32mValues match!
+[0mCHECK Vj1  dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+CHECK Vj3  dQ:  [32mValues match!
+[0mCHECK Vj3  dK:  [32mValues match!
+[0mCHECK Vj3  dV:  [32mValues match!
+CHECK Vg1 O:      [32mValues match!
+[0mCHECK Vg1 LSE:    [32mValues match!
+CHECK Vg1  dQ:  [32mValues match!
+[0mCHECK Vg1  dK:  [32mValues match!
+[0mCHECK Vg1  dV:  [32mValues match!
+## run 1
+OURS fwd V62              0.5462 ms
+OURS bwd Vj1d             2.1161 ms
+OURS fwd+bwd V62+Vj1d     2.6610 ms
+OURS bwd Vj1              2.0884 ms
+OURS fwd+bwd V62+Vj1      2.6322 ms
+OURS bwd Vj2              2.0207 ms
+OURS fwd+bwd V62+Vj2      2.5635 ms
+OURS bwd Vj3              1.9236 ms
+OURS fwd+bwd V62+Vj3      2.4692 ms
+VG1 bwd Vg1               1.3792 ms
+VG1 fwd+bwd Vg1+Vg1       1.8071 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5304 ms
+cuDNN bwd-only  1.6658 ms
+cuDNN fwd+bwd   2.1923 ms
+## run 2
+OURS fwd V62              0.5463 ms
+OURS bwd Vj1d             2.1168 ms
+OURS fwd+bwd V62+Vj1d     2.6614 ms
+OURS bwd Vj1              2.0870 ms
+OURS fwd+bwd V62+Vj1      2.6344 ms
+OURS bwd Vj2              2.0205 ms
+OURS fwd+bwd V62+Vj2      2.5655 ms
+OURS bwd Vj3              1.9251 ms
+OURS fwd+bwd V62+Vj3      2.4706 ms
+VG1 bwd Vg1               1.3824 ms
+VG1 fwd+bwd Vg1+Vg1       1.8076 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5312 ms
+cuDNN bwd-only  1.6691 ms
+cuDNN fwd+bwd   2.1924 ms
+## run 3
+OURS fwd V62              0.5464 ms
+OURS bwd Vj1d             2.1178 ms
+OURS fwd+bwd V62+Vj1d     2.6630 ms
+OURS bwd Vj1              2.0915 ms
+OURS fwd+bwd V62+Vj1      2.6344 ms
+OURS bwd Vj2              2.0226 ms
+OURS fwd+bwd V62+Vj2      2.5675 ms
+OURS bwd Vj3              1.9265 ms
+OURS fwd+bwd V62+Vj3      2.4707 ms
+VG1 bwd Vg1               1.3826 ms
+VG1 fwd+bwd Vg1+Vg1       1.8075 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5289 ms
+cuDNN bwd-only  1.6638 ms
+cuDNN fwd+bwd   2.1950 ms
+## run 4
+OURS fwd V62              0.5460 ms
+OURS bwd Vj1d             2.1145 ms
+OURS fwd+bwd V62+Vj1d     2.6620 ms
+OURS bwd Vj1              2.0875 ms
+OURS fwd+bwd V62+Vj1      2.6341 ms
+OURS bwd Vj2              2.0216 ms
+OURS fwd+bwd V62+Vj2      2.5650 ms
+OURS bwd Vj3              1.9253 ms
+OURS fwd+bwd V62+Vj3      2.4691 ms
+VG1 bwd Vg1               1.3792 ms
+VG1 fwd+bwd Vg1+Vg1       1.8064 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5307 ms
+cuDNN bwd-only  1.6653 ms
+cuDNN fwd+bwd   2.1906 ms
+## run 5
+OURS fwd V62              0.5461 ms
+OURS bwd Vj1d             2.1151 ms
+OURS fwd+bwd V62+Vj1d     2.6612 ms
+OURS bwd Vj1              2.0864 ms
+OURS fwd+bwd V62+Vj1      2.6351 ms
+OURS bwd Vj2              2.0203 ms
+OURS fwd+bwd V62+Vj2      2.5642 ms
+OURS bwd Vj3              1.9237 ms
+OURS fwd+bwd V62+Vj3      2.4682 ms
+VG1 bwd Vg1               1.3827 ms
+VG1 fwd+bwd Vg1+Vg1       1.8061 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5719 ms
+cuDNN bwd-only  1.6627 ms
+cuDNN fwd+bwd   2.1945 ms
+## run 6
+OURS fwd V62              0.5462 ms
+OURS bwd Vj1d             2.1164 ms
+OURS fwd+bwd V62+Vj1d     2.6625 ms
+OURS bwd Vj1              2.0873 ms
+OURS fwd+bwd V62+Vj1      2.6340 ms
+OURS bwd Vj2              2.0195 ms
+OURS fwd+bwd V62+Vj2      2.5661 ms
+OURS bwd Vj3              1.9244 ms
+OURS fwd+bwd V62+Vj3      2.4680 ms
+VG1 bwd Vg1               1.3810 ms
+VG1 fwd+bwd Vg1+Vg1       1.8071 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5290 ms
+cuDNN bwd-only  1.6627 ms
+cuDNN fwd+bwd   2.1962 ms
+## run 7
+OURS fwd V62              0.5462 ms
+OURS bwd Vj1d             2.1142 ms
+OURS fwd+bwd V62+Vj1d     2.6611 ms
+OURS bwd Vj1              2.0897 ms
+OURS fwd+bwd V62+Vj1      2.6353 ms
+OURS bwd Vj2              2.0216 ms
+OURS fwd+bwd V62+Vj2      2.5665 ms
+OURS bwd Vj3              1.9254 ms
+OURS fwd+bwd V62+Vj3      2.4689 ms
+VG1 bwd Vg1               1.3833 ms
+VG1 fwd+bwd Vg1+Vg1       1.8080 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5711 ms
+cuDNN bwd-only  1.6633 ms
+cuDNN fwd+bwd   2.1926 ms
+## run 8
+OURS fwd V62              0.5482 ms
+OURS bwd Vj1d             2.1167 ms
+OURS fwd+bwd V62+Vj1d     2.6625 ms
+OURS bwd Vj1              2.0881 ms
+OURS fwd+bwd V62+Vj1      2.6332 ms
+OURS bwd Vj2              2.0223 ms
+OURS fwd+bwd V62+Vj2      2.5662 ms
+OURS bwd Vj3              1.9238 ms
+OURS fwd+bwd V62+Vj3      2.4678 ms
+VG1 bwd Vg1               1.3801 ms
+VG1 fwd+bwd Vg1+Vg1       1.8063 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5294 ms
+cuDNN bwd-only  1.6689 ms
+cuDNN fwd+bwd   2.1958 ms
+## run 9
+OURS fwd V62              0.5461 ms
+OURS bwd Vj1d             2.1177 ms
+OURS fwd+bwd V62+Vj1d     2.6615 ms
+OURS bwd Vj1              2.0878 ms
+OURS fwd+bwd V62+Vj1      2.6333 ms
+OURS bwd Vj2              2.0221 ms
+OURS fwd+bwd V62+Vj2      2.5656 ms
+OURS bwd Vj3              1.9226 ms
+OURS fwd+bwd V62+Vj3      2.4688 ms
+VG1 bwd Vg1               1.3790 ms
+VG1 fwd+bwd Vg1+Vg1       1.8071 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5721 ms
+cuDNN bwd-only  1.6635 ms
+cuDNN fwd+bwd   2.1956 ms
+## run 10
+OURS fwd V62              0.5488 ms
+OURS bwd Vj1d             2.1170 ms
+OURS fwd+bwd V62+Vj1d     2.6623 ms
+OURS bwd Vj1              2.0894 ms
+OURS fwd+bwd V62+Vj1      2.6357 ms
+OURS bwd Vj2              2.0200 ms
+OURS fwd+bwd V62+Vj2      2.5663 ms
+OURS bwd Vj3              1.9245 ms
+OURS fwd+bwd V62+Vj3      2.4687 ms
+VG1 bwd Vg1               1.3804 ms
+VG1 fwd+bwd Vg1+Vg1       1.8086 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5293 ms
+cuDNN bwd-only  1.6619 ms
+cuDNN fwd+bwd   2.1941 ms
+## run 11
+OURS fwd V62              0.5464 ms
+OURS bwd Vj1d             2.1173 ms
+OURS fwd+bwd V62+Vj1d     2.6628 ms
+OURS bwd Vj1              2.0898 ms
+OURS fwd+bwd V62+Vj1      2.6329 ms
+OURS bwd Vj2              2.0220 ms
+OURS fwd+bwd V62+Vj2      2.5655 ms
+OURS bwd Vj3              1.9252 ms
+OURS fwd+bwd V62+Vj3      2.4695 ms
+VG1 bwd Vg1               1.3822 ms
+VG1 fwd+bwd Vg1+Vg1       1.8073 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5305 ms
+cuDNN bwd-only  1.6652 ms
+cuDNN fwd+bwd   2.1923 ms
+## run 12
+OURS fwd V62              0.5460 ms
+OURS bwd Vj1d             2.1132 ms
+OURS fwd+bwd V62+Vj1d     2.6621 ms
+OURS bwd Vj1              2.0864 ms
+OURS fwd+bwd V62+Vj1      2.6321 ms
+OURS bwd Vj2              2.0218 ms
+OURS fwd+bwd V62+Vj2      2.5664 ms
+OURS bwd Vj3              1.9241 ms
+OURS fwd+bwd V62+Vj3      2.4674 ms
+VG1 bwd Vg1               1.3791 ms
+VG1 fwd+bwd Vg1+Vg1       1.8084 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5287 ms
+cuDNN bwd-only  1.6626 ms
+cuDNN fwd+bwd   2.1956 ms
+## run 13
+OURS fwd V62              0.5462 ms
+OURS bwd Vj1d             2.1158 ms
+OURS fwd+bwd V62+Vj1d     2.6624 ms
+OURS bwd Vj1              2.0869 ms
+OURS fwd+bwd V62+Vj1      2.6334 ms
+OURS bwd Vj2              2.0212 ms
+OURS fwd+bwd V62+Vj2      2.5649 ms
+OURS bwd Vj3              1.9247 ms
+OURS fwd+bwd V62+Vj3      2.4666 ms
+VG1 bwd Vg1               1.3804 ms
+VG1 fwd+bwd Vg1+Vg1       1.8079 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5288 ms
+cuDNN bwd-only  1.6657 ms
+cuDNN fwd+bwd   2.1927 ms
+## run 14
+OURS fwd V62              0.5461 ms
+OURS bwd Vj1d             2.1167 ms
+OURS fwd+bwd V62+Vj1d     2.6641 ms
+OURS bwd Vj1              2.0874 ms
+OURS fwd+bwd V62+Vj1      2.6331 ms
+OURS bwd Vj2              2.0219 ms
+OURS fwd+bwd V62+Vj2      2.5666 ms
+OURS bwd Vj3              1.9223 ms
+OURS fwd+bwd V62+Vj3      2.4683 ms
+VG1 bwd Vg1               1.3813 ms
+VG1 fwd+bwd Vg1+Vg1       1.8055 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5704 ms
+cuDNN bwd-only  1.6630 ms
+cuDNN fwd+bwd   2.1961 ms
+## run 15
+OURS fwd V62              0.5462 ms
+OURS bwd Vj1d             2.1161 ms
+OURS fwd+bwd V62+Vj1d     2.6611 ms
+OURS bwd Vj1              2.0867 ms
+OURS fwd+bwd V62+Vj1      2.6341 ms
+OURS bwd Vj2              2.0222 ms
+OURS fwd+bwd V62+Vj2      2.5642 ms
+OURS bwd Vj3              1.9235 ms
+OURS fwd+bwd V62+Vj3      2.4678 ms
+VG1 bwd Vg1               1.3798 ms
+VG1 fwd+bwd Vg1+Vg1       1.8058 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5684 ms
+cuDNN bwd-only  1.6630 ms
+cuDNN fwd+bwd   2.1949 ms
+## run 16
+OURS fwd V62              0.5460 ms
+OURS bwd Vj1d             2.1165 ms
+OURS fwd+bwd V62+Vj1d     2.6592 ms
+OURS bwd Vj1              2.0888 ms
+OURS fwd+bwd V62+Vj1      2.6308 ms
+OURS bwd Vj2              2.0221 ms
+OURS fwd+bwd V62+Vj2      2.5627 ms
+OURS bwd Vj3              1.9242 ms
+OURS fwd+bwd V62+Vj3      2.4679 ms
+VG1 bwd Vg1               1.3824 ms
+VG1 fwd+bwd Vg1+Vg1       1.8048 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5308 ms
+cuDNN bwd-only  1.6647 ms
+cuDNN fwd+bwd   2.1945 ms
+## run 17
+OURS fwd V62              0.5460 ms
+OURS bwd Vj1d             2.1167 ms
+OURS fwd+bwd V62+Vj1d     2.6623 ms
+OURS bwd Vj1              2.0892 ms
+OURS fwd+bwd V62+Vj1      2.6320 ms
+OURS bwd Vj2              2.0214 ms
+OURS fwd+bwd V62+Vj2      2.5632 ms
+OURS bwd Vj3              1.9258 ms
+OURS fwd+bwd V62+Vj3      2.4674 ms
+VG1 bwd Vg1               1.3810 ms
+VG1 fwd+bwd Vg1+Vg1       1.8059 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5703 ms
+cuDNN bwd-only  1.6668 ms
+cuDNN fwd+bwd   2.1964 ms
+## run 18
+OURS fwd V62              0.5463 ms
+OURS bwd Vj1d             2.1153 ms
+OURS fwd+bwd V62+Vj1d     2.6620 ms
+OURS bwd Vj1              2.0875 ms
+OURS fwd+bwd V62+Vj1      2.6328 ms
+OURS bwd Vj2              2.0214 ms
+OURS fwd+bwd V62+Vj2      2.5665 ms
+OURS bwd Vj3              1.9265 ms
+OURS fwd+bwd V62+Vj3      2.4677 ms
+VG1 bwd Vg1               1.3792 ms
+VG1 fwd+bwd Vg1+Vg1       1.8074 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5285 ms
+cuDNN bwd-only  1.6635 ms
+cuDNN fwd+bwd   2.1949 ms
+## run 19
+OURS fwd V62              0.5461 ms
+OURS bwd Vj1d             2.1159 ms
+OURS fwd+bwd V62+Vj1d     2.6618 ms
+OURS bwd Vj1              2.0883 ms
+OURS fwd+bwd V62+Vj1      2.6356 ms
+OURS bwd Vj2              2.0186 ms
+OURS fwd+bwd V62+Vj2      2.5661 ms
+OURS bwd Vj3              1.9243 ms
+OURS fwd+bwd V62+Vj3      2.4692 ms
+VG1 bwd Vg1               1.3796 ms
+VG1 fwd+bwd Vg1+Vg1       1.8067 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5295 ms
+cuDNN bwd-only  1.6618 ms
+cuDNN fwd+bwd   2.1927 ms
+## run 20
+OURS fwd V62              0.5463 ms
+OURS bwd Vj1d             2.1140 ms
+OURS fwd+bwd V62+Vj1d     2.6617 ms
+OURS bwd Vj1              2.0880 ms
+OURS fwd+bwd V62+Vj1      2.6331 ms
+OURS bwd Vj2              2.0227 ms
+OURS fwd+bwd V62+Vj2      2.5628 ms
+OURS bwd Vj3              1.9230 ms
+OURS fwd+bwd V62+Vj3      2.4698 ms
+VG1 bwd Vg1               1.3797 ms
+VG1 fwd+bwd Vg1+Vg1       1.8085 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5720 ms
+cuDNN bwd-only  1.6635 ms
+cuDNN fwd+bwd   2.1956 ms
+## run 21
+OURS fwd V62              0.5468 ms
+OURS bwd Vj1d             2.1167 ms
+OURS fwd+bwd V62+Vj1d     2.6624 ms
+OURS bwd Vj1              2.0899 ms
+OURS fwd+bwd V62+Vj1      2.6331 ms
+OURS bwd Vj2              2.0212 ms
+OURS fwd+bwd V62+Vj2      2.5659 ms
+OURS bwd Vj3              1.9237 ms
+OURS fwd+bwd V62+Vj3      2.4690 ms
+VG1 bwd Vg1               1.3800 ms
+VG1 fwd+bwd Vg1+Vg1       1.8087 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5293 ms
+cuDNN bwd-only  1.6707 ms
+cuDNN fwd+bwd   2.1954 ms
+## run 22
+OURS fwd V62              0.5466 ms
+OURS bwd Vj1d             2.1149 ms
+OURS fwd+bwd V62+Vj1d     2.6641 ms
+OURS bwd Vj1              2.0881 ms
+OURS fwd+bwd V62+Vj1      2.6340 ms
+OURS bwd Vj2              2.0202 ms
+OURS fwd+bwd V62+Vj2      2.5654 ms
+OURS bwd Vj3              1.9239 ms
+OURS fwd+bwd V62+Vj3      2.4677 ms
+VG1 bwd Vg1               1.3814 ms
+VG1 fwd+bwd Vg1+Vg1       1.8087 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5332 ms
+cuDNN bwd-only  1.6641 ms
+cuDNN fwd+bwd   2.1939 ms
+## run 23
+OURS fwd V62              0.5462 ms
+OURS bwd Vj1d             2.1181 ms
+OURS fwd+bwd V62+Vj1d     2.6614 ms
+OURS bwd Vj1              2.0894 ms
+OURS fwd+bwd V62+Vj1      2.6338 ms
+OURS bwd Vj2              2.0199 ms
+OURS fwd+bwd V62+Vj2      2.5664 ms
+OURS bwd Vj3              1.9254 ms
+OURS fwd+bwd V62+Vj3      2.4687 ms
+VG1 bwd Vg1               1.3812 ms
+VG1 fwd+bwd Vg1+Vg1       1.8053 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5691 ms
+cuDNN bwd-only  1.6629 ms
+cuDNN fwd+bwd   2.1953 ms
+## run 24
+OURS fwd V62              0.5463 ms
+OURS bwd Vj1d             2.1148 ms
+OURS fwd+bwd V62+Vj1d     2.6605 ms
+OURS bwd Vj1              2.0878 ms
+OURS fwd+bwd V62+Vj1      2.6299 ms
+OURS bwd Vj2              2.0207 ms
+OURS fwd+bwd V62+Vj2      2.5648 ms
+OURS bwd Vj3              1.9246 ms
+OURS fwd+bwd V62+Vj3      2.4699 ms
+VG1 bwd Vg1               1.3820 ms
+VG1 fwd+bwd Vg1+Vg1       1.8045 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5710 ms
+cuDNN bwd-only  1.6629 ms
+cuDNN fwd+bwd   2.1912 ms
+## run 25
+OURS fwd V62              0.5461 ms
+OURS bwd Vj1d             2.1157 ms
+OURS fwd+bwd V62+Vj1d     2.6601 ms
+OURS bwd Vj1              2.0882 ms
+OURS fwd+bwd V62+Vj1      2.6330 ms
+OURS bwd Vj2              2.0223 ms
+OURS fwd+bwd V62+Vj2      2.5668 ms
+OURS bwd Vj3              1.9251 ms
+OURS fwd+bwd V62+Vj3      2.4668 ms
+VG1 bwd Vg1               1.3823 ms
+VG1 fwd+bwd Vg1+Vg1       1.8043 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5744 ms
+cuDNN bwd-only  1.6643 ms
+cuDNN fwd+bwd   2.1917 ms
+############ SHAPE B=8 Hq=16 Hkv=4
+CHECK V62 O:      [32mValues match!
+[0mCHECK V62 LSE:    [32mValues match!
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj1  dQ:  [32mValues match!
+[0mCHECK Vj1  dK:  [32mValues match!
+[0mCHECK Vj1  dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+CHECK Vj3  dQ:  [32mValues match!
+[0mCHECK Vj3  dK:  [32mValues match!
+[0mCHECK Vj3  dV:  [32mValues match!
+CHECK Vg1 O:      [32mValues match!
+[0mCHECK Vg1 LSE:    [32mValues match!
+CHECK Vg1  dQ:  [32mValues match!
+[0mCHECK Vg1  dK:  [32mValues match!
+[0mCHECK Vg1  dV:  [32mValues match!
+## run 1
+OURS fwd V62              1.0805 ms
+OURS bwd Vj1d             4.0896 ms
+OURS fwd+bwd V62+Vj1d     5.1661 ms
+OURS bwd Vj1              4.0401 ms
+OURS fwd+bwd V62+Vj1      5.1158 ms
+OURS bwd Vj2              3.9113 ms
+OURS fwd+bwd V62+Vj2      4.9863 ms
+OURS bwd Vj3              3.7147 ms
+OURS fwd+bwd V62+Vj3      4.7896 ms
+VG1 bwd Vg1               2.7245 ms
+VG1 fwd+bwd Vg1+Vg1       3.5691 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0890 ms
+cuDNN bwd-only  3.2104 ms
+cuDNN fwd+bwd   4.2125 ms
+## run 2
+OURS fwd V62              1.0773 ms
+OURS bwd Vj1d             4.0888 ms
+OURS fwd+bwd V62+Vj1d     5.1654 ms
+OURS bwd Vj1              4.0408 ms
+OURS fwd+bwd V62+Vj1      5.1177 ms
+OURS bwd Vj2              3.9124 ms
+OURS fwd+bwd V62+Vj2      4.9892 ms
+OURS bwd Vj3              3.7143 ms
+OURS fwd+bwd V62+Vj3      4.7901 ms
+VG1 bwd Vg1               2.7250 ms
+VG1 fwd+bwd Vg1+Vg1       3.5762 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0869 ms
+cuDNN bwd-only  3.2016 ms
+cuDNN fwd+bwd   4.2195 ms
+## run 3
+OURS fwd V62              1.0772 ms
+OURS bwd Vj1d             4.0880 ms
+OURS fwd+bwd V62+Vj1d     5.1660 ms
+OURS bwd Vj1              4.0404 ms
+OURS fwd+bwd V62+Vj1      5.1162 ms
+OURS bwd Vj2              3.9090 ms
+OURS fwd+bwd V62+Vj2      4.9877 ms
+OURS bwd Vj3              3.7127 ms
+OURS fwd+bwd V62+Vj3      4.7901 ms
+VG1 bwd Vg1               2.7240 ms
+VG1 fwd+bwd Vg1+Vg1       3.5758 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0870 ms
+cuDNN bwd-only  3.2119 ms
+cuDNN fwd+bwd   4.2120 ms
+## run 4
+OURS fwd V62              1.0777 ms
+OURS bwd Vj1d             4.0904 ms
+OURS fwd+bwd V62+Vj1d     5.1683 ms
+OURS bwd Vj1              4.0426 ms
+OURS fwd+bwd V62+Vj1      5.1182 ms
+OURS bwd Vj2              3.9131 ms
+OURS fwd+bwd V62+Vj2      4.9906 ms
+OURS bwd Vj3              3.7148 ms
+OURS fwd+bwd V62+Vj3      4.7891 ms
+VG1 bwd Vg1               2.7251 ms
+VG1 fwd+bwd Vg1+Vg1       3.5729 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0867 ms
+cuDNN bwd-only  3.2008 ms
+cuDNN fwd+bwd   4.2215 ms
+## run 5
+OURS fwd V62              1.0802 ms
+OURS bwd Vj1d             4.0875 ms
+OURS fwd+bwd V62+Vj1d     5.1652 ms
+OURS bwd Vj1              4.0424 ms
+OURS fwd+bwd V62+Vj1      5.1170 ms
+OURS bwd Vj2              3.9087 ms
+OURS fwd+bwd V62+Vj2      4.9852 ms
+OURS bwd Vj3              3.7130 ms
+OURS fwd+bwd V62+Vj3      4.7907 ms
+VG1 bwd Vg1               2.7253 ms
+VG1 fwd+bwd Vg1+Vg1       3.5717 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0890 ms
+cuDNN bwd-only  3.2004 ms
+cuDNN fwd+bwd   4.2195 ms
+## run 6
+OURS fwd V62              1.0784 ms
+OURS bwd Vj1d             4.0883 ms
+OURS fwd+bwd V62+Vj1d     5.1654 ms
+OURS bwd Vj1              4.0396 ms
+OURS fwd+bwd V62+Vj1      5.1202 ms
+OURS bwd Vj2              3.9106 ms
+OURS fwd+bwd V62+Vj2      4.9868 ms
+OURS bwd Vj3              3.7130 ms
+OURS fwd+bwd V62+Vj3      4.7880 ms
+VG1 bwd Vg1               2.7243 ms
+VG1 fwd+bwd Vg1+Vg1       3.5754 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0910 ms
+cuDNN bwd-only  3.2009 ms
+cuDNN fwd+bwd   4.2222 ms
+## run 7
+OURS fwd V62              1.0813 ms
+OURS bwd Vj1d             4.0898 ms
+OURS fwd+bwd V62+Vj1d     5.1654 ms
+OURS bwd Vj1              4.0389 ms
+OURS fwd+bwd V62+Vj1      5.1195 ms
+OURS bwd Vj2              3.9122 ms
+OURS fwd+bwd V62+Vj2      4.9875 ms
+OURS bwd Vj3              3.7147 ms
+OURS fwd+bwd V62+Vj3      4.7903 ms
+VG1 bwd Vg1               2.7251 ms
+VG1 fwd+bwd Vg1+Vg1       3.5751 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0884 ms
+cuDNN bwd-only  3.2012 ms
+cuDNN fwd+bwd   4.2228 ms
+## run 8
+OURS fwd V62              1.0771 ms
+OURS bwd Vj1d             4.0895 ms
+OURS fwd+bwd V62+Vj1d     5.1676 ms
+OURS bwd Vj1              4.0396 ms
+OURS fwd+bwd V62+Vj1      5.1183 ms
+OURS bwd Vj2              3.9104 ms
+OURS fwd+bwd V62+Vj2      4.9898 ms
+OURS bwd Vj3              3.7144 ms
+OURS fwd+bwd V62+Vj3      4.7882 ms
+VG1 bwd Vg1               2.7247 ms
+VG1 fwd+bwd Vg1+Vg1       3.5748 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0093 ms
+cuDNN bwd-only  3.2028 ms
+cuDNN fwd+bwd   4.2199 ms
+## run 9
+OURS fwd V62              1.0771 ms
+OURS bwd Vj1d             4.0899 ms
+OURS fwd+bwd V62+Vj1d     5.1647 ms
+OURS bwd Vj1              4.0438 ms
+OURS fwd+bwd V62+Vj1      5.1191 ms
+OURS bwd Vj2              3.9110 ms
+OURS fwd+bwd V62+Vj2      4.9840 ms
+OURS bwd Vj3              3.7152 ms
+OURS fwd+bwd V62+Vj3      4.7907 ms
+VG1 bwd Vg1               2.7248 ms
+VG1 fwd+bwd Vg1+Vg1       3.5747 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0913 ms
+cuDNN bwd-only  3.2117 ms
+cuDNN fwd+bwd   4.2145 ms
+## run 10
+OURS fwd V62              1.0777 ms
+OURS bwd Vj1d             4.0871 ms
+OURS fwd+bwd V62+Vj1d     5.1653 ms
+OURS bwd Vj1              4.0394 ms
+OURS fwd+bwd V62+Vj1      5.1181 ms
+OURS bwd Vj2              3.9108 ms
+OURS fwd+bwd V62+Vj2      4.9878 ms
+OURS bwd Vj3              3.7146 ms
+OURS fwd+bwd V62+Vj3      4.7908 ms
+VG1 bwd Vg1               2.7254 ms
+VG1 fwd+bwd Vg1+Vg1       3.5716 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0859 ms
+cuDNN bwd-only  3.1994 ms
+cuDNN fwd+bwd   4.2204 ms
+## run 11
+OURS fwd V62              1.0820 ms
+OURS bwd Vj1d             4.0861 ms
+OURS fwd+bwd V62+Vj1d     5.1664 ms
+OURS bwd Vj1              4.0411 ms
+OURS fwd+bwd V62+Vj1      5.1196 ms
+OURS bwd Vj2              3.9121 ms
+OURS fwd+bwd V62+Vj2      4.9877 ms
+OURS bwd Vj3              3.7155 ms
+OURS fwd+bwd V62+Vj3      4.7917 ms
+VG1 bwd Vg1               2.7279 ms
+VG1 fwd+bwd Vg1+Vg1       3.5760 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0902 ms
+cuDNN bwd-only  3.2088 ms
+cuDNN fwd+bwd   4.2126 ms
+## run 12
+OURS fwd V62              1.0788 ms
+OURS bwd Vj1d             4.0874 ms
+OURS fwd+bwd V62+Vj1d     5.1624 ms
+OURS bwd Vj1              4.0403 ms
+OURS fwd+bwd V62+Vj1      5.1165 ms
+OURS bwd Vj2              3.9094 ms
+OURS fwd+bwd V62+Vj2      4.9878 ms
+OURS bwd Vj3              3.7138 ms
+OURS fwd+bwd V62+Vj3      4.7869 ms
+VG1 bwd Vg1               2.7260 ms
+VG1 fwd+bwd Vg1+Vg1       3.5752 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0884 ms
+cuDNN bwd-only  3.2067 ms
+cuDNN fwd+bwd   4.2131 ms
+## run 13
+OURS fwd V62              1.0790 ms
+OURS bwd Vj1d             4.0881 ms
+OURS fwd+bwd V62+Vj1d     5.1655 ms
+OURS bwd Vj1              4.0403 ms
+OURS fwd+bwd V62+Vj1      5.1227 ms
+OURS bwd Vj2              3.9121 ms
+OURS fwd+bwd V62+Vj2      4.9887 ms
+OURS bwd Vj3              3.7170 ms
+OURS fwd+bwd V62+Vj3      4.7931 ms
+VG1 bwd Vg1               2.7255 ms
+VG1 fwd+bwd Vg1+Vg1       3.5764 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0888 ms
+cuDNN bwd-only  3.2023 ms
+cuDNN fwd+bwd   4.2193 ms
+## run 14
+OURS fwd V62              1.0778 ms
+OURS bwd Vj1d             4.0888 ms
+OURS fwd+bwd V62+Vj1d     5.1649 ms
+OURS bwd Vj1              4.0406 ms
+OURS fwd+bwd V62+Vj1      5.1215 ms
+OURS bwd Vj2              3.9119 ms
+OURS fwd+bwd V62+Vj2      4.9878 ms
+OURS bwd Vj3              3.7150 ms
+OURS fwd+bwd V62+Vj3      4.7902 ms
+VG1 bwd Vg1               2.7255 ms
+VG1 fwd+bwd Vg1+Vg1       3.5712 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0859 ms
+cuDNN bwd-only  3.2101 ms
+cuDNN fwd+bwd   4.2205 ms
+## run 15
+OURS fwd V62              1.0813 ms
+OURS bwd Vj1d             4.0895 ms
+OURS fwd+bwd V62+Vj1d     5.1651 ms
+OURS bwd Vj1              4.0420 ms
+OURS fwd+bwd V62+Vj1      5.1178 ms
+OURS bwd Vj2              3.9128 ms
+OURS fwd+bwd V62+Vj2      4.9893 ms
+OURS bwd Vj3              3.7151 ms
+OURS fwd+bwd V62+Vj3      4.7929 ms
+VG1 bwd Vg1               2.7246 ms
+VG1 fwd+bwd Vg1+Vg1       3.5768 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0931 ms
+cuDNN bwd-only  3.2012 ms
+cuDNN fwd+bwd   4.2126 ms
+## run 16
+OURS fwd V62              1.0804 ms
+OURS bwd Vj1d             4.0876 ms
+OURS fwd+bwd V62+Vj1d     5.1652 ms
+OURS bwd Vj1              4.0389 ms
+OURS fwd+bwd V62+Vj1      5.1170 ms
+OURS bwd Vj2              3.9111 ms
+OURS fwd+bwd V62+Vj2      4.9845 ms
+OURS bwd Vj3              3.7144 ms
+OURS fwd+bwd V62+Vj3      4.7885 ms
+VG1 bwd Vg1               2.7251 ms
+VG1 fwd+bwd Vg1+Vg1       3.5753 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0892 ms
+cuDNN bwd-only  3.2122 ms
+cuDNN fwd+bwd   4.2186 ms
+## run 17
+OURS fwd V62              1.0772 ms
+OURS bwd Vj1d             4.0857 ms
+OURS fwd+bwd V62+Vj1d     5.1639 ms
+OURS bwd Vj1              4.0408 ms
+OURS fwd+bwd V62+Vj1      5.1157 ms
+OURS bwd Vj2              3.9102 ms
+OURS fwd+bwd V62+Vj2      4.9860 ms
+OURS bwd Vj3              3.7132 ms
+OURS fwd+bwd V62+Vj3      4.7901 ms
+VG1 bwd Vg1               2.7241 ms
+VG1 fwd+bwd Vg1+Vg1       3.5688 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0887 ms
+cuDNN bwd-only  3.2002 ms
+cuDNN fwd+bwd   4.2208 ms
+## run 18
+OURS fwd V62              1.0775 ms
+OURS bwd Vj1d             4.0882 ms
+OURS fwd+bwd V62+Vj1d     5.1667 ms
+OURS bwd Vj1              4.0409 ms
+OURS fwd+bwd V62+Vj1      5.1169 ms
+OURS bwd Vj2              3.9116 ms
+OURS fwd+bwd V62+Vj2      4.9879 ms
+OURS bwd Vj3              3.7149 ms
+OURS fwd+bwd V62+Vj3      4.7901 ms
+VG1 bwd Vg1               2.7250 ms
+VG1 fwd+bwd Vg1+Vg1       3.5772 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0925 ms
+cuDNN bwd-only  3.2104 ms
+cuDNN fwd+bwd   4.2143 ms
+## run 19
+OURS fwd V62              1.0799 ms
+OURS bwd Vj1d             4.0856 ms
+OURS fwd+bwd V62+Vj1d     5.1686 ms
+OURS bwd Vj1              4.0391 ms
+OURS fwd+bwd V62+Vj1      5.1176 ms
+OURS bwd Vj2              3.9122 ms
+OURS fwd+bwd V62+Vj2      4.9869 ms
+OURS bwd Vj3              3.7144 ms
+OURS fwd+bwd V62+Vj3      4.7870 ms
+VG1 bwd Vg1               2.7249 ms
+VG1 fwd+bwd Vg1+Vg1       3.5737 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0129 ms
+cuDNN bwd-only  3.2095 ms
+cuDNN fwd+bwd   4.2207 ms
+## run 20
+OURS fwd V62              1.0810 ms
+OURS bwd Vj1d             4.0876 ms
+OURS fwd+bwd V62+Vj1d     5.1633 ms
+OURS bwd Vj1              4.0392 ms
+OURS fwd+bwd V62+Vj1      5.1168 ms
+OURS bwd Vj2              3.9128 ms
+OURS fwd+bwd V62+Vj2      4.9861 ms
+OURS bwd Vj3              3.7144 ms
+OURS fwd+bwd V62+Vj3      4.7889 ms
+VG1 bwd Vg1               2.7265 ms
+VG1 fwd+bwd Vg1+Vg1       3.5761 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0916 ms
+cuDNN bwd-only  3.2103 ms
+cuDNN fwd+bwd   4.2142 ms
+## run 21
+OURS fwd V62              1.0802 ms
+OURS bwd Vj1d             4.0887 ms
+OURS fwd+bwd V62+Vj1d     5.1657 ms
+OURS bwd Vj1              4.0377 ms
+OURS fwd+bwd V62+Vj1      5.1164 ms
+OURS bwd Vj2              3.9104 ms
+OURS fwd+bwd V62+Vj2      4.9888 ms
+OURS bwd Vj3              3.7121 ms
+OURS fwd+bwd V62+Vj3      4.7897 ms
+VG1 bwd Vg1               2.7240 ms
+VG1 fwd+bwd Vg1+Vg1       3.5752 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0101 ms
+cuDNN bwd-only  3.2112 ms
+cuDNN fwd+bwd   4.2190 ms
+## run 22
+OURS fwd V62              1.0775 ms
+OURS bwd Vj1d             4.0905 ms
+OURS fwd+bwd V62+Vj1d     5.1657 ms
+OURS bwd Vj1              4.0404 ms
+OURS fwd+bwd V62+Vj1      5.1181 ms
+OURS bwd Vj2              3.9110 ms
+OURS fwd+bwd V62+Vj2      4.9878 ms
+OURS bwd Vj3              3.7139 ms
+OURS fwd+bwd V62+Vj3      4.7917 ms
+VG1 bwd Vg1               2.7248 ms
+VG1 fwd+bwd Vg1+Vg1       3.5760 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0883 ms
+cuDNN bwd-only  3.2009 ms
+cuDNN fwd+bwd   4.2209 ms
+## run 23
+OURS fwd V62              1.0798 ms
+OURS bwd Vj1d             4.0887 ms
+OURS fwd+bwd V62+Vj1d     5.1652 ms
+OURS bwd Vj1              4.0383 ms
+OURS fwd+bwd V62+Vj1      5.1160 ms
+OURS bwd Vj2              3.9117 ms
+OURS fwd+bwd V62+Vj2      4.9905 ms
+OURS bwd Vj3              3.7155 ms
+OURS fwd+bwd V62+Vj3      4.7915 ms
+VG1 bwd Vg1               2.7244 ms
+VG1 fwd+bwd Vg1+Vg1       3.5757 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0095 ms
+cuDNN bwd-only  3.2019 ms
+cuDNN fwd+bwd   4.2203 ms
+## run 24
+OURS fwd V62              1.0813 ms
+OURS bwd Vj1d             4.0895 ms
+OURS fwd+bwd V62+Vj1d     5.1674 ms
+OURS bwd Vj1              4.0422 ms
+OURS fwd+bwd V62+Vj1      5.1200 ms
+OURS bwd Vj2              3.9128 ms
+OURS fwd+bwd V62+Vj2      4.9897 ms
+OURS bwd Vj3              3.7153 ms
+OURS fwd+bwd V62+Vj3      4.7916 ms
+VG1 bwd Vg1               2.7271 ms
+VG1 fwd+bwd Vg1+Vg1       3.5720 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0903 ms
+cuDNN bwd-only  3.2028 ms
+cuDNN fwd+bwd   4.2139 ms
+## run 25
+OURS fwd V62              1.0790 ms
+OURS bwd Vj1d             4.0876 ms
+OURS fwd+bwd V62+Vj1d     5.1655 ms
+OURS bwd Vj1              4.0430 ms
+OURS fwd+bwd V62+Vj1      5.1166 ms
+OURS bwd Vj2              3.9135 ms
+OURS fwd+bwd V62+Vj2      4.9897 ms
+OURS bwd Vj3              3.7147 ms
+OURS fwd+bwd V62+Vj3      4.7906 ms
+VG1 bwd Vg1               2.7270 ms
+VG1 fwd+bwd Vg1+Vg1       3.5714 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.0877 ms
+cuDNN bwd-only  3.2014 ms
+cuDNN fwd+bwd   4.2213 ms
+############ SHAPE B=2 Hq=18 Hkv=6
+CHECK V62 O:      [32mValues match!
+[0mCHECK V62 LSE:    [32mValues match!
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj1  dQ:  [32mValues match!
+[0mCHECK Vj1  dK:  [32mValues match!
+[0mCHECK Vj1  dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+CHECK Vj3  dQ:  [32mValues match!
+[0mCHECK Vj3  dK:  [32mValues match!
+[0mCHECK Vj3  dV:  [32mValues match!
+CHECK Vg1 O:      [32mValues match!
+[0mCHECK Vg1 LSE:    [32mValues match!
+CHECK Vg1  dQ:  [32mValues match!
+[0mCHECK Vg1  dK:  [32mValues match!
+[0mCHECK Vg1  dV:  [32mValues match!
+## run 1
+OURS fwd V62              0.3458 ms
+OURS bwd Vj1d             1.2549 ms
+OURS fwd+bwd V62+Vj1d     1.5998 ms
+OURS bwd Vj1              1.2351 ms
+OURS fwd+bwd V62+Vj1      1.5813 ms
+OURS bwd Vj2              1.1967 ms
+OURS fwd+bwd V62+Vj2      1.5401 ms
+OURS bwd Vj3              1.1418 ms
+OURS fwd+bwd V62+Vj3      1.4830 ms
+VG1 bwd Vg1               0.8433 ms
+VG1 fwd+bwd Vg1+Vg1       1.0857 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3197 ms
+cuDNN bwd-only  0.9935 ms
+cuDNN fwd+bwd   1.3098 ms
+## run 2
+OURS fwd V62              0.3458 ms
+OURS bwd Vj1d             1.2554 ms
+OURS fwd+bwd V62+Vj1d     1.5994 ms
+OURS bwd Vj1              1.2360 ms
+OURS fwd+bwd V62+Vj1      1.5804 ms
+OURS bwd Vj2              1.1962 ms
+OURS fwd+bwd V62+Vj2      1.5408 ms
+OURS bwd Vj3              1.1410 ms
+OURS fwd+bwd V62+Vj3      1.4843 ms
+VG1 bwd Vg1               0.8441 ms
+VG1 fwd+bwd Vg1+Vg1       1.0862 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3418 ms
+cuDNN bwd-only  0.9930 ms
+cuDNN fwd+bwd   1.3082 ms
+## run 3
+OURS fwd V62              0.3458 ms
+OURS bwd Vj1d             1.2559 ms
+OURS fwd+bwd V62+Vj1d     1.5977 ms
+OURS bwd Vj1              1.2355 ms
+OURS fwd+bwd V62+Vj1      1.5804 ms
+OURS bwd Vj2              1.1979 ms
+OURS fwd+bwd V62+Vj2      1.5399 ms
+OURS bwd Vj3              1.1400 ms
+OURS fwd+bwd V62+Vj3      1.4851 ms
+VG1 bwd Vg1               0.8422 ms
+VG1 fwd+bwd Vg1+Vg1       1.0857 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3194 ms
+cuDNN bwd-only  0.9936 ms
+cuDNN fwd+bwd   1.3098 ms
+## run 4
+OURS fwd V62              0.3458 ms
+OURS bwd Vj1d             1.2557 ms
+OURS fwd+bwd V62+Vj1d     1.5962 ms
+OURS bwd Vj1              1.2374 ms
+OURS fwd+bwd V62+Vj1      1.5805 ms
+OURS bwd Vj2              1.1961 ms
+OURS fwd+bwd V62+Vj2      1.5396 ms
+OURS bwd Vj3              1.1425 ms
+OURS fwd+bwd V62+Vj3      1.4840 ms
+VG1 bwd Vg1               0.8432 ms
+VG1 fwd+bwd Vg1+Vg1       1.0861 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3194 ms
+cuDNN bwd-only  0.9929 ms
+cuDNN fwd+bwd   1.3112 ms
+## run 5
+OURS fwd V62              0.3470 ms
+OURS bwd Vj1d             1.2560 ms
+OURS fwd+bwd V62+Vj1d     1.5983 ms
+OURS bwd Vj1              1.2348 ms
+OURS fwd+bwd V62+Vj1      1.5803 ms
+OURS bwd Vj2              1.1979 ms
+OURS fwd+bwd V62+Vj2      1.5420 ms
+OURS bwd Vj3              1.1396 ms
+OURS fwd+bwd V62+Vj3      1.4850 ms
+VG1 bwd Vg1               0.8437 ms
+VG1 fwd+bwd Vg1+Vg1       1.0860 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3188 ms
+cuDNN bwd-only  0.9921 ms
+cuDNN fwd+bwd   1.3079 ms
+## run 6
+OURS fwd V62              0.3458 ms
+OURS bwd Vj1d             1.2556 ms
+OURS fwd+bwd V62+Vj1d     1.5990 ms
+OURS bwd Vj1              1.2342 ms
+OURS fwd+bwd V62+Vj1      1.5791 ms
+OURS bwd Vj2              1.2005 ms
+OURS fwd+bwd V62+Vj2      1.5394 ms
+OURS bwd Vj3              1.1398 ms
+OURS fwd+bwd V62+Vj3      1.4796 ms
+VG1 bwd Vg1               0.8439 ms
+VG1 fwd+bwd Vg1+Vg1       1.0841 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3191 ms
+cuDNN bwd-only  0.9924 ms
+cuDNN fwd+bwd   1.3107 ms
+## run 7
+OURS fwd V62              0.3459 ms
+OURS bwd Vj1d             1.2555 ms
+OURS fwd+bwd V62+Vj1d     1.5985 ms
+OURS bwd Vj1              1.2368 ms
+OURS fwd+bwd V62+Vj1      1.5800 ms
+OURS bwd Vj2              1.1968 ms
+OURS fwd+bwd V62+Vj2      1.5415 ms
+OURS bwd Vj3              1.1405 ms
+OURS fwd+bwd V62+Vj3      1.4836 ms
+VG1 bwd Vg1               0.8427 ms
+VG1 fwd+bwd Vg1+Vg1       1.0853 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3428 ms
+cuDNN bwd-only  0.9938 ms
+cuDNN fwd+bwd   1.3077 ms
+## run 8
+OURS fwd V62              0.3457 ms
+OURS bwd Vj1d             1.2556 ms
+OURS fwd+bwd V62+Vj1d     1.5985 ms
+OURS bwd Vj1              1.2351 ms
+OURS fwd+bwd V62+Vj1      1.5817 ms
+OURS bwd Vj2              1.1970 ms
+OURS fwd+bwd V62+Vj2      1.5408 ms
+OURS bwd Vj3              1.1419 ms
+OURS fwd+bwd V62+Vj3      1.4854 ms
+VG1 bwd Vg1               0.8426 ms
+VG1 fwd+bwd Vg1+Vg1       1.0852 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3185 ms
+cuDNN bwd-only  0.9920 ms
+cuDNN fwd+bwd   1.3090 ms
+## run 9
+OURS fwd V62              0.3459 ms
+OURS bwd Vj1d             1.2573 ms
+OURS fwd+bwd V62+Vj1d     1.5968 ms
+OURS bwd Vj1              1.2360 ms
+OURS fwd+bwd V62+Vj1      1.5813 ms
+OURS bwd Vj2              1.1967 ms
+OURS fwd+bwd V62+Vj2      1.5385 ms
+OURS bwd Vj3              1.1416 ms
+OURS fwd+bwd V62+Vj3      1.4847 ms
+VG1 bwd Vg1               0.8446 ms
+VG1 fwd+bwd Vg1+Vg1       1.0854 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3472 ms
+cuDNN bwd-only  0.9947 ms
+cuDNN fwd+bwd   1.3096 ms
+## run 10
+OURS fwd V62              0.3461 ms
+OURS bwd Vj1d             1.2536 ms
+OURS fwd+bwd V62+Vj1d     1.5983 ms
+OURS bwd Vj1              1.2327 ms
+OURS fwd+bwd V62+Vj1      1.5785 ms
+OURS bwd Vj2              1.1950 ms
+OURS fwd+bwd V62+Vj2      1.5392 ms
+OURS bwd Vj3              1.1409 ms
+OURS fwd+bwd V62+Vj3      1.4847 ms
+VG1 bwd Vg1               0.8421 ms
+VG1 fwd+bwd Vg1+Vg1       1.0835 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3200 ms
+cuDNN bwd-only  0.9955 ms
+cuDNN fwd+bwd   1.3111 ms
+## run 11
+OURS fwd V62              0.3459 ms
+OURS bwd Vj1d             1.2559 ms
+OURS fwd+bwd V62+Vj1d     1.5992 ms
+OURS bwd Vj1              1.2361 ms
+OURS fwd+bwd V62+Vj1      1.5823 ms
+OURS bwd Vj2              1.1985 ms
+OURS fwd+bwd V62+Vj2      1.5407 ms
+OURS bwd Vj3              1.1404 ms
+OURS fwd+bwd V62+Vj3      1.4828 ms
+VG1 bwd Vg1               0.8432 ms
+VG1 fwd+bwd Vg1+Vg1       1.0844 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3196 ms
+cuDNN bwd-only  0.9945 ms
+cuDNN fwd+bwd   1.3105 ms
+## run 12
+OURS fwd V62              0.3458 ms
+OURS bwd Vj1d             1.2550 ms
+OURS fwd+bwd V62+Vj1d     1.5971 ms
+OURS bwd Vj1              1.2360 ms
+OURS fwd+bwd V62+Vj1      1.5795 ms
+OURS bwd Vj2              1.1969 ms
+OURS fwd+bwd V62+Vj2      1.5407 ms
+OURS bwd Vj3              1.1418 ms
+OURS fwd+bwd V62+Vj3      1.4845 ms
+VG1 bwd Vg1               0.8429 ms
+VG1 fwd+bwd Vg1+Vg1       1.0845 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3450 ms
+cuDNN bwd-only  0.9927 ms
+cuDNN fwd+bwd   1.3087 ms
+## run 13
+OURS fwd V62              0.3464 ms
+OURS bwd Vj1d             1.2553 ms
+OURS fwd+bwd V62+Vj1d     1.6000 ms
+OURS bwd Vj1              1.2352 ms
+OURS fwd+bwd V62+Vj1      1.5801 ms
+OURS bwd Vj2              1.1975 ms
+OURS fwd+bwd V62+Vj2      1.5389 ms
+OURS bwd Vj3              1.1416 ms
+OURS fwd+bwd V62+Vj3      1.4839 ms
+VG1 bwd Vg1               0.8420 ms
+VG1 fwd+bwd Vg1+Vg1       1.0858 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3193 ms
+cuDNN bwd-only  0.9926 ms
+cuDNN fwd+bwd   1.3081 ms
+## run 14
+OURS fwd V62              0.3459 ms
+OURS bwd Vj1d             1.2553 ms
+OURS fwd+bwd V62+Vj1d     1.5987 ms
+OURS bwd Vj1              1.2366 ms
+OURS fwd+bwd V62+Vj1      1.5785 ms
+OURS bwd Vj2              1.1965 ms
+OURS fwd+bwd V62+Vj2      1.5402 ms
+OURS bwd Vj3              1.1426 ms
+OURS fwd+bwd V62+Vj3      1.4820 ms
+VG1 bwd Vg1               0.8435 ms
+VG1 fwd+bwd Vg1+Vg1       1.0865 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3445 ms
+cuDNN bwd-only  0.9926 ms
+cuDNN fwd+bwd   1.3106 ms
+## run 15
+OURS fwd V62              0.3458 ms
+OURS bwd Vj1d             1.2576 ms
+OURS fwd+bwd V62+Vj1d     1.6013 ms
+OURS bwd Vj1              1.2363 ms
+OURS fwd+bwd V62+Vj1      1.5805 ms
+OURS bwd Vj2              1.1964 ms
+OURS fwd+bwd V62+Vj2      1.5418 ms
+OURS bwd Vj3              1.1390 ms
+OURS fwd+bwd V62+Vj3      1.4817 ms
+VG1 bwd Vg1               0.8424 ms
+VG1 fwd+bwd Vg1+Vg1       1.0836 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3200 ms
+cuDNN bwd-only  0.9936 ms
+cuDNN fwd+bwd   1.3179 ms
+## run 16
+OURS fwd V62              0.3457 ms
+OURS bwd Vj1d             1.2554 ms
+OURS fwd+bwd V62+Vj1d     1.5981 ms
+OURS bwd Vj1              1.2357 ms
+OURS fwd+bwd V62+Vj1      1.5809 ms
+OURS bwd Vj2              1.1988 ms
+OURS fwd+bwd V62+Vj2      1.5428 ms
+OURS bwd Vj3              1.1416 ms
+OURS fwd+bwd V62+Vj3      1.4826 ms
+VG1 bwd Vg1               0.8421 ms
+VG1 fwd+bwd Vg1+Vg1       1.0836 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3440 ms
+cuDNN bwd-only  0.9931 ms
+cuDNN fwd+bwd   1.3091 ms
+## run 17
+OURS fwd V62              0.3458 ms
+OURS bwd Vj1d             1.2555 ms
+OURS fwd+bwd V62+Vj1d     1.5991 ms
+OURS bwd Vj1              1.2346 ms
+OURS fwd+bwd V62+Vj1      1.5832 ms
+OURS bwd Vj2              1.1992 ms
+OURS fwd+bwd V62+Vj2      1.5404 ms
+OURS bwd Vj3              1.1414 ms
+OURS fwd+bwd V62+Vj3      1.4830 ms
+VG1 bwd Vg1               0.8429 ms
+VG1 fwd+bwd Vg1+Vg1       1.0849 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3184 ms
+cuDNN bwd-only  0.9922 ms
+cuDNN fwd+bwd   1.3079 ms
+## run 18
+OURS fwd V62              0.3459 ms
+OURS bwd Vj1d             1.2520 ms
+OURS fwd+bwd V62+Vj1d     1.5989 ms
+OURS bwd Vj1              1.2359 ms
+OURS fwd+bwd V62+Vj1      1.5777 ms
+OURS bwd Vj2              1.1952 ms
+OURS fwd+bwd V62+Vj2      1.5403 ms
+OURS bwd Vj3              1.1405 ms
+OURS fwd+bwd V62+Vj3      1.4846 ms
+VG1 bwd Vg1               0.8426 ms
+VG1 fwd+bwd Vg1+Vg1       1.0839 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3217 ms
+cuDNN bwd-only  0.9961 ms
+cuDNN fwd+bwd   1.3086 ms
+## run 19
+OURS fwd V62              0.3459 ms
+OURS bwd Vj1d             1.2573 ms
+OURS fwd+bwd V62+Vj1d     1.6007 ms
+OURS bwd Vj1              1.2370 ms
+OURS fwd+bwd V62+Vj1      1.5813 ms
+OURS bwd Vj2              1.1988 ms
+OURS fwd+bwd V62+Vj2      1.5396 ms
+OURS bwd Vj3              1.1418 ms
+OURS fwd+bwd V62+Vj3      1.4846 ms
+VG1 bwd Vg1               0.8437 ms
+VG1 fwd+bwd Vg1+Vg1       1.0843 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3421 ms
+cuDNN bwd-only  0.9947 ms
+cuDNN fwd+bwd   1.3114 ms
+## run 20
+OURS fwd V62              0.3458 ms
+OURS bwd Vj1d             1.2552 ms
+OURS fwd+bwd V62+Vj1d     1.5999 ms
+OURS bwd Vj1              1.2341 ms
+OURS fwd+bwd V62+Vj1      1.5814 ms
+OURS bwd Vj2              1.1975 ms
+OURS fwd+bwd V62+Vj2      1.5389 ms
+OURS bwd Vj3              1.1421 ms
+OURS fwd+bwd V62+Vj3      1.4865 ms
+VG1 bwd Vg1               0.8429 ms
+VG1 fwd+bwd Vg1+Vg1       1.0861 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3188 ms
+cuDNN bwd-only  0.9967 ms
+cuDNN fwd+bwd   1.3088 ms
+## run 21
+OURS fwd V62              0.3471 ms
+OURS bwd Vj1d             1.2549 ms
+OURS fwd+bwd V62+Vj1d     1.6011 ms
+OURS bwd Vj1              1.2367 ms
+OURS fwd+bwd V62+Vj1      1.5820 ms
+OURS bwd Vj2              1.1993 ms
+OURS fwd+bwd V62+Vj2      1.5388 ms
+OURS bwd Vj3              1.1384 ms
+OURS fwd+bwd V62+Vj3      1.4828 ms
+VG1 bwd Vg1               0.8437 ms
+VG1 fwd+bwd Vg1+Vg1       1.0843 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3200 ms
+cuDNN bwd-only  0.9923 ms
+cuDNN fwd+bwd   1.3121 ms
+## run 22
+OURS fwd V62              0.3457 ms
+OURS bwd Vj1d             1.2559 ms
+OURS fwd+bwd V62+Vj1d     1.5975 ms
+OURS bwd Vj1              1.2363 ms
+OURS fwd+bwd V62+Vj1      1.5780 ms
+OURS bwd Vj2              1.1974 ms
+OURS fwd+bwd V62+Vj2      1.5388 ms
+OURS bwd Vj3              1.1412 ms
+OURS fwd+bwd V62+Vj3      1.4832 ms
+VG1 bwd Vg1               0.8422 ms
+VG1 fwd+bwd Vg1+Vg1       1.0856 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3193 ms
+cuDNN bwd-only  0.9919 ms
+cuDNN fwd+bwd   1.3108 ms
+## run 23
+OURS fwd V62              0.3465 ms
+OURS bwd Vj1d             1.2528 ms
+OURS fwd+bwd V62+Vj1d     1.5986 ms
+OURS bwd Vj1              1.2372 ms
+OURS fwd+bwd V62+Vj1      1.5827 ms
+OURS bwd Vj2              1.1958 ms
+OURS fwd+bwd V62+Vj2      1.5411 ms
+OURS bwd Vj3              1.1439 ms
+OURS fwd+bwd V62+Vj3      1.4828 ms
+VG1 bwd Vg1               0.8443 ms
+VG1 fwd+bwd Vg1+Vg1       1.0868 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3425 ms
+cuDNN bwd-only  0.9922 ms
+cuDNN fwd+bwd   1.3084 ms
+## run 24
+OURS fwd V62              0.3458 ms
+OURS bwd Vj1d             1.2540 ms
+OURS fwd+bwd V62+Vj1d     1.6010 ms
+OURS bwd Vj1              1.2354 ms
+OURS fwd+bwd V62+Vj1      1.5799 ms
+OURS bwd Vj2              1.1977 ms
+OURS fwd+bwd V62+Vj2      1.5403 ms
+OURS bwd Vj3              1.1404 ms
+OURS fwd+bwd V62+Vj3      1.4817 ms
+VG1 bwd Vg1               0.8426 ms
+VG1 fwd+bwd Vg1+Vg1       1.0841 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3201 ms
+cuDNN bwd-only  0.9940 ms
+cuDNN fwd+bwd   1.3092 ms
+## run 25
+OURS fwd V62              0.3458 ms
+OURS bwd Vj1d             1.2541 ms
+OURS fwd+bwd V62+Vj1d     1.5986 ms
+OURS bwd Vj1              1.2347 ms
+OURS fwd+bwd V62+Vj1      1.5797 ms
+OURS bwd Vj2              1.1982 ms
+OURS fwd+bwd V62+Vj2      1.5383 ms
+OURS bwd Vj3              1.1384 ms
+OURS fwd+bwd V62+Vj3      1.4814 ms
+VG1 bwd Vg1               0.8418 ms
+VG1 fwd+bwd Vg1+Vg1       1.0870 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3430 ms
+cuDNN bwd-only  0.9932 ms
+cuDNN fwd+bwd   1.3105 ms
+############ SHAPE B=4 Hq=18 Hkv=6
+CHECK V62 O:      [32mValues match!
+[0mCHECK V62 LSE:    [32mValues match!
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj1  dQ:  [32mValues match!
+[0mCHECK Vj1  dK:  [32mValues match!
+[0mCHECK Vj1  dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+CHECK Vj3  dQ:  [32mValues match!
+[0mCHECK Vj3  dK:  [32mValues match!
+[0mCHECK Vj3  dV:  [32mValues match!
+CHECK Vg1 O:      [32mValues match!
+[0mCHECK Vg1 LSE:    [32mValues match!
+CHECK Vg1  dQ:  [32mValues match!
+[0mCHECK Vg1  dK:  [32mValues match!
+[0mCHECK Vg1  dV:  [32mValues match!
+## run 1
+OURS fwd V62              0.6125 ms
+OURS bwd Vj1d             2.3702 ms
+OURS fwd+bwd V62+Vj1d     2.9788 ms
+OURS bwd Vj1              2.3339 ms
+OURS fwd+bwd V62+Vj1      2.9445 ms
+OURS bwd Vj2              2.2635 ms
+OURS fwd+bwd V62+Vj2      2.8728 ms
+OURS bwd Vj3              2.1536 ms
+OURS fwd+bwd V62+Vj3      2.7614 ms
+VG1 bwd Vg1               1.5577 ms
+VG1 fwd+bwd Vg1+Vg1       2.0381 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5908 ms
+cuDNN bwd-only  1.8671 ms
+cuDNN fwd+bwd   2.4463 ms
+## run 2
+OURS fwd V62              0.6124 ms
+OURS bwd Vj1d             2.3685 ms
+OURS fwd+bwd V62+Vj1d     2.9803 ms
+OURS bwd Vj1              2.3362 ms
+OURS fwd+bwd V62+Vj1      2.9472 ms
+OURS bwd Vj2              2.2637 ms
+OURS fwd+bwd V62+Vj2      2.8741 ms
+OURS bwd Vj3              2.1529 ms
+OURS fwd+bwd V62+Vj3      2.7655 ms
+VG1 bwd Vg1               1.5590 ms
+VG1 fwd+bwd Vg1+Vg1       2.0367 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5893 ms
+cuDNN bwd-only  1.8600 ms
+cuDNN fwd+bwd   2.4508 ms
+## run 3
+OURS fwd V62              0.6129 ms
+OURS bwd Vj1d             2.3700 ms
+OURS fwd+bwd V62+Vj1d     2.9823 ms
+OURS bwd Vj1              2.3336 ms
+OURS fwd+bwd V62+Vj1      2.9490 ms
+OURS bwd Vj2              2.2648 ms
+OURS fwd+bwd V62+Vj2      2.8737 ms
+OURS bwd Vj3              2.1532 ms
+OURS fwd+bwd V62+Vj3      2.7605 ms
+VG1 bwd Vg1               1.5595 ms
+VG1 fwd+bwd Vg1+Vg1       2.0350 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6347 ms
+cuDNN bwd-only  1.8612 ms
+cuDNN fwd+bwd   2.4500 ms
+## run 4
+OURS fwd V62              0.6123 ms
+OURS bwd Vj1d             2.3667 ms
+OURS fwd+bwd V62+Vj1d     2.9813 ms
+OURS bwd Vj1              2.3348 ms
+OURS fwd+bwd V62+Vj1      2.9459 ms
+OURS bwd Vj2              2.2640 ms
+OURS fwd+bwd V62+Vj2      2.8720 ms
+OURS bwd Vj3              2.1508 ms
+OURS fwd+bwd V62+Vj3      2.7628 ms
+VG1 bwd Vg1               1.5581 ms
+VG1 fwd+bwd Vg1+Vg1       2.0350 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6363 ms
+cuDNN bwd-only  1.8580 ms
+cuDNN fwd+bwd   2.4516 ms
+## run 5
+OURS fwd V62              0.6140 ms
+OURS bwd Vj1d             2.3704 ms
+OURS fwd+bwd V62+Vj1d     2.9800 ms
+OURS bwd Vj1              2.3332 ms
+OURS fwd+bwd V62+Vj1      2.9476 ms
+OURS bwd Vj2              2.2613 ms
+OURS fwd+bwd V62+Vj2      2.8761 ms
+OURS bwd Vj3              2.1513 ms
+OURS fwd+bwd V62+Vj3      2.7620 ms
+VG1 bwd Vg1               1.5572 ms
+VG1 fwd+bwd Vg1+Vg1       2.0377 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5892 ms
+cuDNN bwd-only  1.8582 ms
+cuDNN fwd+bwd   2.4517 ms
+## run 6
+OURS fwd V62              0.6127 ms
+OURS bwd Vj1d             2.3686 ms
+OURS fwd+bwd V62+Vj1d     2.9799 ms
+OURS bwd Vj1              2.3339 ms
+OURS fwd+bwd V62+Vj1      2.9464 ms
+OURS bwd Vj2              2.2648 ms
+OURS fwd+bwd V62+Vj2      2.8749 ms
+OURS bwd Vj3              2.1522 ms
+OURS fwd+bwd V62+Vj3      2.7631 ms
+VG1 bwd Vg1               1.5557 ms
+VG1 fwd+bwd Vg1+Vg1       2.0391 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5892 ms
+cuDNN bwd-only  1.8579 ms
+cuDNN fwd+bwd   2.4490 ms
+## run 7
+OURS fwd V62              0.6127 ms
+OURS bwd Vj1d             2.3700 ms
+OURS fwd+bwd V62+Vj1d     2.9818 ms
+OURS bwd Vj1              2.3336 ms
+OURS fwd+bwd V62+Vj1      2.9437 ms
+OURS bwd Vj2              2.2635 ms
+OURS fwd+bwd V62+Vj2      2.8761 ms
+OURS bwd Vj3              2.1553 ms
+OURS fwd+bwd V62+Vj3      2.7629 ms
+VG1 bwd Vg1               1.5591 ms
+VG1 fwd+bwd Vg1+Vg1       2.0382 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5896 ms
+cuDNN bwd-only  1.8636 ms
+cuDNN fwd+bwd   2.4459 ms
+## run 8
+OURS fwd V62              0.6126 ms
+OURS bwd Vj1d             2.3678 ms
+OURS fwd+bwd V62+Vj1d     2.9770 ms
+OURS bwd Vj1              2.3329 ms
+OURS fwd+bwd V62+Vj1      2.9454 ms
+OURS bwd Vj2              2.2638 ms
+OURS fwd+bwd V62+Vj2      2.8771 ms
+OURS bwd Vj3              2.1529 ms
+OURS fwd+bwd V62+Vj3      2.7634 ms
+VG1 bwd Vg1               1.5565 ms
+VG1 fwd+bwd Vg1+Vg1       2.0373 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5892 ms
+cuDNN bwd-only  1.8601 ms
+cuDNN fwd+bwd   2.4496 ms
+## run 9
+OURS fwd V62              0.6127 ms
+OURS bwd Vj1d             2.3706 ms
+OURS fwd+bwd V62+Vj1d     2.9829 ms
+OURS bwd Vj1              2.3352 ms
+OURS fwd+bwd V62+Vj1      2.9440 ms
+OURS bwd Vj2              2.2644 ms
+OURS fwd+bwd V62+Vj2      2.8762 ms
+OURS bwd Vj3              2.1523 ms
+OURS fwd+bwd V62+Vj3      2.7643 ms
+VG1 bwd Vg1               1.5577 ms
+VG1 fwd+bwd Vg1+Vg1       2.0373 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5905 ms
+cuDNN bwd-only  1.8600 ms
+cuDNN fwd+bwd   2.4512 ms
+## run 10
+OURS fwd V62              0.6151 ms
+OURS bwd Vj1d             2.3670 ms
+OURS fwd+bwd V62+Vj1d     2.9812 ms
+OURS bwd Vj1              2.3340 ms
+OURS fwd+bwd V62+Vj1      2.9458 ms
+OURS bwd Vj2              2.2656 ms
+OURS fwd+bwd V62+Vj2      2.8757 ms
+OURS bwd Vj3              2.1533 ms
+OURS fwd+bwd V62+Vj3      2.7644 ms
+VG1 bwd Vg1               1.5597 ms
+VG1 fwd+bwd Vg1+Vg1       2.0378 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5931 ms
+cuDNN bwd-only  1.8597 ms
+cuDNN fwd+bwd   2.4507 ms
+## run 11
+OURS fwd V62              0.6151 ms
+OURS bwd Vj1d             2.3695 ms
+OURS fwd+bwd V62+Vj1d     2.9837 ms
+OURS bwd Vj1              2.3333 ms
+OURS fwd+bwd V62+Vj1      2.9441 ms
+OURS bwd Vj2              2.2627 ms
+OURS fwd+bwd V62+Vj2      2.8740 ms
+OURS bwd Vj3              2.1542 ms
+OURS fwd+bwd V62+Vj3      2.7626 ms
+VG1 bwd Vg1               1.5570 ms
+VG1 fwd+bwd Vg1+Vg1       2.0388 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5908 ms
+cuDNN bwd-only  1.8621 ms
+cuDNN fwd+bwd   2.4500 ms
+## run 12
+OURS fwd V62              0.6128 ms
+OURS bwd Vj1d             2.3663 ms
+OURS fwd+bwd V62+Vj1d     2.9777 ms
+OURS bwd Vj1              2.3337 ms
+OURS fwd+bwd V62+Vj1      2.9467 ms
+OURS bwd Vj2              2.2635 ms
+OURS fwd+bwd V62+Vj2      2.8749 ms
+OURS bwd Vj3              2.1523 ms
+OURS fwd+bwd V62+Vj3      2.7610 ms
+VG1 bwd Vg1               1.5580 ms
+VG1 fwd+bwd Vg1+Vg1       2.0363 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5890 ms
+cuDNN bwd-only  1.8659 ms
+cuDNN fwd+bwd   2.4464 ms
+## run 13
+OURS fwd V62              0.6125 ms
+OURS bwd Vj1d             2.3690 ms
+OURS fwd+bwd V62+Vj1d     2.9806 ms
+OURS bwd Vj1              2.3350 ms
+OURS fwd+bwd V62+Vj1      2.9483 ms
+OURS bwd Vj2              2.2645 ms
+OURS fwd+bwd V62+Vj2      2.8741 ms
+OURS bwd Vj3              2.1528 ms
+OURS fwd+bwd V62+Vj3      2.7612 ms
+VG1 bwd Vg1               1.5567 ms
+VG1 fwd+bwd Vg1+Vg1       2.0380 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5891 ms
+cuDNN bwd-only  1.8589 ms
+cuDNN fwd+bwd   2.4540 ms
+## run 14
+OURS fwd V62              0.6126 ms
+OURS bwd Vj1d             2.3698 ms
+OURS fwd+bwd V62+Vj1d     2.9803 ms
+OURS bwd Vj1              2.3324 ms
+OURS fwd+bwd V62+Vj1      2.9460 ms
+OURS bwd Vj2              2.2617 ms
+OURS fwd+bwd V62+Vj2      2.8740 ms
+OURS bwd Vj3              2.1544 ms
+OURS fwd+bwd V62+Vj3      2.7631 ms
+VG1 bwd Vg1               1.5594 ms
+VG1 fwd+bwd Vg1+Vg1       2.0373 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5905 ms
+cuDNN bwd-only  1.8642 ms
+cuDNN fwd+bwd   2.4467 ms
+## run 15
+OURS fwd V62              0.6156 ms
+OURS bwd Vj1d             2.3706 ms
+OURS fwd+bwd V62+Vj1d     2.9827 ms
+OURS bwd Vj1              2.3365 ms
+OURS fwd+bwd V62+Vj1      2.9497 ms
+OURS bwd Vj2              2.2626 ms
+OURS fwd+bwd V62+Vj2      2.8774 ms
+OURS bwd Vj3              2.1533 ms
+OURS fwd+bwd V62+Vj3      2.7636 ms
+VG1 bwd Vg1               1.5581 ms
+VG1 fwd+bwd Vg1+Vg1       2.0380 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5904 ms
+cuDNN bwd-only  1.8619 ms
+cuDNN fwd+bwd   2.4460 ms
+## run 16
+OURS fwd V62              0.6128 ms
+OURS bwd Vj1d             2.3711 ms
+OURS fwd+bwd V62+Vj1d     2.9836 ms
+OURS bwd Vj1              2.3347 ms
+OURS fwd+bwd V62+Vj1      2.9447 ms
+OURS bwd Vj2              2.2656 ms
+OURS fwd+bwd V62+Vj2      2.8745 ms
+OURS bwd Vj3              2.1528 ms
+OURS fwd+bwd V62+Vj3      2.7639 ms
+VG1 bwd Vg1               1.5600 ms
+VG1 fwd+bwd Vg1+Vg1       2.0372 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5890 ms
+cuDNN bwd-only  1.8604 ms
+cuDNN fwd+bwd   2.4523 ms
+## run 17
+OURS fwd V62              0.6126 ms
+OURS bwd Vj1d             2.3686 ms
+OURS fwd+bwd V62+Vj1d     2.9815 ms
+OURS bwd Vj1              2.3327 ms
+OURS fwd+bwd V62+Vj1      2.9459 ms
+OURS bwd Vj2              2.2637 ms
+OURS fwd+bwd V62+Vj2      2.8756 ms
+OURS bwd Vj3              2.1536 ms
+OURS fwd+bwd V62+Vj3      2.7658 ms
+VG1 bwd Vg1               1.5597 ms
+VG1 fwd+bwd Vg1+Vg1       2.0375 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6375 ms
+cuDNN bwd-only  1.8628 ms
+cuDNN fwd+bwd   2.4472 ms
+## run 18
+OURS fwd V62              0.6127 ms
+OURS bwd Vj1d             2.3690 ms
+OURS fwd+bwd V62+Vj1d     2.9790 ms
+OURS bwd Vj1              2.3348 ms
+OURS fwd+bwd V62+Vj1      2.9434 ms
+OURS bwd Vj2              2.2624 ms
+OURS fwd+bwd V62+Vj2      2.8760 ms
+OURS bwd Vj3              2.1532 ms
+OURS fwd+bwd V62+Vj3      2.7637 ms
+VG1 bwd Vg1               1.5593 ms
+VG1 fwd+bwd Vg1+Vg1       2.0383 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5907 ms
+cuDNN bwd-only  1.8592 ms
+cuDNN fwd+bwd   2.4506 ms
+## run 19
+OURS fwd V62              0.6125 ms
+OURS bwd Vj1d             2.3721 ms
+OURS fwd+bwd V62+Vj1d     2.9776 ms
+OURS bwd Vj1              2.3308 ms
+OURS fwd+bwd V62+Vj1      2.9440 ms
+OURS bwd Vj2              2.2616 ms
+OURS fwd+bwd V62+Vj2      2.8733 ms
+OURS bwd Vj3              2.1538 ms
+OURS fwd+bwd V62+Vj3      2.7641 ms
+VG1 bwd Vg1               1.5592 ms
+VG1 fwd+bwd Vg1+Vg1       2.0384 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5890 ms
+cuDNN bwd-only  1.8592 ms
+cuDNN fwd+bwd   2.4497 ms
+## run 20
+OURS fwd V62              0.6126 ms
+OURS bwd Vj1d             2.3704 ms
+OURS fwd+bwd V62+Vj1d     2.9833 ms
+OURS bwd Vj1              2.3361 ms
+OURS fwd+bwd V62+Vj1      2.9454 ms
+OURS bwd Vj2              2.2613 ms
+OURS fwd+bwd V62+Vj2      2.8753 ms
+OURS bwd Vj3              2.1532 ms
+OURS fwd+bwd V62+Vj3      2.7620 ms
+VG1 bwd Vg1               1.5601 ms
+VG1 fwd+bwd Vg1+Vg1       2.0386 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6354 ms
+cuDNN bwd-only  1.8592 ms
+cuDNN fwd+bwd   2.4468 ms
+## run 21
+OURS fwd V62              0.6127 ms
+OURS bwd Vj1d             2.3693 ms
+OURS fwd+bwd V62+Vj1d     2.9831 ms
+OURS bwd Vj1              2.3369 ms
+OURS fwd+bwd V62+Vj1      2.9448 ms
+OURS bwd Vj2              2.2637 ms
+OURS fwd+bwd V62+Vj2      2.8759 ms
+OURS bwd Vj3              2.1525 ms
+OURS fwd+bwd V62+Vj3      2.7651 ms
+VG1 bwd Vg1               1.5590 ms
+VG1 fwd+bwd Vg1+Vg1       2.0379 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6348 ms
+cuDNN bwd-only  1.8594 ms
+cuDNN fwd+bwd   2.4513 ms
+## run 22
+OURS fwd V62              0.6153 ms
+OURS bwd Vj1d             2.3681 ms
+OURS fwd+bwd V62+Vj1d     2.9802 ms
+OURS bwd Vj1              2.3350 ms
+OURS fwd+bwd V62+Vj1      2.9435 ms
+OURS bwd Vj2              2.2655 ms
+OURS fwd+bwd V62+Vj2      2.8728 ms
+OURS bwd Vj3              2.1543 ms
+OURS fwd+bwd V62+Vj3      2.7639 ms
+VG1 bwd Vg1               1.5565 ms
+VG1 fwd+bwd Vg1+Vg1       2.0381 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5908 ms
+cuDNN bwd-only  1.8588 ms
+cuDNN fwd+bwd   2.4516 ms
+## run 23
+OURS fwd V62              0.6127 ms
+OURS bwd Vj1d             2.3680 ms
+OURS fwd+bwd V62+Vj1d     2.9788 ms
+OURS bwd Vj1              2.3318 ms
+OURS fwd+bwd V62+Vj1      2.9446 ms
+OURS bwd Vj2              2.2639 ms
+OURS fwd+bwd V62+Vj2      2.8732 ms
+OURS bwd Vj3              2.1512 ms
+OURS fwd+bwd V62+Vj3      2.7649 ms
+VG1 bwd Vg1               1.5589 ms
+VG1 fwd+bwd Vg1+Vg1       2.0377 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5910 ms
+cuDNN bwd-only  1.8588 ms
+cuDNN fwd+bwd   2.4519 ms
+## run 24
+OURS fwd V62              0.6154 ms
+OURS bwd Vj1d             2.3685 ms
+OURS fwd+bwd V62+Vj1d     2.9824 ms
+OURS bwd Vj1              2.3350 ms
+OURS fwd+bwd V62+Vj1      2.9481 ms
+OURS bwd Vj2              2.2646 ms
+OURS fwd+bwd V62+Vj2      2.8764 ms
+OURS bwd Vj3              2.1552 ms
+OURS fwd+bwd V62+Vj3      2.7653 ms
+VG1 bwd Vg1               1.5566 ms
+VG1 fwd+bwd Vg1+Vg1       2.0394 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5893 ms
+cuDNN bwd-only  1.8596 ms
+cuDNN fwd+bwd   2.4480 ms
+## run 25
+OURS fwd V62              0.6127 ms
+OURS bwd Vj1d             2.3701 ms
+OURS fwd+bwd V62+Vj1d     2.9842 ms
+OURS bwd Vj1              2.3369 ms
+OURS fwd+bwd V62+Vj1      2.9487 ms
+OURS bwd Vj2              2.2659 ms
+OURS fwd+bwd V62+Vj2      2.8738 ms
+OURS bwd Vj3              2.1545 ms
+OURS fwd+bwd V62+Vj3      2.7630 ms
+VG1 bwd Vg1               1.5562 ms
+VG1 fwd+bwd Vg1+Vg1       2.0387 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5886 ms
+cuDNN bwd-only  1.8599 ms
+cuDNN fwd+bwd   2.4512 ms
+############ SHAPE B=8 Hq=18 Hkv=6
+CHECK V62 O:      [32mValues match!
+[0mCHECK V62 LSE:    [32mValues match!
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj1  dQ:  [32mValues match!
+[0mCHECK Vj1  dK:  [32mValues match!
+[0mCHECK Vj1  dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+CHECK Vj3  dQ:  [32mValues match!
+[0mCHECK Vj3  dK:  [32mValues match!
+[0mCHECK Vj3  dV:  [32mValues match!
+CHECK Vg1 O:      [32mValues match!
+[0mCHECK Vg1 LSE:    [32mValues match!
+CHECK Vg1  dQ:  [32mValues match!
+[0mCHECK Vg1  dK:  [32mValues match!
+[0mCHECK Vg1  dV:  [32mValues match!
+## run 1
+OURS fwd V62              1.2167 ms
+OURS bwd Vj1d             4.5961 ms
+OURS fwd+bwd V62+Vj1d     5.8082 ms
+OURS bwd Vj1              4.5300 ms
+OURS fwd+bwd V62+Vj1      5.7443 ms
+OURS bwd Vj2              4.4005 ms
+OURS fwd+bwd V62+Vj2      5.6150 ms
+OURS bwd Vj3              4.1798 ms
+OURS fwd+bwd V62+Vj3      5.3868 ms
+VG1 bwd Vg1               3.0769 ms
+VG1 fwd+bwd Vg1+Vg1       4.0299 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2165 ms
+cuDNN bwd-only  3.5901 ms
+cuDNN fwd+bwd   4.7358 ms
+## run 2
+OURS fwd V62              1.2134 ms
+OURS bwd Vj1d             4.5948 ms
+OURS fwd+bwd V62+Vj1d     5.8054 ms
+OURS bwd Vj1              4.5308 ms
+OURS fwd+bwd V62+Vj1      5.7449 ms
+OURS bwd Vj2              4.4004 ms
+OURS fwd+bwd V62+Vj2      5.6117 ms
+OURS bwd Vj3              4.1769 ms
+OURS fwd+bwd V62+Vj3      5.3893 ms
+VG1 bwd Vg1               3.0821 ms
+VG1 fwd+bwd Vg1+Vg1       4.0306 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.1296 ms
+cuDNN bwd-only  3.5963 ms
+cuDNN fwd+bwd   4.7224 ms
+## run 3
+OURS fwd V62              1.2165 ms
+OURS bwd Vj1d             4.5933 ms
+OURS fwd+bwd V62+Vj1d     5.8084 ms
+OURS bwd Vj1              4.5317 ms
+OURS fwd+bwd V62+Vj1      5.7421 ms
+OURS bwd Vj2              4.3996 ms
+OURS fwd+bwd V62+Vj2      5.6108 ms
+OURS bwd Vj3              4.1772 ms
+OURS fwd+bwd V62+Vj3      5.3891 ms
+VG1 bwd Vg1               3.0770 ms
+VG1 fwd+bwd Vg1+Vg1       4.0319 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2164 ms
+cuDNN bwd-only  3.5900 ms
+cuDNN fwd+bwd   4.7330 ms
+## run 4
+OURS fwd V62              1.2168 ms
+OURS bwd Vj1d             4.5924 ms
+OURS fwd+bwd V62+Vj1d     5.8028 ms
+OURS bwd Vj1              4.5296 ms
+OURS fwd+bwd V62+Vj1      5.7438 ms
+OURS bwd Vj2              4.4010 ms
+OURS fwd+bwd V62+Vj2      5.6129 ms
+OURS bwd Vj3              4.1751 ms
+OURS fwd+bwd V62+Vj3      5.3884 ms
+VG1 bwd Vg1               3.0769 ms
+VG1 fwd+bwd Vg1+Vg1       4.0295 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.1294 ms
+cuDNN bwd-only  3.5925 ms
+cuDNN fwd+bwd   4.7276 ms
+## run 5
+OURS fwd V62              1.2137 ms
+OURS bwd Vj1d             4.5943 ms
+OURS fwd+bwd V62+Vj1d     5.8054 ms
+OURS bwd Vj1              4.5304 ms
+OURS fwd+bwd V62+Vj1      5.7441 ms
+OURS bwd Vj2              4.4020 ms
+OURS fwd+bwd V62+Vj2      5.6116 ms
+OURS bwd Vj3              4.1786 ms
+OURS fwd+bwd V62+Vj3      5.3871 ms
+VG1 bwd Vg1               3.0759 ms
+VG1 fwd+bwd Vg1+Vg1       4.0274 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2209 ms
+cuDNN bwd-only  3.5901 ms
+cuDNN fwd+bwd   4.7252 ms
+## run 6
+OURS fwd V62              1.2165 ms
+OURS bwd Vj1d             4.5925 ms
+OURS fwd+bwd V62+Vj1d     5.8058 ms
+OURS bwd Vj1              4.5295 ms
+OURS fwd+bwd V62+Vj1      5.7432 ms
+OURS bwd Vj2              4.3982 ms
+OURS fwd+bwd V62+Vj2      5.6092 ms
+OURS bwd Vj3              4.1789 ms
+OURS fwd+bwd V62+Vj3      5.3868 ms
+VG1 bwd Vg1               3.0775 ms
+VG1 fwd+bwd Vg1+Vg1       4.0309 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2187 ms
+cuDNN bwd-only  3.5891 ms
+cuDNN fwd+bwd   4.7331 ms
+## run 7
+OURS fwd V62              1.2171 ms
+OURS bwd Vj1d             4.5952 ms
+OURS fwd+bwd V62+Vj1d     5.8091 ms
+OURS bwd Vj1              4.5314 ms
+OURS fwd+bwd V62+Vj1      5.7465 ms
+OURS bwd Vj2              4.4010 ms
+OURS fwd+bwd V62+Vj2      5.6134 ms
+OURS bwd Vj3              4.1769 ms
+OURS fwd+bwd V62+Vj3      5.3871 ms
+VG1 bwd Vg1               3.0778 ms
+VG1 fwd+bwd Vg1+Vg1       4.0279 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.1293 ms
+cuDNN bwd-only  3.5896 ms
+cuDNN fwd+bwd   4.7330 ms
+## run 8
+OURS fwd V62              1.2126 ms
+OURS bwd Vj1d             4.5921 ms
+OURS fwd+bwd V62+Vj1d     5.8069 ms
+OURS bwd Vj1              4.5302 ms
+OURS fwd+bwd V62+Vj1      5.7421 ms
+OURS bwd Vj2              4.4003 ms
+OURS fwd+bwd V62+Vj2      5.6116 ms
+OURS bwd Vj3              4.1795 ms
+OURS fwd+bwd V62+Vj3      5.3860 ms
+VG1 bwd Vg1               3.0764 ms
+VG1 fwd+bwd Vg1+Vg1       4.0317 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2155 ms
+cuDNN bwd-only  3.5909 ms
+cuDNN fwd+bwd   4.7316 ms
+## run 9
+OURS fwd V62              1.2131 ms
+OURS bwd Vj1d             4.5946 ms
+OURS fwd+bwd V62+Vj1d     5.8047 ms
+OURS bwd Vj1              4.5301 ms
+OURS fwd+bwd V62+Vj1      5.7415 ms
+OURS bwd Vj2              4.4028 ms
+OURS fwd+bwd V62+Vj2      5.6116 ms
+OURS bwd Vj3              4.1784 ms
+OURS fwd+bwd V62+Vj3      5.3892 ms
+VG1 bwd Vg1               3.0771 ms
+VG1 fwd+bwd Vg1+Vg1       4.0285 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2176 ms
+cuDNN bwd-only  3.5973 ms
+cuDNN fwd+bwd   4.7238 ms
+## run 10
+OURS fwd V62              1.2172 ms
+OURS bwd Vj1d             4.5928 ms
+OURS fwd+bwd V62+Vj1d     5.8077 ms
+OURS bwd Vj1              4.5323 ms
+OURS fwd+bwd V62+Vj1      5.7431 ms
+OURS bwd Vj2              4.4013 ms
+OURS fwd+bwd V62+Vj2      5.6128 ms
+OURS bwd Vj3              4.1772 ms
+OURS fwd+bwd V62+Vj3      5.3890 ms
+VG1 bwd Vg1               3.0768 ms
+VG1 fwd+bwd Vg1+Vg1       4.0315 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2148 ms
+cuDNN bwd-only  3.5918 ms
+cuDNN fwd+bwd   4.7312 ms
+## run 11
+OURS fwd V62              1.2139 ms
+OURS bwd Vj1d             4.5938 ms
+OURS fwd+bwd V62+Vj1d     5.8065 ms
+OURS bwd Vj1              4.5307 ms
+OURS fwd+bwd V62+Vj1      5.7421 ms
+OURS bwd Vj2              4.4029 ms
+OURS fwd+bwd V62+Vj2      5.6106 ms
+OURS bwd Vj3              4.1783 ms
+OURS fwd+bwd V62+Vj3      5.3875 ms
+VG1 bwd Vg1               3.0771 ms
+VG1 fwd+bwd Vg1+Vg1       4.0324 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.1301 ms
+cuDNN bwd-only  3.5901 ms
+cuDNN fwd+bwd   4.7236 ms
+## run 12
+OURS fwd V62              1.2128 ms
+OURS bwd Vj1d             4.5947 ms
+OURS fwd+bwd V62+Vj1d     5.8107 ms
+OURS bwd Vj1              4.5329 ms
+OURS fwd+bwd V62+Vj1      5.7476 ms
+OURS bwd Vj2              4.3996 ms
+OURS fwd+bwd V62+Vj2      5.6147 ms
+OURS bwd Vj3              4.1760 ms
+OURS fwd+bwd V62+Vj3      5.3874 ms
+VG1 bwd Vg1               3.0776 ms
+VG1 fwd+bwd Vg1+Vg1       4.0312 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2175 ms
+cuDNN bwd-only  3.5900 ms
+cuDNN fwd+bwd   4.7344 ms
+## run 13
+OURS fwd V62              1.2168 ms
+OURS bwd Vj1d             4.5948 ms
+OURS fwd+bwd V62+Vj1d     5.8066 ms
+OURS bwd Vj1              4.5354 ms
+OURS fwd+bwd V62+Vj1      5.7428 ms
+OURS bwd Vj2              4.3991 ms
+OURS fwd+bwd V62+Vj2      5.6135 ms
+OURS bwd Vj3              4.1788 ms
+OURS fwd+bwd V62+Vj3      5.3873 ms
+VG1 bwd Vg1               3.0772 ms
+VG1 fwd+bwd Vg1+Vg1       4.0323 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2155 ms
+cuDNN bwd-only  3.5989 ms
+cuDNN fwd+bwd   4.7276 ms
+## run 14
+OURS fwd V62              1.2131 ms
+OURS bwd Vj1d             4.5968 ms
+OURS fwd+bwd V62+Vj1d     5.8092 ms
+OURS bwd Vj1              4.5331 ms
+OURS fwd+bwd V62+Vj1      5.7445 ms
+OURS bwd Vj2              4.4002 ms
+OURS fwd+bwd V62+Vj2      5.6140 ms
+OURS bwd Vj3              4.1761 ms
+OURS fwd+bwd V62+Vj3      5.3879 ms
+VG1 bwd Vg1               3.0775 ms
+VG1 fwd+bwd Vg1+Vg1       4.0337 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2169 ms
+cuDNN bwd-only  3.5896 ms
+cuDNN fwd+bwd   4.7350 ms
+## run 15
+OURS fwd V62              1.2125 ms
+OURS bwd Vj1d             4.5967 ms
+OURS fwd+bwd V62+Vj1d     5.8085 ms
+OURS bwd Vj1              4.5321 ms
+OURS fwd+bwd V62+Vj1      5.7465 ms
+OURS bwd Vj2              4.4008 ms
+OURS fwd+bwd V62+Vj2      5.6145 ms
+OURS bwd Vj3              4.1778 ms
+OURS fwd+bwd V62+Vj3      5.3869 ms
+VG1 bwd Vg1               3.0832 ms
+VG1 fwd+bwd Vg1+Vg1       4.0279 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.1334 ms
+cuDNN bwd-only  3.5894 ms
+cuDNN fwd+bwd   4.7360 ms
+## run 16
+OURS fwd V62              1.2127 ms
+OURS bwd Vj1d             4.5944 ms
+OURS fwd+bwd V62+Vj1d     5.8068 ms
+OURS bwd Vj1              4.5311 ms
+OURS fwd+bwd V62+Vj1      5.7454 ms
+OURS bwd Vj2              4.4021 ms
+OURS fwd+bwd V62+Vj2      5.6154 ms
+OURS bwd Vj3              4.1762 ms
+OURS fwd+bwd V62+Vj3      5.3881 ms
+VG1 bwd Vg1               3.0772 ms
+VG1 fwd+bwd Vg1+Vg1       4.0331 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2164 ms
+cuDNN bwd-only  3.5893 ms
+cuDNN fwd+bwd   4.7344 ms
+## run 17
+OURS fwd V62              1.2127 ms
+OURS bwd Vj1d             4.5955 ms
+OURS fwd+bwd V62+Vj1d     5.8074 ms
+OURS bwd Vj1              4.5317 ms
+OURS fwd+bwd V62+Vj1      5.7440 ms
+OURS bwd Vj2              4.4011 ms
+OURS fwd+bwd V62+Vj2      5.6122 ms
+OURS bwd Vj3              4.1787 ms
+OURS fwd+bwd V62+Vj3      5.3868 ms
+VG1 bwd Vg1               3.0778 ms
+VG1 fwd+bwd Vg1+Vg1       4.0326 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2186 ms
+cuDNN bwd-only  3.5983 ms
+cuDNN fwd+bwd   4.7250 ms
+## run 18
+OURS fwd V62              1.2124 ms
+OURS bwd Vj1d             4.5925 ms
+OURS fwd+bwd V62+Vj1d     5.8072 ms
+OURS bwd Vj1              4.5332 ms
+OURS fwd+bwd V62+Vj1      5.7434 ms
+OURS bwd Vj2              4.4026 ms
+OURS fwd+bwd V62+Vj2      5.6126 ms
+OURS bwd Vj3              4.1772 ms
+OURS fwd+bwd V62+Vj3      5.3884 ms
+VG1 bwd Vg1               3.0778 ms
+VG1 fwd+bwd Vg1+Vg1       4.0271 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.1321 ms
+cuDNN bwd-only  3.5971 ms
+cuDNN fwd+bwd   4.7248 ms
+## run 19
+OURS fwd V62              1.2124 ms
+OURS bwd Vj1d             4.5925 ms
+OURS fwd+bwd V62+Vj1d     5.8095 ms
+OURS bwd Vj1              4.5316 ms
+OURS fwd+bwd V62+Vj1      5.7481 ms
+OURS bwd Vj2              4.4026 ms
+OURS fwd+bwd V62+Vj2      5.6148 ms
+OURS bwd Vj3              4.1750 ms
+OURS fwd+bwd V62+Vj3      5.3883 ms
+VG1 bwd Vg1               3.0784 ms
+VG1 fwd+bwd Vg1+Vg1       4.0300 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2184 ms
+cuDNN bwd-only  3.5904 ms
+cuDNN fwd+bwd   4.7333 ms
+## run 20
+OURS fwd V62              1.2132 ms
+OURS bwd Vj1d             4.5956 ms
+OURS fwd+bwd V62+Vj1d     5.8084 ms
+OURS bwd Vj1              4.5314 ms
+OURS fwd+bwd V62+Vj1      5.7410 ms
+OURS bwd Vj2              4.4001 ms
+OURS fwd+bwd V62+Vj2      5.6103 ms
+OURS bwd Vj3              4.1766 ms
+OURS fwd+bwd V62+Vj3      5.3902 ms
+VG1 bwd Vg1               3.0769 ms
+VG1 fwd+bwd Vg1+Vg1       4.0313 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2155 ms
+cuDNN bwd-only  3.5897 ms
+cuDNN fwd+bwd   4.7320 ms
+## run 21
+OURS fwd V62              1.2125 ms
+OURS bwd Vj1d             4.5941 ms
+OURS fwd+bwd V62+Vj1d     5.8088 ms
+OURS bwd Vj1              4.5346 ms
+OURS fwd+bwd V62+Vj1      5.7461 ms
+OURS bwd Vj2              4.4019 ms
+OURS fwd+bwd V62+Vj2      5.6112 ms
+OURS bwd Vj3              4.1765 ms
+OURS fwd+bwd V62+Vj3      5.3876 ms
+VG1 bwd Vg1               3.0775 ms
+VG1 fwd+bwd Vg1+Vg1       4.0321 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.1298 ms
+cuDNN bwd-only  3.5905 ms
+cuDNN fwd+bwd   4.7349 ms
+## run 22
+OURS fwd V62              1.2168 ms
+OURS bwd Vj1d             4.5946 ms
+OURS fwd+bwd V62+Vj1d     5.8114 ms
+OURS bwd Vj1              4.5324 ms
+OURS fwd+bwd V62+Vj1      5.7461 ms
+OURS bwd Vj2              4.4019 ms
+OURS fwd+bwd V62+Vj2      5.6143 ms
+OURS bwd Vj3              4.1780 ms
+OURS fwd+bwd V62+Vj3      5.3887 ms
+VG1 bwd Vg1               3.0769 ms
+VG1 fwd+bwd Vg1+Vg1       4.0324 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.1297 ms
+cuDNN bwd-only  3.5908 ms
+cuDNN fwd+bwd   4.7329 ms
+## run 23
+OURS fwd V62              1.2177 ms
+OURS bwd Vj1d             4.5948 ms
+OURS fwd+bwd V62+Vj1d     5.8081 ms
+OURS bwd Vj1              4.5342 ms
+OURS fwd+bwd V62+Vj1      5.7429 ms
+OURS bwd Vj2              4.4003 ms
+OURS fwd+bwd V62+Vj2      5.6153 ms
+OURS bwd Vj3              4.1784 ms
+OURS fwd+bwd V62+Vj3      5.3905 ms
+VG1 bwd Vg1               3.0779 ms
+VG1 fwd+bwd Vg1+Vg1       4.0287 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.1297 ms
+cuDNN bwd-only  3.5903 ms
+cuDNN fwd+bwd   4.7335 ms
+## run 24
+OURS fwd V62              1.2135 ms
+OURS bwd Vj1d             4.5922 ms
+OURS fwd+bwd V62+Vj1d     5.8076 ms
+OURS bwd Vj1              4.5286 ms
+OURS fwd+bwd V62+Vj1      5.7434 ms
+OURS bwd Vj2              4.3996 ms
+OURS fwd+bwd V62+Vj2      5.6122 ms
+OURS bwd Vj3              4.1762 ms
+OURS fwd+bwd V62+Vj3      5.3894 ms
+VG1 bwd Vg1               3.0769 ms
+VG1 fwd+bwd Vg1+Vg1       4.0308 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2187 ms
+cuDNN bwd-only  3.5889 ms
+cuDNN fwd+bwd   4.7307 ms
+## run 25
+OURS fwd V62              1.2131 ms
+OURS bwd Vj1d             4.5958 ms
+OURS fwd+bwd V62+Vj1d     5.8066 ms
+OURS bwd Vj1              4.5335 ms
+OURS fwd+bwd V62+Vj1      5.7423 ms
+OURS bwd Vj2              4.4006 ms
+OURS fwd+bwd V62+Vj2      5.6134 ms
+OURS bwd Vj3              4.1812 ms
+OURS fwd+bwd V62+Vj3      5.3882 ms
+VG1 bwd Vg1               3.0769 ms
+VG1 fwd+bwd Vg1+Vg1       4.0292 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       1.2148 ms
+cuDNN bwd-only  3.5904 ms
+cuDNN fwd+bwd   4.7320 ms
+############ SHAPE B=2 Hq=18 Hkv=9
+CHECK V62 O:      [32mValues match!
+[0mCHECK V62 LSE:    [32mValues match!
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj1  dQ:  [32mValues match!
+[0mCHECK Vj1  dK:  [32mValues match!
+[0mCHECK Vj1  dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+CHECK Vj3  dQ:  [32mValues match!
+[0mCHECK Vj3  dK:  [32mValues match!
+[0mCHECK Vj3  dV:  [32mValues match!
+CHECK Vg1 O:      [32mValues match!
+[0mCHECK Vg1 LSE:    [32mValues match!
+CHECK Vg1  dQ:  [32mValues match!
+[0mCHECK Vg1  dK:  [32mValues match!
+[0mCHECK Vg1  dV:  [32mValues match!
+## run 1
+OURS fwd V62              0.3475 ms
+OURS bwd Vj1d             1.2584 ms
+OURS fwd+bwd V62+Vj1d     1.6012 ms
+OURS bwd Vj1              1.2388 ms
+OURS fwd+bwd V62+Vj1      1.5842 ms
+OURS bwd Vj2              1.1999 ms
+OURS fwd+bwd V62+Vj2      1.5442 ms
+OURS bwd Vj3              1.1430 ms
+OURS fwd+bwd V62+Vj3      1.4848 ms
+VG1 bwd Vg1               0.8471 ms
+VG1 fwd+bwd Vg1+Vg1       1.1083 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3187 ms
+cuDNN bwd-only  0.9948 ms
+cuDNN fwd+bwd   1.3129 ms
+## run 2
+OURS fwd V62              0.3463 ms
+OURS bwd Vj1d             1.2602 ms
+OURS fwd+bwd V62+Vj1d     1.6052 ms
+OURS bwd Vj1              1.2379 ms
+OURS fwd+bwd V62+Vj1      1.5823 ms
+OURS bwd Vj2              1.2001 ms
+OURS fwd+bwd V62+Vj2      1.5442 ms
+OURS bwd Vj3              1.1470 ms
+OURS fwd+bwd V62+Vj3      1.4887 ms
+VG1 bwd Vg1               0.8459 ms
+VG1 fwd+bwd Vg1+Vg1       1.1080 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3415 ms
+cuDNN bwd-only  0.9952 ms
+cuDNN fwd+bwd   1.3124 ms
+## run 3
+OURS fwd V62              0.3463 ms
+OURS bwd Vj1d             1.2606 ms
+OURS fwd+bwd V62+Vj1d     1.6031 ms
+OURS bwd Vj1              1.2398 ms
+OURS fwd+bwd V62+Vj1      1.5840 ms
+OURS bwd Vj2              1.2010 ms
+OURS fwd+bwd V62+Vj2      1.5433 ms
+OURS bwd Vj3              1.1444 ms
+OURS fwd+bwd V62+Vj3      1.4849 ms
+VG1 bwd Vg1               0.8466 ms
+VG1 fwd+bwd Vg1+Vg1       1.1066 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3197 ms
+cuDNN bwd-only  0.9964 ms
+cuDNN fwd+bwd   1.3118 ms
+## run 4
+OURS fwd V62              0.3464 ms
+OURS bwd Vj1d             1.2604 ms
+OURS fwd+bwd V62+Vj1d     1.6044 ms
+OURS bwd Vj1              1.2369 ms
+OURS fwd+bwd V62+Vj1      1.5843 ms
+OURS bwd Vj2              1.1999 ms
+OURS fwd+bwd V62+Vj2      1.5453 ms
+OURS bwd Vj3              1.1434 ms
+OURS fwd+bwd V62+Vj3      1.4860 ms
+VG1 bwd Vg1               0.8476 ms
+VG1 fwd+bwd Vg1+Vg1       1.1088 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3198 ms
+cuDNN bwd-only  0.9953 ms
+cuDNN fwd+bwd   1.3132 ms
+## run 5
+OURS fwd V62              0.3480 ms
+OURS bwd Vj1d             1.2603 ms
+OURS fwd+bwd V62+Vj1d     1.6029 ms
+OURS bwd Vj1              1.2410 ms
+OURS fwd+bwd V62+Vj1      1.5851 ms
+OURS bwd Vj2              1.2027 ms
+OURS fwd+bwd V62+Vj2      1.5455 ms
+OURS bwd Vj3              1.1455 ms
+OURS fwd+bwd V62+Vj3      1.4875 ms
+VG1 bwd Vg1               0.8462 ms
+VG1 fwd+bwd Vg1+Vg1       1.1073 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3431 ms
+cuDNN bwd-only  0.9956 ms
+cuDNN fwd+bwd   1.3109 ms
+## run 6
+OURS fwd V62              0.3463 ms
+OURS bwd Vj1d             1.2596 ms
+OURS fwd+bwd V62+Vj1d     1.6018 ms
+OURS bwd Vj1              1.2427 ms
+OURS fwd+bwd V62+Vj1      1.5848 ms
+OURS bwd Vj2              1.2029 ms
+OURS fwd+bwd V62+Vj2      1.5441 ms
+OURS bwd Vj3              1.1439 ms
+OURS fwd+bwd V62+Vj3      1.4857 ms
+VG1 bwd Vg1               0.8458 ms
+VG1 fwd+bwd Vg1+Vg1       1.1081 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3189 ms
+cuDNN bwd-only  0.9958 ms
+cuDNN fwd+bwd   1.3136 ms
+## run 7
+OURS fwd V62              0.3462 ms
+OURS bwd Vj1d             1.2611 ms
+OURS fwd+bwd V62+Vj1d     1.6021 ms
+OURS bwd Vj1              1.2413 ms
+OURS fwd+bwd V62+Vj1      1.5851 ms
+OURS bwd Vj2              1.2030 ms
+OURS fwd+bwd V62+Vj2      1.5426 ms
+OURS bwd Vj3              1.1447 ms
+OURS fwd+bwd V62+Vj3      1.4871 ms
+VG1 bwd Vg1               0.8470 ms
+VG1 fwd+bwd Vg1+Vg1       1.1082 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3411 ms
+cuDNN bwd-only  0.9950 ms
+cuDNN fwd+bwd   1.3118 ms
+## run 8
+OURS fwd V62              0.3465 ms
+OURS bwd Vj1d             1.2618 ms
+OURS fwd+bwd V62+Vj1d     1.6040 ms
+OURS bwd Vj1              1.2411 ms
+OURS fwd+bwd V62+Vj1      1.5838 ms
+OURS bwd Vj2              1.2006 ms
+OURS fwd+bwd V62+Vj2      1.5466 ms
+OURS bwd Vj3              1.1422 ms
+OURS fwd+bwd V62+Vj3      1.4854 ms
+VG1 bwd Vg1               0.8464 ms
+VG1 fwd+bwd Vg1+Vg1       1.1067 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3434 ms
+cuDNN bwd-only  0.9947 ms
+cuDNN fwd+bwd   1.3134 ms
+## run 9
+OURS fwd V62              0.3464 ms
+OURS bwd Vj1d             1.2604 ms
+OURS fwd+bwd V62+Vj1d     1.6046 ms
+OURS bwd Vj1              1.2415 ms
+OURS fwd+bwd V62+Vj1      1.5844 ms
+OURS bwd Vj2              1.2009 ms
+OURS fwd+bwd V62+Vj2      1.5451 ms
+OURS bwd Vj3              1.1422 ms
+OURS fwd+bwd V62+Vj3      1.4849 ms
+VG1 bwd Vg1               0.8468 ms
+VG1 fwd+bwd Vg1+Vg1       1.1068 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3432 ms
+cuDNN bwd-only  0.9955 ms
+cuDNN fwd+bwd   1.3105 ms
+## run 10
+OURS fwd V62              0.3464 ms
+OURS bwd Vj1d             1.2589 ms
+OURS fwd+bwd V62+Vj1d     1.6024 ms
+OURS bwd Vj1              1.2384 ms
+OURS fwd+bwd V62+Vj1      1.5866 ms
+OURS bwd Vj2              1.2025 ms
+OURS fwd+bwd V62+Vj2      1.5452 ms
+OURS bwd Vj3              1.1436 ms
+OURS fwd+bwd V62+Vj3      1.4859 ms
+VG1 bwd Vg1               0.8465 ms
+VG1 fwd+bwd Vg1+Vg1       1.1076 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3460 ms
+cuDNN bwd-only  0.9955 ms
+cuDNN fwd+bwd   1.3134 ms
+## run 11
+OURS fwd V62              0.3463 ms
+OURS bwd Vj1d             1.2582 ms
+OURS fwd+bwd V62+Vj1d     1.6036 ms
+OURS bwd Vj1              1.2408 ms
+OURS fwd+bwd V62+Vj1      1.5829 ms
+OURS bwd Vj2              1.2005 ms
+OURS fwd+bwd V62+Vj2      1.5443 ms
+OURS bwd Vj3              1.1438 ms
+OURS fwd+bwd V62+Vj3      1.4862 ms
+VG1 bwd Vg1               0.8468 ms
+VG1 fwd+bwd Vg1+Vg1       1.1069 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3202 ms
+cuDNN bwd-only  0.9953 ms
+cuDNN fwd+bwd   1.3115 ms
+## run 12
+OURS fwd V62              0.3463 ms
+OURS bwd Vj1d             1.2603 ms
+OURS fwd+bwd V62+Vj1d     1.6006 ms
+OURS bwd Vj1              1.2372 ms
+OURS fwd+bwd V62+Vj1      1.5832 ms
+OURS bwd Vj2              1.2015 ms
+OURS fwd+bwd V62+Vj2      1.5461 ms
+OURS bwd Vj3              1.1444 ms
+OURS fwd+bwd V62+Vj3      1.4870 ms
+VG1 bwd Vg1               0.8458 ms
+VG1 fwd+bwd Vg1+Vg1       1.1066 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3198 ms
+cuDNN bwd-only  0.9954 ms
+cuDNN fwd+bwd   1.3162 ms
+## run 13
+OURS fwd V62              0.3465 ms
+OURS bwd Vj1d             1.2598 ms
+OURS fwd+bwd V62+Vj1d     1.6024 ms
+OURS bwd Vj1              1.2397 ms
+OURS fwd+bwd V62+Vj1      1.5834 ms
+OURS bwd Vj2              1.2006 ms
+OURS fwd+bwd V62+Vj2      1.5445 ms
+OURS bwd Vj3              1.1429 ms
+OURS fwd+bwd V62+Vj3      1.4837 ms
+VG1 bwd Vg1               0.8458 ms
+VG1 fwd+bwd Vg1+Vg1       1.1067 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3444 ms
+cuDNN bwd-only  0.9975 ms
+cuDNN fwd+bwd   1.3131 ms
+## run 14
+OURS fwd V62              0.3471 ms
+OURS bwd Vj1d             1.2605 ms
+OURS fwd+bwd V62+Vj1d     1.6019 ms
+OURS bwd Vj1              1.2405 ms
+OURS fwd+bwd V62+Vj1      1.5827 ms
+OURS bwd Vj2              1.1998 ms
+OURS fwd+bwd V62+Vj2      1.5421 ms
+OURS bwd Vj3              1.1426 ms
+OURS fwd+bwd V62+Vj3      1.4859 ms
+VG1 bwd Vg1               0.8464 ms
+VG1 fwd+bwd Vg1+Vg1       1.1068 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3461 ms
+cuDNN bwd-only  0.9960 ms
+cuDNN fwd+bwd   1.3113 ms
+## run 15
+OURS fwd V62              0.3464 ms
+OURS bwd Vj1d             1.2597 ms
+OURS fwd+bwd V62+Vj1d     1.6032 ms
+OURS bwd Vj1              1.2407 ms
+OURS fwd+bwd V62+Vj1      1.5849 ms
+OURS bwd Vj2              1.2015 ms
+OURS fwd+bwd V62+Vj2      1.5445 ms
+OURS bwd Vj3              1.1440 ms
+OURS fwd+bwd V62+Vj3      1.4854 ms
+VG1 bwd Vg1               0.8468 ms
+VG1 fwd+bwd Vg1+Vg1       1.1081 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3433 ms
+cuDNN bwd-only  0.9944 ms
+cuDNN fwd+bwd   1.3109 ms
+## run 16
+OURS fwd V62              0.3466 ms
+OURS bwd Vj1d             1.2604 ms
+OURS fwd+bwd V62+Vj1d     1.6045 ms
+OURS bwd Vj1              1.2401 ms
+OURS fwd+bwd V62+Vj1      1.5857 ms
+OURS bwd Vj2              1.2017 ms
+OURS fwd+bwd V62+Vj2      1.5445 ms
+OURS bwd Vj3              1.1449 ms
+OURS fwd+bwd V62+Vj3      1.4872 ms
+VG1 bwd Vg1               0.8467 ms
+VG1 fwd+bwd Vg1+Vg1       1.1085 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3196 ms
+cuDNN bwd-only  0.9963 ms
+cuDNN fwd+bwd   1.3148 ms
+## run 17
+OURS fwd V62              0.3465 ms
+OURS bwd Vj1d             1.2594 ms
+OURS fwd+bwd V62+Vj1d     1.6003 ms
+OURS bwd Vj1              1.2394 ms
+OURS fwd+bwd V62+Vj1      1.5852 ms
+OURS bwd Vj2              1.2018 ms
+OURS fwd+bwd V62+Vj2      1.5444 ms
+OURS bwd Vj3              1.1447 ms
+OURS fwd+bwd V62+Vj3      1.4849 ms
+VG1 bwd Vg1               0.8463 ms
+VG1 fwd+bwd Vg1+Vg1       1.1083 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3436 ms
+cuDNN bwd-only  0.9994 ms
+cuDNN fwd+bwd   1.3113 ms
+## run 18
+OURS fwd V62              0.3466 ms
+OURS bwd Vj1d             1.2598 ms
+OURS fwd+bwd V62+Vj1d     1.6035 ms
+OURS bwd Vj1              1.2404 ms
+OURS fwd+bwd V62+Vj1      1.5844 ms
+OURS bwd Vj2              1.2006 ms
+OURS fwd+bwd V62+Vj2      1.5467 ms
+OURS bwd Vj3              1.1453 ms
+OURS fwd+bwd V62+Vj3      1.4871 ms
+VG1 bwd Vg1               0.8475 ms
+VG1 fwd+bwd Vg1+Vg1       1.1075 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3431 ms
+cuDNN bwd-only  0.9952 ms
+cuDNN fwd+bwd   1.3133 ms
+## run 19
+OURS fwd V62              0.3464 ms
+OURS bwd Vj1d             1.2604 ms
+OURS fwd+bwd V62+Vj1d     1.6052 ms
+OURS bwd Vj1              1.2384 ms
+OURS fwd+bwd V62+Vj1      1.5833 ms
+OURS bwd Vj2              1.2007 ms
+OURS fwd+bwd V62+Vj2      1.5429 ms
+OURS bwd Vj3              1.1438 ms
+OURS fwd+bwd V62+Vj3      1.4873 ms
+VG1 bwd Vg1               0.8471 ms
+VG1 fwd+bwd Vg1+Vg1       1.1095 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3198 ms
+cuDNN bwd-only  0.9974 ms
+cuDNN fwd+bwd   1.3107 ms
+## run 20
+OURS fwd V62              0.3465 ms
+OURS bwd Vj1d             1.2579 ms
+OURS fwd+bwd V62+Vj1d     1.6062 ms
+OURS bwd Vj1              1.2407 ms
+OURS fwd+bwd V62+Vj1      1.5858 ms
+OURS bwd Vj2              1.1995 ms
+OURS fwd+bwd V62+Vj2      1.5443 ms
+OURS bwd Vj3              1.1443 ms
+OURS fwd+bwd V62+Vj3      1.4866 ms
+VG1 bwd Vg1               0.8481 ms
+VG1 fwd+bwd Vg1+Vg1       1.1095 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3423 ms
+cuDNN bwd-only  0.9952 ms
+cuDNN fwd+bwd   1.3109 ms
+## run 21
+OURS fwd V62              0.3472 ms
+OURS bwd Vj1d             1.2618 ms
+OURS fwd+bwd V62+Vj1d     1.6028 ms
+OURS bwd Vj1              1.2399 ms
+OURS fwd+bwd V62+Vj1      1.5850 ms
+OURS bwd Vj2              1.1986 ms
+OURS fwd+bwd V62+Vj2      1.5456 ms
+OURS bwd Vj3              1.1453 ms
+OURS fwd+bwd V62+Vj3      1.4876 ms
+VG1 bwd Vg1               0.8477 ms
+VG1 fwd+bwd Vg1+Vg1       1.1094 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3426 ms
+cuDNN bwd-only  0.9951 ms
+cuDNN fwd+bwd   1.3134 ms
+## run 22
+OURS fwd V62              0.3464 ms
+OURS bwd Vj1d             1.2579 ms
+OURS fwd+bwd V62+Vj1d     1.6004 ms
+OURS bwd Vj1              1.2397 ms
+OURS fwd+bwd V62+Vj1      1.5848 ms
+OURS bwd Vj2              1.1995 ms
+OURS fwd+bwd V62+Vj2      1.5432 ms
+OURS bwd Vj3              1.1413 ms
+OURS fwd+bwd V62+Vj3      1.4868 ms
+VG1 bwd Vg1               0.8462 ms
+VG1 fwd+bwd Vg1+Vg1       1.1070 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3196 ms
+cuDNN bwd-only  0.9966 ms
+cuDNN fwd+bwd   1.3144 ms
+## run 23
+OURS fwd V62              0.3463 ms
+OURS bwd Vj1d             1.2573 ms
+OURS fwd+bwd V62+Vj1d     1.6011 ms
+OURS bwd Vj1              1.2380 ms
+OURS fwd+bwd V62+Vj1      1.5835 ms
+OURS bwd Vj2              1.1980 ms
+OURS fwd+bwd V62+Vj2      1.5435 ms
+OURS bwd Vj3              1.1450 ms
+OURS fwd+bwd V62+Vj3      1.4855 ms
+VG1 bwd Vg1               0.8467 ms
+VG1 fwd+bwd Vg1+Vg1       1.1065 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3422 ms
+cuDNN bwd-only  0.9949 ms
+cuDNN fwd+bwd   1.3130 ms
+## run 24
+OURS fwd V62              0.3466 ms
+OURS bwd Vj1d             1.2627 ms
+OURS fwd+bwd V62+Vj1d     1.6041 ms
+OURS bwd Vj1              1.2415 ms
+OURS fwd+bwd V62+Vj1      1.5846 ms
+OURS bwd Vj2              1.2011 ms
+OURS fwd+bwd V62+Vj2      1.5448 ms
+OURS bwd Vj3              1.1422 ms
+OURS fwd+bwd V62+Vj3      1.4845 ms
+VG1 bwd Vg1               0.8473 ms
+VG1 fwd+bwd Vg1+Vg1       1.1086 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3195 ms
+cuDNN bwd-only  0.9959 ms
+cuDNN fwd+bwd   1.3113 ms
+## run 25
+OURS fwd V62              0.3463 ms
+OURS bwd Vj1d             1.2598 ms
+OURS fwd+bwd V62+Vj1d     1.6014 ms
+OURS bwd Vj1              1.2389 ms
+OURS fwd+bwd V62+Vj1      1.5853 ms
+OURS bwd Vj2              1.2017 ms
+OURS fwd+bwd V62+Vj2      1.5436 ms
+OURS bwd Vj3              1.1439 ms
+OURS fwd+bwd V62+Vj3      1.4850 ms
+VG1 bwd Vg1               0.8461 ms
+VG1 fwd+bwd Vg1+Vg1       1.1065 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.3451 ms
+cuDNN bwd-only  0.9940 ms
+cuDNN fwd+bwd   1.3113 ms
+############ SHAPE B=4 Hq=18 Hkv=9
+CHECK V62 O:      [32mValues match!
+[0mCHECK V62 LSE:    [32mValues match!
+CHECK Vj1d dQ:  [32mValues match!
+[0mCHECK Vj1d dK:  [32mValues match!
+[0mCHECK Vj1d dV:  [32mValues match!
+CHECK Vj1  dQ:  [32mValues match!
+[0mCHECK Vj1  dK:  [32mValues match!
+[0mCHECK Vj1  dV:  [32mValues match!
+CHECK Vj2  dQ:  [32mValues match!
+[0mCHECK Vj2  dK:  [32mValues match!
+[0mCHECK Vj2  dV:  [32mValues match!
+CHECK Vj3  dQ:  [32mValues match!
+[0mCHECK Vj3  dK:  [32mValues match!
+[0mCHECK Vj3  dV:  [32mValues match!
+CHECK Vg1 O:      [32mValues match!
+[0mCHECK Vg1 LSE:    [32mValues match!
+CHECK Vg1  dQ:  [32mValues match!
+[0mCHECK Vg1  dK:  [32mValues match!
+[0mCHECK Vg1  dV:  [32mValues match!
+## run 1
+OURS fwd V62              0.6134 ms
+OURS bwd Vj1d             2.3746 ms
+OURS fwd+bwd V62+Vj1d     2.9888 ms
+OURS bwd Vj1              2.3404 ms
+OURS fwd+bwd V62+Vj1      2.9541 ms
+OURS bwd Vj2              2.2693 ms
+OURS fwd+bwd V62+Vj2      2.8815 ms
+OURS bwd Vj3              2.1608 ms
+OURS fwd+bwd V62+Vj3      2.7694 ms
+VG1 bwd Vg1               1.5652 ms
+VG1 fwd+bwd Vg1+Vg1       2.0459 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6339 ms
+cuDNN bwd-only  1.8631 ms
+cuDNN fwd+bwd   2.4581 ms
+## run 2
+OURS fwd V62              0.6133 ms
+OURS bwd Vj1d             2.3769 ms
+OURS fwd+bwd V62+Vj1d     2.9909 ms
+OURS bwd Vj1              2.3422 ms
+OURS fwd+bwd V62+Vj1      2.9567 ms
+OURS bwd Vj2              2.2706 ms
+OURS fwd+bwd V62+Vj2      2.8787 ms
+OURS bwd Vj3              2.1609 ms
+OURS fwd+bwd V62+Vj3      2.7690 ms
+VG1 bwd Vg1               1.5675 ms
+VG1 fwd+bwd Vg1+Vg1       2.0451 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6334 ms
+cuDNN bwd-only  1.8636 ms
+cuDNN fwd+bwd   2.4567 ms
+## run 3
+OURS fwd V62              0.6138 ms
+OURS bwd Vj1d             2.3764 ms
+OURS fwd+bwd V62+Vj1d     2.9894 ms
+OURS bwd Vj1              2.3419 ms
+OURS fwd+bwd V62+Vj1      2.9562 ms
+OURS bwd Vj2              2.2704 ms
+OURS fwd+bwd V62+Vj2      2.8800 ms
+OURS bwd Vj3              2.1614 ms
+OURS fwd+bwd V62+Vj3      2.7680 ms
+VG1 bwd Vg1               1.5658 ms
+VG1 fwd+bwd Vg1+Vg1       2.0435 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6332 ms
+cuDNN bwd-only  1.8641 ms
+cuDNN fwd+bwd   2.4571 ms
+## run 4
+OURS fwd V62              0.6135 ms
+OURS bwd Vj1d             2.3772 ms
+OURS fwd+bwd V62+Vj1d     2.9910 ms
+OURS bwd Vj1              2.3423 ms
+OURS fwd+bwd V62+Vj1      2.9562 ms
+OURS bwd Vj2              2.2687 ms
+OURS fwd+bwd V62+Vj2      2.8804 ms
+OURS bwd Vj3              2.1587 ms
+OURS fwd+bwd V62+Vj3      2.7689 ms
+VG1 bwd Vg1               1.5656 ms
+VG1 fwd+bwd Vg1+Vg1       2.0454 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6341 ms
+cuDNN bwd-only  1.8708 ms
+cuDNN fwd+bwd   2.4524 ms
+## run 5
+OURS fwd V62              0.6133 ms
+OURS bwd Vj1d             2.3765 ms
+OURS fwd+bwd V62+Vj1d     2.9906 ms
+OURS bwd Vj1              2.3398 ms
+OURS fwd+bwd V62+Vj1      2.9535 ms
+OURS bwd Vj2              2.2694 ms
+OURS fwd+bwd V62+Vj2      2.8827 ms
+OURS bwd Vj3              2.1604 ms
+OURS fwd+bwd V62+Vj3      2.7718 ms
+VG1 bwd Vg1               1.5661 ms
+VG1 fwd+bwd Vg1+Vg1       2.0433 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6324 ms
+cuDNN bwd-only  1.8631 ms
+cuDNN fwd+bwd   2.4554 ms
+## run 6
+OURS fwd V62              0.6132 ms
+OURS bwd Vj1d             2.3771 ms
+OURS fwd+bwd V62+Vj1d     2.9894 ms
+OURS bwd Vj1              2.3426 ms
+OURS fwd+bwd V62+Vj1      2.9550 ms
+OURS bwd Vj2              2.2668 ms
+OURS fwd+bwd V62+Vj2      2.8818 ms
+OURS bwd Vj3              2.1579 ms
+OURS fwd+bwd V62+Vj3      2.7685 ms
+VG1 bwd Vg1               1.5653 ms
+VG1 fwd+bwd Vg1+Vg1       2.0451 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5889 ms
+cuDNN bwd-only  1.8627 ms
+cuDNN fwd+bwd   2.4562 ms
+## run 7
+OURS fwd V62              0.6135 ms
+OURS bwd Vj1d             2.3756 ms
+OURS fwd+bwd V62+Vj1d     2.9887 ms
+OURS bwd Vj1              2.3436 ms
+OURS fwd+bwd V62+Vj1      2.9552 ms
+OURS bwd Vj2              2.2694 ms
+OURS fwd+bwd V62+Vj2      2.8821 ms
+OURS bwd Vj3              2.1603 ms
+OURS fwd+bwd V62+Vj3      2.7697 ms
+VG1 bwd Vg1               1.5673 ms
+VG1 fwd+bwd Vg1+Vg1       2.0455 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6328 ms
+cuDNN bwd-only  1.8637 ms
+cuDNN fwd+bwd   2.4526 ms
+## run 8
+OURS fwd V62              0.6137 ms
+OURS bwd Vj1d             2.3747 ms
+OURS fwd+bwd V62+Vj1d     2.9886 ms
+OURS bwd Vj1              2.3417 ms
+OURS fwd+bwd V62+Vj1      2.9514 ms
+OURS bwd Vj2              2.2682 ms
+OURS fwd+bwd V62+Vj2      2.8798 ms
+OURS bwd Vj3              2.1615 ms
+OURS fwd+bwd V62+Vj3      2.7671 ms
+VG1 bwd Vg1               1.5665 ms
+VG1 fwd+bwd Vg1+Vg1       2.0452 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6368 ms
+cuDNN bwd-only  1.8628 ms
+cuDNN fwd+bwd   2.4540 ms
+## run 9
+OURS fwd V62              0.6132 ms
+OURS bwd Vj1d             2.3758 ms
+OURS fwd+bwd V62+Vj1d     2.9891 ms
+OURS bwd Vj1              2.3404 ms
+OURS fwd+bwd V62+Vj1      2.9528 ms
+OURS bwd Vj2              2.2688 ms
+OURS fwd+bwd V62+Vj2      2.8798 ms
+OURS bwd Vj3              2.1572 ms
+OURS fwd+bwd V62+Vj3      2.7676 ms
+VG1 bwd Vg1               1.5657 ms
+VG1 fwd+bwd Vg1+Vg1       2.0443 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5894 ms
+cuDNN bwd-only  1.8651 ms
+cuDNN fwd+bwd   2.4524 ms
+## run 10
+OURS fwd V62              0.6133 ms
+OURS bwd Vj1d             2.3765 ms
+OURS fwd+bwd V62+Vj1d     2.9890 ms
+OURS bwd Vj1              2.3407 ms
+OURS fwd+bwd V62+Vj1      2.9552 ms
+OURS bwd Vj2              2.2692 ms
+OURS fwd+bwd V62+Vj2      2.8823 ms
+OURS bwd Vj3              2.1564 ms
+OURS fwd+bwd V62+Vj3      2.7708 ms
+VG1 bwd Vg1               1.5653 ms
+VG1 fwd+bwd Vg1+Vg1       2.0460 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6323 ms
+cuDNN bwd-only  1.8673 ms
+cuDNN fwd+bwd   2.4523 ms
+## run 11
+OURS fwd V62              0.6147 ms
+OURS bwd Vj1d             2.3770 ms
+OURS fwd+bwd V62+Vj1d     2.9880 ms
+OURS bwd Vj1              2.3418 ms
+OURS fwd+bwd V62+Vj1      2.9551 ms
+OURS bwd Vj2              2.2689 ms
+OURS fwd+bwd V62+Vj2      2.8830 ms
+OURS bwd Vj3              2.1587 ms
+OURS fwd+bwd V62+Vj3      2.7707 ms
+VG1 bwd Vg1               1.5668 ms
+VG1 fwd+bwd Vg1+Vg1       2.0450 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5889 ms
+cuDNN bwd-only  1.8631 ms
+cuDNN fwd+bwd   2.4579 ms
+## run 12
+OURS fwd V62              0.6163 ms
+OURS bwd Vj1d             2.3749 ms
+OURS fwd+bwd V62+Vj1d     2.9881 ms
+OURS bwd Vj1              2.3391 ms
+OURS fwd+bwd V62+Vj1      2.9566 ms
+OURS bwd Vj2              2.2683 ms
+OURS fwd+bwd V62+Vj2      2.8795 ms
+OURS bwd Vj3              2.1598 ms
+OURS fwd+bwd V62+Vj3      2.7701 ms
+VG1 bwd Vg1               1.5671 ms
+VG1 fwd+bwd Vg1+Vg1       2.0455 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6332 ms
+cuDNN bwd-only  1.8638 ms
+cuDNN fwd+bwd   2.4576 ms
+## run 13
+OURS fwd V62              0.6135 ms
+OURS bwd Vj1d             2.3749 ms
+OURS fwd+bwd V62+Vj1d     2.9894 ms
+OURS bwd Vj1              2.3429 ms
+OURS fwd+bwd V62+Vj1      2.9499 ms
+OURS bwd Vj2              2.2715 ms
+OURS fwd+bwd V62+Vj2      2.8805 ms
+OURS bwd Vj3              2.1605 ms
+OURS fwd+bwd V62+Vj3      2.7692 ms
+VG1 bwd Vg1               1.5668 ms
+VG1 fwd+bwd Vg1+Vg1       2.0452 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6360 ms
+cuDNN bwd-only  1.8684 ms
+cuDNN fwd+bwd   2.4540 ms
+## run 14
+OURS fwd V62              0.6150 ms
+OURS bwd Vj1d             2.3766 ms
+OURS fwd+bwd V62+Vj1d     2.9882 ms
+OURS bwd Vj1              2.3422 ms
+OURS fwd+bwd V62+Vj1      2.9544 ms
+OURS bwd Vj2              2.2691 ms
+OURS fwd+bwd V62+Vj2      2.8819 ms
+OURS bwd Vj3              2.1588 ms
+OURS fwd+bwd V62+Vj3      2.7682 ms
+VG1 bwd Vg1               1.5680 ms
+VG1 fwd+bwd Vg1+Vg1       2.0454 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6336 ms
+cuDNN bwd-only  1.8641 ms
+cuDNN fwd+bwd   2.4561 ms
+## run 15
+OURS fwd V62              0.6133 ms
+OURS bwd Vj1d             2.3769 ms
+OURS fwd+bwd V62+Vj1d     2.9900 ms
+OURS bwd Vj1              2.3438 ms
+OURS fwd+bwd V62+Vj1      2.9534 ms
+OURS bwd Vj2              2.2690 ms
+OURS fwd+bwd V62+Vj2      2.8827 ms
+OURS bwd Vj3              2.1587 ms
+OURS fwd+bwd V62+Vj3      2.7680 ms
+VG1 bwd Vg1               1.5663 ms
+VG1 fwd+bwd Vg1+Vg1       2.0465 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6347 ms
+cuDNN bwd-only  1.8666 ms
+cuDNN fwd+bwd   2.4541 ms
+## run 16
+OURS fwd V62              0.6134 ms
+OURS bwd Vj1d             2.3789 ms
+OURS fwd+bwd V62+Vj1d     2.9893 ms
+OURS bwd Vj1              2.3393 ms
+OURS fwd+bwd V62+Vj1      2.9525 ms
+OURS bwd Vj2              2.2676 ms
+OURS fwd+bwd V62+Vj2      2.8819 ms
+OURS bwd Vj3              2.1586 ms
+OURS fwd+bwd V62+Vj3      2.7721 ms
+VG1 bwd Vg1               1.5643 ms
+VG1 fwd+bwd Vg1+Vg1       2.0431 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5909 ms
+cuDNN bwd-only  1.8640 ms
+cuDNN fwd+bwd   2.4547 ms
+## run 17
+OURS fwd V62              0.6133 ms
+OURS bwd Vj1d             2.3762 ms
+OURS fwd+bwd V62+Vj1d     2.9909 ms
+OURS bwd Vj1              2.3386 ms
+OURS fwd+bwd V62+Vj1      2.9525 ms
+OURS bwd Vj2              2.2700 ms
+OURS fwd+bwd V62+Vj2      2.8792 ms
+OURS bwd Vj3              2.1576 ms
+OURS fwd+bwd V62+Vj3      2.7676 ms
+VG1 bwd Vg1               1.5642 ms
+VG1 fwd+bwd Vg1+Vg1       2.0418 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6356 ms
+cuDNN bwd-only  1.8631 ms
+cuDNN fwd+bwd   2.4568 ms
+## run 18
+OURS fwd V62              0.6136 ms
+OURS bwd Vj1d             2.3757 ms
+OURS fwd+bwd V62+Vj1d     2.9877 ms
+OURS bwd Vj1              2.3417 ms
+OURS fwd+bwd V62+Vj1      2.9530 ms
+OURS bwd Vj2              2.2688 ms
+OURS fwd+bwd V62+Vj2      2.8818 ms
+OURS bwd Vj3              2.1612 ms
+OURS fwd+bwd V62+Vj3      2.7686 ms
+VG1 bwd Vg1               1.5661 ms
+VG1 fwd+bwd Vg1+Vg1       2.0437 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6343 ms
+cuDNN bwd-only  1.8634 ms
+cuDNN fwd+bwd   2.4552 ms
+## run 19
+OURS fwd V62              0.6159 ms
+OURS bwd Vj1d             2.3752 ms
+OURS fwd+bwd V62+Vj1d     2.9891 ms
+OURS bwd Vj1              2.3393 ms
+OURS fwd+bwd V62+Vj1      2.9554 ms
+OURS bwd Vj2              2.2669 ms
+OURS fwd+bwd V62+Vj2      2.8797 ms
+OURS bwd Vj3              2.1582 ms
+OURS fwd+bwd V62+Vj3      2.7700 ms
+VG1 bwd Vg1               1.5658 ms
+VG1 fwd+bwd Vg1+Vg1       2.0427 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5892 ms
+cuDNN bwd-only  1.8628 ms
+cuDNN fwd+bwd   2.4575 ms
+## run 20
+OURS fwd V62              0.6158 ms
+OURS bwd Vj1d             2.3735 ms
+OURS fwd+bwd V62+Vj1d     2.9888 ms
+OURS bwd Vj1              2.3417 ms
+OURS fwd+bwd V62+Vj1      2.9563 ms
+OURS bwd Vj2              2.2703 ms
+OURS fwd+bwd V62+Vj2      2.8831 ms
+OURS bwd Vj3              2.1590 ms
+OURS fwd+bwd V62+Vj3      2.7678 ms
+VG1 bwd Vg1               1.5660 ms
+VG1 fwd+bwd Vg1+Vg1       2.0448 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6330 ms
+cuDNN bwd-only  1.8644 ms
+cuDNN fwd+bwd   2.4576 ms
+## run 21
+OURS fwd V62              0.6139 ms
+OURS bwd Vj1d             2.3761 ms
+OURS fwd+bwd V62+Vj1d     2.9909 ms
+OURS bwd Vj1              2.3421 ms
+OURS fwd+bwd V62+Vj1      2.9520 ms
+OURS bwd Vj2              2.2701 ms
+OURS fwd+bwd V62+Vj2      2.8808 ms
+OURS bwd Vj3              2.1603 ms
+OURS fwd+bwd V62+Vj3      2.7717 ms
+VG1 bwd Vg1               1.5663 ms
+VG1 fwd+bwd Vg1+Vg1       2.0456 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5907 ms
+cuDNN bwd-only  1.8649 ms
+cuDNN fwd+bwd   2.4563 ms
+## run 22
+OURS fwd V62              0.6133 ms
+OURS bwd Vj1d             2.3732 ms
+OURS fwd+bwd V62+Vj1d     2.9900 ms
+OURS bwd Vj1              2.3413 ms
+OURS fwd+bwd V62+Vj1      2.9511 ms
+OURS bwd Vj2              2.2724 ms
+OURS fwd+bwd V62+Vj2      2.8811 ms
+OURS bwd Vj3              2.1612 ms
+OURS fwd+bwd V62+Vj3      2.7694 ms
+VG1 bwd Vg1               1.5651 ms
+VG1 fwd+bwd Vg1+Vg1       2.0440 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.6338 ms
+cuDNN bwd-only  1.8625 ms
+cuDNN fwd+bwd   2.4555 ms
+## run 23
+OURS fwd V62              0.6135 ms
+OURS bwd Vj1d             2.3749 ms
+OURS fwd+bwd V62+Vj1d     2.9904 ms
+OURS bwd Vj1              2.3421 ms
+OURS fwd+bwd V62+Vj1      2.9557 ms
+OURS bwd Vj2              2.2673 ms
+OURS fwd+bwd V62+Vj2      2.8815 ms
+OURS bwd Vj3              2.1606 ms
+OURS fwd+bwd V62+Vj3      2.7699 ms
+VG1 bwd Vg1               1.5673 ms
+VG1 fwd+bwd Vg1+Vg1       2.0467 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5908 ms
+cuDNN bwd-only  1.8637 ms
+cuDNN fwd+bwd   2.4558 ms
+## run 24
+OURS fwd V62              0.6134 ms
+OURS bwd Vj1d             2.3779 ms
+OURS fwd+bwd V62+Vj1d     2.9889 ms
+OURS bwd Vj1              2.3403 ms
+OURS fwd+bwd V62+Vj1      2.9548 ms
+OURS bwd Vj2              2.2704 ms
+OURS fwd+bwd V62+Vj2      2.8817 ms
+OURS bwd Vj3              2.1584 ms
+OURS fwd+bwd V62+Vj3      2.7706 ms
+VG1 bwd Vg1               1.5646 ms
+VG1 fwd+bwd Vg1+Vg1       2.0448 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5909 ms
+cuDNN bwd-only  1.8638 ms
+cuDNN fwd+bwd   2.4578 ms
+## run 25
+OURS fwd V62              0.6151 ms
+OURS bwd Vj1d             2.3757 ms
+OURS fwd+bwd V62+Vj1d     2.9893 ms
+OURS bwd Vj1              2.3423 ms
+OURS fwd+bwd V62+Vj1      2.9540 ms
+OURS bwd Vj2              2.2692 ms
+OURS fwd+bwd V62+Vj2      2.8811 ms
+OURS bwd Vj3              2.1594 ms
+OURS fwd+bwd V62+Vj3      2.7685 ms
+VG1 bwd Vg1               1.5645 ms
+VG1 fwd+bwd Vg1+Vg1       2.0462 ms
+# cuDNN -> ScaledDotProductCudnnAttentionBackward0
+cuDNN fwd       0.5913 ms
+cuDNN bwd-only  1.8666 ms
+cuDNN fwd+bwd   2.4523 ms
+############ SHAPE B=8 Hq=18 Hkv=9

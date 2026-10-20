@@ -51,7 +51,7 @@ for s in "${SH[@]}"; do
   ./build/bin/gqa_fwd_bwd "$B" "$HQ" "$HKV" | grep -aE "CHECK|don't match|Ref:"   # correctness once
   for r in $(seq 1 "$N"); do
     echo "## run $r"
-    ./build/bin/gqa_fwd_bwd "$B" "$HQ" "$HKV" | grep -E "^OURS|^VG1"
+    ./build/bin/gqa_fwd_bwd "$B" "$HQ" "$HKV" | sed 's/\x1b\[[0-9;]*m//g' | grep -E "^OURS|^VG1"   # strip color codes first
     CUDNN_SUSTAINED=0 python3 precision/cudnn_time.py "$B" "$HQ" "$HKV" | grep -E "^cuDNN |^# "
   done
 done
