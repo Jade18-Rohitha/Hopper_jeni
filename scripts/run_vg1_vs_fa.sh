@@ -24,7 +24,7 @@ echo "== building gqa_fwd_bwd =="
 cmake --build build --target gqa_fwd_bwd -j
 echo "== FA libraries available =="
 python3 - <<'PY'
-import importlib
+import importlib.util          # (plain `import importlib` does not load .util on Python 3.12)
 for lab, mods in (("FA3", ("flash_attn_interface", "flash_attn_3.flash_attn_interface")), ("FA4", ("flash_attn.cute.interface", "flash_attn.cute"))):
     ok = [m for m in mods if importlib.util.find_spec(m.split(".")[0]) is not None]
     print(f"  {lab}: {'found ' + ok[0] if ok else 'NOT INSTALLED (bash harness/setup_sota_h200.sh fa4 fa3)'}")
