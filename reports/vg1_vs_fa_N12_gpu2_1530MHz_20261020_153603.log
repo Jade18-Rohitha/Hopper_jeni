@@ -1,0 +1,2449 @@
+# host innmi1srh2-p032  GPU 2  CLOCK 1530 MHz  N 12
+############ SHAPE B=2 Hq=12 Hkv=4
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.610e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.305e-03 mean_abs=8.585e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.674e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=5.444e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.610e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.305e-03 mean_abs=8.585e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.675e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=5.445e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.1677 ms
+VG1 bwd Vg1               0.5386 ms
+VG1 fwd+bwd Vg1+Vg1       0.7010 ms
+FA3 fwd       0.1690 ms
+FA3 bwd-only  0.5612 ms
+FA3 fwd+bwd   0.7315 ms
+FA4 fwd       0.1817 ms
+FA4 bwd-only  0.6409 ms
+FA4 fwd+bwd   0.8218 ms
+## run 2
+VG1 fwd Vg1               0.1680 ms
+VG1 bwd Vg1               0.5388 ms
+VG1 fwd+bwd Vg1+Vg1       0.7026 ms
+FA3 fwd       0.1692 ms
+FA3 bwd-only  0.5590 ms
+FA3 fwd+bwd   0.7267 ms
+FA4 fwd       0.1811 ms
+FA4 bwd-only  0.6406 ms
+FA4 fwd+bwd   0.8201 ms
+## run 3
+VG1 fwd Vg1               0.1676 ms
+VG1 bwd Vg1               0.5382 ms
+VG1 fwd+bwd Vg1+Vg1       0.6995 ms
+FA3 fwd       0.1694 ms
+FA3 bwd-only  0.5587 ms
+FA3 fwd+bwd   0.7268 ms
+FA4 fwd       0.1816 ms
+FA4 bwd-only  0.6381 ms
+FA4 fwd+bwd   0.8213 ms
+## run 4
+VG1 fwd Vg1               0.1680 ms
+VG1 bwd Vg1               0.5404 ms
+VG1 fwd+bwd Vg1+Vg1       0.7020 ms
+FA3 fwd       0.1690 ms
+FA3 bwd-only  0.5604 ms
+FA3 fwd+bwd   0.7321 ms
+FA4 fwd       0.1815 ms
+FA4 bwd-only  0.6414 ms
+FA4 fwd+bwd   0.8205 ms
+## run 5
+VG1 fwd Vg1               0.1676 ms
+VG1 bwd Vg1               0.5386 ms
+VG1 fwd+bwd Vg1+Vg1       0.7015 ms
+FA3 fwd       0.1690 ms
+FA3 bwd-only  0.5632 ms
+FA3 fwd+bwd   0.7294 ms
+FA4 fwd       0.1812 ms
+FA4 bwd-only  0.6379 ms
+FA4 fwd+bwd   0.8207 ms
+## run 6
+VG1 fwd Vg1               0.1677 ms
+VG1 bwd Vg1               0.5380 ms
+VG1 fwd+bwd Vg1+Vg1       0.7018 ms
+FA3 fwd       0.1691 ms
+FA3 bwd-only  0.5621 ms
+FA3 fwd+bwd   0.7309 ms
+FA4 fwd       0.1811 ms
+FA4 bwd-only  0.6399 ms
+FA4 fwd+bwd   0.8197 ms
+## run 7
+VG1 fwd Vg1               0.1682 ms
+VG1 bwd Vg1               0.5394 ms
+VG1 fwd+bwd Vg1+Vg1       0.7012 ms
+FA3 fwd       0.1687 ms
+FA3 bwd-only  0.5587 ms
+FA3 fwd+bwd   0.7269 ms
+FA4 fwd       0.1813 ms
+FA4 bwd-only  0.6386 ms
+FA4 fwd+bwd   0.8203 ms
+## run 8
+VG1 fwd Vg1               0.1680 ms
+VG1 bwd Vg1               0.5391 ms
+VG1 fwd+bwd Vg1+Vg1       0.7028 ms
+FA3 fwd       0.1688 ms
+FA3 bwd-only  0.5637 ms
+FA3 fwd+bwd   0.7257 ms
+FA4 fwd       0.1812 ms
+FA4 bwd-only  0.6410 ms
+FA4 fwd+bwd   0.8203 ms
+## run 9
+VG1 fwd Vg1               0.1677 ms
+VG1 bwd Vg1               0.5389 ms
+VG1 fwd+bwd Vg1+Vg1       0.7017 ms
+FA3 fwd       0.1685 ms
+FA3 bwd-only  0.5600 ms
+FA3 fwd+bwd   0.7324 ms
+FA4 fwd       0.1817 ms
+FA4 bwd-only  0.6368 ms
+FA4 fwd+bwd   0.8212 ms
+## run 10
+VG1 fwd Vg1               0.1680 ms
+VG1 bwd Vg1               0.5387 ms
+VG1 fwd+bwd Vg1+Vg1       0.7006 ms
+FA3 fwd       0.1695 ms
+FA3 bwd-only  0.5616 ms
+FA3 fwd+bwd   0.7279 ms
+FA4 fwd       0.1814 ms
+FA4 bwd-only  0.6411 ms
+FA4 fwd+bwd   0.8209 ms
+## run 11
+VG1 fwd Vg1               0.1677 ms
+VG1 bwd Vg1               0.5382 ms
+VG1 fwd+bwd Vg1+Vg1       0.7025 ms
+FA3 fwd       0.1695 ms
+FA3 bwd-only  0.5613 ms
+FA3 fwd+bwd   0.7291 ms
+FA4 fwd       0.1812 ms
+FA4 bwd-only  0.6411 ms
+FA4 fwd+bwd   0.8205 ms
+## run 12
+VG1 fwd Vg1               0.1678 ms
+VG1 bwd Vg1               0.5398 ms
+VG1 fwd+bwd Vg1+Vg1       0.7005 ms
+FA3 fwd       0.1695 ms
+FA3 bwd-only  0.5622 ms
+FA3 fwd+bwd   0.7294 ms
+FA4 fwd       0.1814 ms
+FA4 bwd-only  0.6400 ms
+FA4 fwd+bwd   0.8217 ms
+############ SHAPE B=4 Hq=12 Hkv=4
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.614e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.440e-03 mean_abs=8.677e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.686e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=5.475e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.614e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.440e-03 mean_abs=8.677e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.685e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=5.476e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.3260 ms
+VG1 bwd Vg1               1.0523 ms
+VG1 fwd+bwd Vg1+Vg1       1.3730 ms
+FA3 fwd       0.3248 ms
+FA3 bwd-only  1.0871 ms
+FA3 fwd+bwd   1.4124 ms
+FA4 fwd       0.3561 ms
+FA4 bwd-only  1.1666 ms
+FA4 fwd+bwd   1.5220 ms
+## run 2
+VG1 fwd Vg1               0.3258 ms
+VG1 bwd Vg1               1.0499 ms
+VG1 fwd+bwd Vg1+Vg1       1.3716 ms
+FA3 fwd       0.3248 ms
+FA3 bwd-only  1.0826 ms
+FA3 fwd+bwd   1.4068 ms
+FA4 fwd       0.3562 ms
+FA4 bwd-only  1.1631 ms
+FA4 fwd+bwd   1.5213 ms
+## run 3
+VG1 fwd Vg1               0.3259 ms
+VG1 bwd Vg1               1.0492 ms
+VG1 fwd+bwd Vg1+Vg1       1.3729 ms
+FA3 fwd       0.3255 ms
+FA3 bwd-only  1.0850 ms
+FA3 fwd+bwd   1.4091 ms
+FA4 fwd       0.3545 ms
+FA4 bwd-only  1.1663 ms
+FA4 fwd+bwd   1.5211 ms
+## run 4
+VG1 fwd Vg1               0.3267 ms
+VG1 bwd Vg1               1.0508 ms
+VG1 fwd+bwd Vg1+Vg1       1.3716 ms
+FA3 fwd       0.3256 ms
+FA3 bwd-only  1.0868 ms
+FA3 fwd+bwd   1.4122 ms
+FA4 fwd       0.3548 ms
+FA4 bwd-only  1.1651 ms
+FA4 fwd+bwd   1.5201 ms
+## run 5
+VG1 fwd Vg1               0.3264 ms
+VG1 bwd Vg1               1.0503 ms
+VG1 fwd+bwd Vg1+Vg1       1.3742 ms
+FA3 fwd       0.3253 ms
+FA3 bwd-only  1.0856 ms
+FA3 fwd+bwd   1.4056 ms
+FA4 fwd       0.3550 ms
+FA4 bwd-only  1.1656 ms
+FA4 fwd+bwd   1.5218 ms
+## run 6
+VG1 fwd Vg1               0.3263 ms
+VG1 bwd Vg1               1.0526 ms
+VG1 fwd+bwd Vg1+Vg1       1.3735 ms
+FA3 fwd       0.3261 ms
+FA3 bwd-only  1.0845 ms
+FA3 fwd+bwd   1.4097 ms
+FA4 fwd       0.3550 ms
+FA4 bwd-only  1.1655 ms
+FA4 fwd+bwd   1.5203 ms
+## run 7
+VG1 fwd Vg1               0.3260 ms
+VG1 bwd Vg1               1.0511 ms
+VG1 fwd+bwd Vg1+Vg1       1.3729 ms
+FA3 fwd       0.3251 ms
+FA3 bwd-only  1.0831 ms
+FA3 fwd+bwd   1.4154 ms
+FA4 fwd       0.3564 ms
+FA4 bwd-only  1.1659 ms
+FA4 fwd+bwd   1.5222 ms
+## run 8
+VG1 fwd Vg1               0.3264 ms
+VG1 bwd Vg1               1.0515 ms
+VG1 fwd+bwd Vg1+Vg1       1.3742 ms
+FA3 fwd       0.3249 ms
+FA3 bwd-only  1.0824 ms
+FA3 fwd+bwd   1.4126 ms
+FA4 fwd       0.3547 ms
+FA4 bwd-only  1.1650 ms
+FA4 fwd+bwd   1.5197 ms
+## run 9
+VG1 fwd Vg1               0.3259 ms
+VG1 bwd Vg1               1.0516 ms
+VG1 fwd+bwd Vg1+Vg1       1.3731 ms
+FA3 fwd       0.3250 ms
+FA3 bwd-only  1.0824 ms
+FA3 fwd+bwd   1.4062 ms
+FA4 fwd       0.3541 ms
+FA4 bwd-only  1.1669 ms
+FA4 fwd+bwd   1.5204 ms
+## run 10
+VG1 fwd Vg1               0.3267 ms
+VG1 bwd Vg1               1.0498 ms
+VG1 fwd+bwd Vg1+Vg1       1.3730 ms
+FA3 fwd       0.3261 ms
+FA3 bwd-only  1.0859 ms
+FA3 fwd+bwd   1.4104 ms
+FA4 fwd       0.3564 ms
+FA4 bwd-only  1.1667 ms
+FA4 fwd+bwd   1.5217 ms
+## run 11
+VG1 fwd Vg1               0.3260 ms
+VG1 bwd Vg1               1.0512 ms
+VG1 fwd+bwd Vg1+Vg1       1.3704 ms
+FA3 fwd       0.3254 ms
+FA3 bwd-only  1.0839 ms
+FA3 fwd+bwd   1.4096 ms
+FA4 fwd       0.3544 ms
+FA4 bwd-only  1.1651 ms
+FA4 fwd+bwd   1.5208 ms
+## run 12
+VG1 fwd Vg1               0.3270 ms
+VG1 bwd Vg1               1.0514 ms
+VG1 fwd+bwd Vg1+Vg1       1.3740 ms
+FA3 fwd       0.3244 ms
+FA3 bwd-only  1.0853 ms
+FA3 fwd+bwd   1.4085 ms
+FA4 fwd       0.3549 ms
+FA4 bwd-only  1.1669 ms
+FA4 fwd+bwd   1.5202 ms
+############ SHAPE B=8 Hq=12 Hkv=4
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.613e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.770e-03 mean_abs=8.649e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.716e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=5.505e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.613e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.770e-03 mean_abs=8.648e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.716e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=5.506e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.6389 ms
+VG1 bwd Vg1               2.0644 ms
+VG1 fwd+bwd Vg1+Vg1       2.7015 ms
+FA3 fwd       0.6353 ms
+FA3 bwd-only  2.1232 ms
+FA3 fwd+bwd   2.7632 ms
+FA4 fwd       0.6972 ms
+FA4 bwd-only  2.2228 ms
+FA4 fwd+bwd   2.9253 ms
+## run 2
+VG1 fwd Vg1               0.6406 ms
+VG1 bwd Vg1               2.0642 ms
+VG1 fwd+bwd Vg1+Vg1       2.7008 ms
+FA3 fwd       0.6331 ms
+FA3 bwd-only  2.1297 ms
+FA3 fwd+bwd   2.7576 ms
+FA4 fwd       0.6987 ms
+FA4 bwd-only  2.2213 ms
+FA4 fwd+bwd   2.9241 ms
+## run 3
+VG1 fwd Vg1               0.6388 ms
+VG1 bwd Vg1               2.0666 ms
+VG1 fwd+bwd Vg1+Vg1       2.7041 ms
+FA3 fwd       0.6327 ms
+FA3 bwd-only  2.1261 ms
+FA3 fwd+bwd   2.7629 ms
+FA4 fwd       0.6971 ms
+FA4 bwd-only  2.2236 ms
+FA4 fwd+bwd   2.9231 ms
+## run 4
+VG1 fwd Vg1               0.6404 ms
+VG1 bwd Vg1               2.0668 ms
+VG1 fwd+bwd Vg1+Vg1       2.7005 ms
+FA3 fwd       0.6327 ms
+FA3 bwd-only  2.1284 ms
+FA3 fwd+bwd   2.7633 ms
+FA4 fwd       0.6974 ms
+FA4 bwd-only  2.2211 ms
+FA4 fwd+bwd   2.9260 ms
+## run 5
+VG1 fwd Vg1               0.6409 ms
+VG1 bwd Vg1               2.0664 ms
+VG1 fwd+bwd Vg1+Vg1       2.7054 ms
+FA3 fwd       0.6355 ms
+FA3 bwd-only  2.1244 ms
+FA3 fwd+bwd   2.7572 ms
+FA4 fwd       0.6972 ms
+FA4 bwd-only  2.2212 ms
+FA4 fwd+bwd   2.9259 ms
+## run 6
+VG1 fwd Vg1               0.6392 ms
+VG1 bwd Vg1               2.0666 ms
+VG1 fwd+bwd Vg1+Vg1       2.7040 ms
+FA3 fwd       0.6353 ms
+FA3 bwd-only  2.1258 ms
+FA3 fwd+bwd   2.7631 ms
+FA4 fwd       0.6971 ms
+FA4 bwd-only  2.2247 ms
+FA4 fwd+bwd   2.9258 ms
+## run 7
+VG1 fwd Vg1               0.6392 ms
+VG1 bwd Vg1               2.0653 ms
+VG1 fwd+bwd Vg1+Vg1       2.7006 ms
+FA3 fwd       0.6352 ms
+FA3 bwd-only  2.1264 ms
+FA3 fwd+bwd   2.7590 ms
+FA4 fwd       0.6972 ms
+FA4 bwd-only  2.2227 ms
+FA4 fwd+bwd   2.9256 ms
+## run 8
+VG1 fwd Vg1               0.6389 ms
+VG1 bwd Vg1               2.0651 ms
+VG1 fwd+bwd Vg1+Vg1       2.7046 ms
+FA3 fwd       0.6354 ms
+FA3 bwd-only  2.1251 ms
+FA3 fwd+bwd   2.7646 ms
+FA4 fwd       0.6969 ms
+FA4 bwd-only  2.2222 ms
+FA4 fwd+bwd   2.9252 ms
+## run 9
+VG1 fwd Vg1               0.6388 ms
+VG1 bwd Vg1               2.0673 ms
+VG1 fwd+bwd Vg1+Vg1       2.7036 ms
+FA3 fwd       0.6351 ms
+FA3 bwd-only  2.1289 ms
+FA3 fwd+bwd   2.7584 ms
+FA4 fwd       0.6970 ms
+FA4 bwd-only  2.2211 ms
+FA4 fwd+bwd   2.9241 ms
+## run 10
+VG1 fwd Vg1               0.6388 ms
+VG1 bwd Vg1               2.0646 ms
+VG1 fwd+bwd Vg1+Vg1       2.6996 ms
+FA3 fwd       0.6350 ms
+FA3 bwd-only  2.1251 ms
+FA3 fwd+bwd   2.7603 ms
+FA4 fwd       0.6973 ms
+FA4 bwd-only  2.2229 ms
+FA4 fwd+bwd   2.9216 ms
+## run 11
+VG1 fwd Vg1               0.6392 ms
+VG1 bwd Vg1               2.0655 ms
+VG1 fwd+bwd Vg1+Vg1       2.7013 ms
+FA3 fwd       0.6324 ms
+FA3 bwd-only  2.1240 ms
+FA3 fwd+bwd   2.7631 ms
+FA4 fwd       0.6966 ms
+FA4 bwd-only  2.2236 ms
+FA4 fwd+bwd   2.9243 ms
+## run 12
+VG1 fwd Vg1               0.6409 ms
+VG1 bwd Vg1               2.0670 ms
+VG1 fwd+bwd Vg1+Vg1       2.7035 ms
+FA3 fwd       0.6348 ms
+FA3 bwd-only  2.1262 ms
+FA3 fwd+bwd   2.7618 ms
+FA4 fwd       0.6975 ms
+FA4 bwd-only  2.2214 ms
+FA4 fwd+bwd   2.9260 ms
+############ SHAPE B=2 Hq=16 Hkv=4
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.596e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.282e-03 mean_abs=8.611e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.944e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=6.391e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.596e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.282e-03 mean_abs=8.609e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.943e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=6.392e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.2217 ms
+VG1 bwd Vg1               0.7047 ms
+VG1 fwd+bwd Vg1+Vg1       0.9235 ms
+FA3 fwd       0.2210 ms
+FA3 bwd-only  0.7313 ms
+FA3 fwd+bwd   0.9495 ms
+FA4 fwd       0.2420 ms
+FA4 bwd-only  0.8113 ms
+FA4 fwd+bwd   1.0470 ms
+## run 2
+VG1 fwd Vg1               0.2210 ms
+VG1 bwd Vg1               0.7054 ms
+VG1 fwd+bwd Vg1+Vg1       0.9207 ms
+FA3 fwd       0.2212 ms
+FA3 bwd-only  0.7259 ms
+FA3 fwd+bwd   0.9488 ms
+FA4 fwd       0.2427 ms
+FA4 bwd-only  0.8094 ms
+FA4 fwd+bwd   1.0474 ms
+## run 3
+VG1 fwd Vg1               0.2207 ms
+VG1 bwd Vg1               0.7043 ms
+VG1 fwd+bwd Vg1+Vg1       0.9190 ms
+FA3 fwd       0.2211 ms
+FA3 bwd-only  0.7301 ms
+FA3 fwd+bwd   0.9467 ms
+FA4 fwd       0.2419 ms
+FA4 bwd-only  0.8104 ms
+FA4 fwd+bwd   1.0484 ms
+## run 4
+VG1 fwd Vg1               0.2216 ms
+VG1 bwd Vg1               0.7057 ms
+VG1 fwd+bwd Vg1+Vg1       0.9221 ms
+FA3 fwd       0.2211 ms
+FA3 bwd-only  0.7265 ms
+FA3 fwd+bwd   0.9486 ms
+FA4 fwd       0.2418 ms
+FA4 bwd-only  0.8073 ms
+FA4 fwd+bwd   1.0468 ms
+## run 5
+VG1 fwd Vg1               0.2211 ms
+VG1 bwd Vg1               0.7049 ms
+VG1 fwd+bwd Vg1+Vg1       0.9216 ms
+FA3 fwd       0.2215 ms
+FA3 bwd-only  0.7257 ms
+FA3 fwd+bwd   0.9456 ms
+FA4 fwd       0.2425 ms
+FA4 bwd-only  0.8098 ms
+FA4 fwd+bwd   1.0484 ms
+## run 6
+VG1 fwd Vg1               0.2209 ms
+VG1 bwd Vg1               0.7061 ms
+VG1 fwd+bwd Vg1+Vg1       0.9204 ms
+FA3 fwd       0.2206 ms
+FA3 bwd-only  0.7260 ms
+FA3 fwd+bwd   0.9458 ms
+FA4 fwd       0.2417 ms
+FA4 bwd-only  0.8087 ms
+FA4 fwd+bwd   1.0462 ms
+## run 7
+VG1 fwd Vg1               0.2209 ms
+VG1 bwd Vg1               0.7051 ms
+VG1 fwd+bwd Vg1+Vg1       0.9232 ms
+FA3 fwd       0.2210 ms
+FA3 bwd-only  0.7259 ms
+FA3 fwd+bwd   0.9472 ms
+FA4 fwd       0.2416 ms
+FA4 bwd-only  0.8081 ms
+FA4 fwd+bwd   1.0468 ms
+## run 8
+VG1 fwd Vg1               0.2209 ms
+VG1 bwd Vg1               0.7043 ms
+VG1 fwd+bwd Vg1+Vg1       0.9212 ms
+FA3 fwd       0.2204 ms
+FA3 bwd-only  0.7261 ms
+FA3 fwd+bwd   0.9451 ms
+FA4 fwd       0.2416 ms
+FA4 bwd-only  0.8100 ms
+FA4 fwd+bwd   1.0476 ms
+## run 9
+VG1 fwd Vg1               0.2209 ms
+VG1 bwd Vg1               0.7057 ms
+VG1 fwd+bwd Vg1+Vg1       0.9197 ms
+FA3 fwd       0.2206 ms
+FA3 bwd-only  0.7258 ms
+FA3 fwd+bwd   0.9458 ms
+FA4 fwd       0.2418 ms
+FA4 bwd-only  0.8103 ms
+FA4 fwd+bwd   1.0482 ms
+## run 10
+VG1 fwd Vg1               0.2208 ms
+VG1 bwd Vg1               0.7036 ms
+VG1 fwd+bwd Vg1+Vg1       0.9204 ms
+FA3 fwd       0.2211 ms
+FA3 bwd-only  0.7293 ms
+FA3 fwd+bwd   0.9512 ms
+FA4 fwd       0.2419 ms
+FA4 bwd-only  0.8072 ms
+FA4 fwd+bwd   1.0466 ms
+## run 11
+VG1 fwd Vg1               0.2208 ms
+VG1 bwd Vg1               0.7057 ms
+VG1 fwd+bwd Vg1+Vg1       0.9215 ms
+FA3 fwd       0.2208 ms
+FA3 bwd-only  0.7252 ms
+FA3 fwd+bwd   0.9442 ms
+FA4 fwd       0.2417 ms
+FA4 bwd-only  0.8064 ms
+FA4 fwd+bwd   1.0470 ms
+## run 12
+VG1 fwd Vg1               0.2207 ms
+VG1 bwd Vg1               0.7056 ms
+VG1 fwd+bwd Vg1+Vg1       0.9204 ms
+FA3 fwd       0.2213 ms
+FA3 bwd-only  0.7268 ms
+FA3 fwd+bwd   0.9461 ms
+FA4 fwd       0.2419 ms
+FA4 bwd-only  0.8102 ms
+FA4 fwd+bwd   1.0477 ms
+############ SHAPE B=4 Hq=16 Hkv=4
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.616e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.953e-03 mean_abs=8.656e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.938e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=6.381e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.616e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.953e-03 mean_abs=8.656e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.938e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=6.381e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.4299 ms
+VG1 bwd Vg1               1.3814 ms
+VG1 fwd+bwd Vg1+Vg1       1.8081 ms
+FA3 fwd       0.4293 ms
+FA3 bwd-only  1.4150 ms
+FA3 fwd+bwd   1.8474 ms
+FA4 fwd       0.4816 ms
+FA4 bwd-only  1.5043 ms
+FA4 fwd+bwd   1.9756 ms
+## run 2
+VG1 fwd Vg1               0.4299 ms
+VG1 bwd Vg1               1.3825 ms
+VG1 fwd+bwd Vg1+Vg1       1.8056 ms
+FA3 fwd       0.4276 ms
+FA3 bwd-only  1.4165 ms
+FA3 fwd+bwd   1.8415 ms
+FA4 fwd       0.4794 ms
+FA4 bwd-only  1.5038 ms
+FA4 fwd+bwd   1.9765 ms
+## run 3
+VG1 fwd Vg1               0.4298 ms
+VG1 bwd Vg1               1.3794 ms
+VG1 fwd+bwd Vg1+Vg1       1.8078 ms
+FA3 fwd       0.4292 ms
+FA3 bwd-only  1.4179 ms
+FA3 fwd+bwd   1.8426 ms
+FA4 fwd       0.4813 ms
+FA4 bwd-only  1.5062 ms
+FA4 fwd+bwd   1.9794 ms
+## run 4
+VG1 fwd Vg1               0.4301 ms
+VG1 bwd Vg1               1.3820 ms
+VG1 fwd+bwd Vg1+Vg1       1.8079 ms
+FA3 fwd       0.4292 ms
+FA3 bwd-only  1.4143 ms
+FA3 fwd+bwd   1.8446 ms
+FA4 fwd       0.4796 ms
+FA4 bwd-only  1.5058 ms
+FA4 fwd+bwd   1.9767 ms
+## run 5
+VG1 fwd Vg1               0.4298 ms
+VG1 bwd Vg1               1.3804 ms
+VG1 fwd+bwd Vg1+Vg1       1.8084 ms
+FA3 fwd       0.4291 ms
+FA3 bwd-only  1.4158 ms
+FA3 fwd+bwd   1.8446 ms
+FA4 fwd       0.4793 ms
+FA4 bwd-only  1.5041 ms
+FA4 fwd+bwd   1.9796 ms
+## run 6
+VG1 fwd Vg1               0.4298 ms
+VG1 bwd Vg1               1.3818 ms
+VG1 fwd+bwd Vg1+Vg1       1.8060 ms
+FA3 fwd       0.4272 ms
+FA3 bwd-only  1.4176 ms
+FA3 fwd+bwd   1.8422 ms
+FA4 fwd       0.4795 ms
+FA4 bwd-only  1.5012 ms
+FA4 fwd+bwd   1.9802 ms
+## run 7
+VG1 fwd Vg1               0.4300 ms
+VG1 bwd Vg1               1.3793 ms
+VG1 fwd+bwd Vg1+Vg1       1.8081 ms
+FA3 fwd       0.4278 ms
+FA3 bwd-only  1.4171 ms
+FA3 fwd+bwd   1.8420 ms
+FA4 fwd       0.4822 ms
+FA4 bwd-only  1.5029 ms
+FA4 fwd+bwd   1.9763 ms
+## run 8
+VG1 fwd Vg1               0.4299 ms
+VG1 bwd Vg1               1.3800 ms
+VG1 fwd+bwd Vg1+Vg1       1.8078 ms
+FA3 fwd       0.4295 ms
+FA3 bwd-only  1.4167 ms
+FA3 fwd+bwd   1.8430 ms
+FA4 fwd       0.4816 ms
+FA4 bwd-only  1.5045 ms
+FA4 fwd+bwd   1.9780 ms
+## run 9
+VG1 fwd Vg1               0.4298 ms
+VG1 bwd Vg1               1.3795 ms
+VG1 fwd+bwd Vg1+Vg1       1.8088 ms
+FA3 fwd       0.4293 ms
+FA3 bwd-only  1.4145 ms
+FA3 fwd+bwd   1.8476 ms
+FA4 fwd       0.4795 ms
+FA4 bwd-only  1.5055 ms
+FA4 fwd+bwd   1.9779 ms
+## run 10
+VG1 fwd Vg1               0.4300 ms
+VG1 bwd Vg1               1.3805 ms
+VG1 fwd+bwd Vg1+Vg1       1.8082 ms
+FA3 fwd       0.4275 ms
+FA3 bwd-only  1.4163 ms
+FA3 fwd+bwd   1.8434 ms
+FA4 fwd       0.4814 ms
+FA4 bwd-only  1.5046 ms
+FA4 fwd+bwd   1.9760 ms
+## run 11
+VG1 fwd Vg1               0.4300 ms
+VG1 bwd Vg1               1.3804 ms
+VG1 fwd+bwd Vg1+Vg1       1.8096 ms
+FA3 fwd       0.4273 ms
+FA3 bwd-only  1.4171 ms
+FA3 fwd+bwd   1.8450 ms
+FA4 fwd       0.4797 ms
+FA4 bwd-only  1.5027 ms
+FA4 fwd+bwd   1.9788 ms
+## run 12
+VG1 fwd Vg1               0.4297 ms
+VG1 bwd Vg1               1.3820 ms
+VG1 fwd+bwd Vg1+Vg1       1.8088 ms
+FA3 fwd       0.4269 ms
+FA3 bwd-only  1.4163 ms
+FA3 fwd+bwd   1.8418 ms
+FA4 fwd       0.4812 ms
+FA4 bwd-only  1.5036 ms
+FA4 fwd+bwd   1.9753 ms
+############ SHAPE B=8 Hq=16 Hkv=4
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.626e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.953e-03 mean_abs=8.679e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.944e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=6.378e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.626e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.953e-03 mean_abs=8.679e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.944e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=6.378e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.8472 ms
+VG1 bwd Vg1               2.7250 ms
+VG1 fwd+bwd Vg1+Vg1       3.5717 ms
+FA3 fwd       0.8381 ms
+FA3 bwd-only  2.7999 ms
+FA3 fwd+bwd   3.6304 ms
+FA4 fwd       0.9465 ms
+FA4 bwd-only  2.9047 ms
+FA4 fwd+bwd   3.8373 ms
+## run 2
+VG1 fwd Vg1               0.8472 ms
+VG1 bwd Vg1               2.7250 ms
+VG1 fwd+bwd Vg1+Vg1       3.5711 ms
+FA3 fwd       0.8424 ms
+FA3 bwd-only  2.7972 ms
+FA3 fwd+bwd   3.6368 ms
+FA4 fwd       0.9461 ms
+FA4 bwd-only  2.9053 ms
+FA4 fwd+bwd   3.8387 ms
+## run 3
+VG1 fwd Vg1               0.8473 ms
+VG1 bwd Vg1               2.7294 ms
+VG1 fwd+bwd Vg1+Vg1       3.5741 ms
+FA3 fwd       0.8373 ms
+FA3 bwd-only  2.7962 ms
+FA3 fwd+bwd   3.6292 ms
+FA4 fwd       0.9461 ms
+FA4 bwd-only  2.9025 ms
+FA4 fwd+bwd   3.8359 ms
+## run 4
+VG1 fwd Vg1               0.8473 ms
+VG1 bwd Vg1               2.7257 ms
+VG1 fwd+bwd Vg1+Vg1       3.5759 ms
+FA3 fwd       0.8381 ms
+FA3 bwd-only  2.8040 ms
+FA3 fwd+bwd   3.6312 ms
+FA4 fwd       0.9463 ms
+FA4 bwd-only  2.9026 ms
+FA4 fwd+bwd   3.8388 ms
+## run 5
+VG1 fwd Vg1               0.8493 ms
+VG1 bwd Vg1               2.7270 ms
+VG1 fwd+bwd Vg1+Vg1       3.5748 ms
+FA3 fwd       0.8414 ms
+FA3 bwd-only  2.7932 ms
+FA3 fwd+bwd   3.6386 ms
+FA4 fwd       0.9448 ms
+FA4 bwd-only  2.9053 ms
+FA4 fwd+bwd   3.8353 ms
+## run 6
+VG1 fwd Vg1               0.8499 ms
+VG1 bwd Vg1               2.7260 ms
+VG1 fwd+bwd Vg1+Vg1       3.5724 ms
+FA3 fwd       0.8381 ms
+FA3 bwd-only  2.8000 ms
+FA3 fwd+bwd   3.6316 ms
+FA4 fwd       0.9448 ms
+FA4 bwd-only  2.9068 ms
+FA4 fwd+bwd   3.8384 ms
+## run 7
+VG1 fwd Vg1               0.8500 ms
+VG1 bwd Vg1               2.7262 ms
+VG1 fwd+bwd Vg1+Vg1       3.5726 ms
+FA3 fwd       0.8360 ms
+FA3 bwd-only  2.7988 ms
+FA3 fwd+bwd   3.6362 ms
+FA4 fwd       0.9463 ms
+FA4 bwd-only  2.9034 ms
+FA4 fwd+bwd   3.8396 ms
+## run 8
+VG1 fwd Vg1               0.8472 ms
+VG1 bwd Vg1               2.7252 ms
+VG1 fwd+bwd Vg1+Vg1       3.5743 ms
+FA3 fwd       0.8444 ms
+FA3 bwd-only  2.8007 ms
+FA3 fwd+bwd   3.6342 ms
+FA4 fwd       0.9422 ms
+FA4 bwd-only  2.9057 ms
+FA4 fwd+bwd   3.8390 ms
+## run 9
+VG1 fwd Vg1               0.8480 ms
+VG1 bwd Vg1               2.7262 ms
+VG1 fwd+bwd Vg1+Vg1       3.5765 ms
+FA3 fwd       0.8417 ms
+FA3 bwd-only  2.7949 ms
+FA3 fwd+bwd   3.6340 ms
+FA4 fwd       0.9449 ms
+FA4 bwd-only  2.9055 ms
+FA4 fwd+bwd   3.8401 ms
+## run 10
+VG1 fwd Vg1               0.8499 ms
+VG1 bwd Vg1               2.7261 ms
+VG1 fwd+bwd Vg1+Vg1       3.5760 ms
+FA3 fwd       0.8421 ms
+FA3 bwd-only  2.7943 ms
+FA3 fwd+bwd   3.6369 ms
+FA4 fwd       0.9437 ms
+FA4 bwd-only  2.9022 ms
+FA4 fwd+bwd   3.8387 ms
+## run 11
+VG1 fwd Vg1               0.8500 ms
+VG1 bwd Vg1               2.7303 ms
+VG1 fwd+bwd Vg1+Vg1       3.5767 ms
+FA3 fwd       0.8441 ms
+FA3 bwd-only  2.8011 ms
+FA3 fwd+bwd   3.6347 ms
+FA4 fwd       0.9457 ms
+FA4 bwd-only  2.9033 ms
+FA4 fwd+bwd   3.8404 ms
+## run 12
+VG1 fwd Vg1               0.8474 ms
+VG1 bwd Vg1               2.7252 ms
+VG1 fwd+bwd Vg1+Vg1       3.5762 ms
+FA3 fwd       0.8370 ms
+FA3 bwd-only  2.7954 ms
+FA3 fwd+bwd   3.6385 ms
+FA4 fwd       0.9465 ms
+FA4 bwd-only  2.9018 ms
+FA4 fwd+bwd   3.8381 ms
+############ SHAPE B=2 Hq=18 Hkv=6
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.610e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.953e-03 mean_abs=8.622e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.702e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=5.480e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.610e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.953e-03 mean_abs=8.622e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.701e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=5.480e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.2474 ms
+VG1 bwd Vg1               0.8429 ms
+VG1 fwd+bwd Vg1+Vg1       1.0858 ms
+FA3 fwd       0.2484 ms
+FA3 bwd-only  0.8614 ms
+FA3 fwd+bwd   1.1096 ms
+FA4 fwd       0.2676 ms
+FA4 bwd-only  0.9018 ms
+FA4 fwd+bwd   1.1729 ms
+## run 2
+VG1 fwd Vg1               0.2479 ms
+VG1 bwd Vg1               0.8431 ms
+VG1 fwd+bwd Vg1+Vg1       1.0852 ms
+FA3 fwd       0.2471 ms
+FA3 bwd-only  0.8614 ms
+FA3 fwd+bwd   1.1050 ms
+FA4 fwd       0.2674 ms
+FA4 bwd-only  0.9027 ms
+FA4 fwd+bwd   1.1715 ms
+## run 3
+VG1 fwd Vg1               0.2472 ms
+VG1 bwd Vg1               0.8442 ms
+VG1 fwd+bwd Vg1+Vg1       1.0866 ms
+FA3 fwd       0.2482 ms
+FA3 bwd-only  0.8594 ms
+FA3 fwd+bwd   1.1115 ms
+FA4 fwd       0.2675 ms
+FA4 bwd-only  0.9043 ms
+FA4 fwd+bwd   1.1723 ms
+## run 4
+VG1 fwd Vg1               0.2477 ms
+VG1 bwd Vg1               0.8434 ms
+VG1 fwd+bwd Vg1+Vg1       1.0863 ms
+FA3 fwd       0.2476 ms
+FA3 bwd-only  0.8638 ms
+FA3 fwd+bwd   1.1073 ms
+FA4 fwd       0.2682 ms
+FA4 bwd-only  0.9022 ms
+FA4 fwd+bwd   1.1721 ms
+## run 5
+VG1 fwd Vg1               0.2472 ms
+VG1 bwd Vg1               0.8438 ms
+VG1 fwd+bwd Vg1+Vg1       1.0861 ms
+FA3 fwd       0.2486 ms
+FA3 bwd-only  0.8604 ms
+FA3 fwd+bwd   1.1084 ms
+FA4 fwd       0.2680 ms
+FA4 bwd-only  0.9055 ms
+FA4 fwd+bwd   1.1741 ms
+## run 6
+VG1 fwd Vg1               0.2471 ms
+VG1 bwd Vg1               0.8435 ms
+VG1 fwd+bwd Vg1+Vg1       1.0859 ms
+FA3 fwd       0.2483 ms
+FA3 bwd-only  0.8609 ms
+FA3 fwd+bwd   1.1140 ms
+FA4 fwd       0.2677 ms
+FA4 bwd-only  0.9032 ms
+FA4 fwd+bwd   1.1722 ms
+## run 7
+VG1 fwd Vg1               0.2475 ms
+VG1 bwd Vg1               0.8445 ms
+VG1 fwd+bwd Vg1+Vg1       1.0863 ms
+FA3 fwd       0.2484 ms
+FA3 bwd-only  0.8615 ms
+FA3 fwd+bwd   1.1105 ms
+FA4 fwd       0.2676 ms
+FA4 bwd-only  0.9011 ms
+FA4 fwd+bwd   1.1716 ms
+## run 8
+VG1 fwd Vg1               0.2470 ms
+VG1 bwd Vg1               0.8419 ms
+VG1 fwd+bwd Vg1+Vg1       1.0843 ms
+FA3 fwd       0.2473 ms
+FA3 bwd-only  0.8618 ms
+FA3 fwd+bwd   1.1147 ms
+FA4 fwd       0.2685 ms
+FA4 bwd-only  0.9032 ms
+FA4 fwd+bwd   1.1719 ms
+## run 9
+VG1 fwd Vg1               0.2475 ms
+VG1 bwd Vg1               0.8430 ms
+VG1 fwd+bwd Vg1+Vg1       1.0852 ms
+FA3 fwd       0.2470 ms
+FA3 bwd-only  0.8619 ms
+FA3 fwd+bwd   1.1068 ms
+FA4 fwd       0.2674 ms
+FA4 bwd-only  0.9015 ms
+FA4 fwd+bwd   1.1722 ms
+## run 10
+VG1 fwd Vg1               0.2474 ms
+VG1 bwd Vg1               0.8436 ms
+VG1 fwd+bwd Vg1+Vg1       1.0865 ms
+FA3 fwd       0.2482 ms
+FA3 bwd-only  0.8611 ms
+FA3 fwd+bwd   1.1085 ms
+FA4 fwd       0.2684 ms
+FA4 bwd-only  0.9033 ms
+FA4 fwd+bwd   1.1725 ms
+## run 11
+VG1 fwd Vg1               0.2472 ms
+VG1 bwd Vg1               0.8438 ms
+VG1 fwd+bwd Vg1+Vg1       1.0861 ms
+FA3 fwd       0.2474 ms
+FA3 bwd-only  0.8617 ms
+FA3 fwd+bwd   1.1091 ms
+FA4 fwd       0.2676 ms
+FA4 bwd-only  0.9031 ms
+FA4 fwd+bwd   1.1715 ms
+## run 12
+VG1 fwd Vg1               0.2472 ms
+VG1 bwd Vg1               0.8428 ms
+VG1 fwd+bwd Vg1+Vg1       1.0846 ms
+FA3 fwd       0.2475 ms
+FA3 bwd-only  0.8650 ms
+FA3 fwd+bwd   1.1128 ms
+FA4 fwd       0.2677 ms
+FA4 bwd-only  0.9058 ms
+FA4 fwd+bwd   1.1716 ms
+############ SHAPE B=4 Hq=18 Hkv=6
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.619e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.495e-03 mean_abs=8.629e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.691e-05  Values match!
+CHECK FA3 dV:  max_abs=6.250e-02 mean_abs=5.500e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.619e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.495e-03 mean_abs=8.630e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.691e-05  Values match!
+CHECK FA4 dV:  max_abs=6.250e-02 mean_abs=5.501e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.4827 ms
+VG1 bwd Vg1               1.5607 ms
+VG1 fwd+bwd Vg1+Vg1       2.0384 ms
+FA3 fwd       0.4788 ms
+FA3 bwd-only  1.6094 ms
+FA3 fwd+bwd   2.0856 ms
+FA4 fwd       0.5263 ms
+FA4 bwd-only  1.6956 ms
+FA4 fwd+bwd   2.2288 ms
+## run 2
+VG1 fwd Vg1               0.4830 ms
+VG1 bwd Vg1               1.5607 ms
+VG1 fwd+bwd Vg1+Vg1       2.0401 ms
+FA3 fwd       0.4801 ms
+FA3 bwd-only  1.6039 ms
+FA3 fwd+bwd   2.0885 ms
+FA4 fwd       0.5260 ms
+FA4 bwd-only  1.6977 ms
+FA4 fwd+bwd   2.2267 ms
+## run 3
+VG1 fwd Vg1               0.4829 ms
+VG1 bwd Vg1               1.5572 ms
+VG1 fwd+bwd Vg1+Vg1       2.0397 ms
+FA3 fwd       0.4789 ms
+FA3 bwd-only  1.6051 ms
+FA3 fwd+bwd   2.0827 ms
+FA4 fwd       0.5265 ms
+FA4 bwd-only  1.6938 ms
+FA4 fwd+bwd   2.2275 ms
+## run 4
+VG1 fwd Vg1               0.4831 ms
+VG1 bwd Vg1               1.5596 ms
+VG1 fwd+bwd Vg1+Vg1       2.0390 ms
+FA3 fwd       0.4784 ms
+FA3 bwd-only  1.6064 ms
+FA3 fwd+bwd   2.0848 ms
+FA4 fwd       0.5259 ms
+FA4 bwd-only  1.6972 ms
+FA4 fwd+bwd   2.2249 ms
+## run 5
+VG1 fwd Vg1               0.4827 ms
+VG1 bwd Vg1               1.5581 ms
+VG1 fwd+bwd Vg1+Vg1       2.0389 ms
+FA3 fwd       0.4788 ms
+FA3 bwd-only  1.6122 ms
+FA3 fwd+bwd   2.0852 ms
+FA4 fwd       0.5284 ms
+FA4 bwd-only  1.6950 ms
+FA4 fwd+bwd   2.2250 ms
+## run 6
+VG1 fwd Vg1               0.4831 ms
+VG1 bwd Vg1               1.5602 ms
+VG1 fwd+bwd Vg1+Vg1       2.0410 ms
+FA3 fwd       0.4784 ms
+FA3 bwd-only  1.6068 ms
+FA3 fwd+bwd   2.0821 ms
+FA4 fwd       0.5261 ms
+FA4 bwd-only  1.6955 ms
+FA4 fwd+bwd   2.2238 ms
+## run 7
+VG1 fwd Vg1               0.4831 ms
+VG1 bwd Vg1               1.5585 ms
+VG1 fwd+bwd Vg1+Vg1       2.0395 ms
+FA3 fwd       0.4798 ms
+FA3 bwd-only  1.6062 ms
+FA3 fwd+bwd   2.0822 ms
+FA4 fwd       0.5262 ms
+FA4 bwd-only  1.6961 ms
+FA4 fwd+bwd   2.2276 ms
+## run 8
+VG1 fwd Vg1               0.4849 ms
+VG1 bwd Vg1               1.5589 ms
+VG1 fwd+bwd Vg1+Vg1       2.0403 ms
+FA3 fwd       0.4782 ms
+FA3 bwd-only  1.6097 ms
+FA3 fwd+bwd   2.0849 ms
+FA4 fwd       0.5284 ms
+FA4 bwd-only  1.6934 ms
+FA4 fwd+bwd   2.2255 ms
+## run 9
+VG1 fwd Vg1               0.4829 ms
+VG1 bwd Vg1               1.5594 ms
+VG1 fwd+bwd Vg1+Vg1       2.0388 ms
+FA3 fwd       0.4812 ms
+FA3 bwd-only  1.6073 ms
+FA3 fwd+bwd   2.0906 ms
+FA4 fwd       0.5261 ms
+FA4 bwd-only  1.6981 ms
+FA4 fwd+bwd   2.2252 ms
+## run 10
+VG1 fwd Vg1               0.4829 ms
+VG1 bwd Vg1               1.5588 ms
+VG1 fwd+bwd Vg1+Vg1       2.0382 ms
+FA3 fwd       0.4783 ms
+FA3 bwd-only  1.6080 ms
+FA3 fwd+bwd   2.0847 ms
+FA4 fwd       0.5269 ms
+FA4 bwd-only  1.6981 ms
+FA4 fwd+bwd   2.2261 ms
+## run 11
+VG1 fwd Vg1               0.4828 ms
+VG1 bwd Vg1               1.5588 ms
+VG1 fwd+bwd Vg1+Vg1       2.0394 ms
+FA3 fwd       0.4806 ms
+FA3 bwd-only  1.6069 ms
+FA3 fwd+bwd   2.0881 ms
+FA4 fwd       0.5281 ms
+FA4 bwd-only  1.6969 ms
+FA4 fwd+bwd   2.2248 ms
+## run 12
+VG1 fwd Vg1               0.4830 ms
+VG1 bwd Vg1               1.5592 ms
+VG1 fwd+bwd Vg1+Vg1       2.0387 ms
+FA3 fwd       0.4787 ms
+FA3 bwd-only  1.6063 ms
+FA3 fwd+bwd   2.0846 ms
+FA4 fwd       0.5259 ms
+FA4 bwd-only  1.6966 ms
+FA4 fwd+bwd   2.2238 ms
+############ SHAPE B=8 Hq=18 Hkv=6
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.620e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.953e-03 mean_abs=8.654e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.701e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=5.486e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.620e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.953e-03 mean_abs=8.653e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.700e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=5.487e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.9548 ms
+VG1 bwd Vg1               3.0793 ms
+VG1 fwd+bwd Vg1+Vg1       4.0329 ms
+FA3 fwd       0.9421 ms
+FA3 bwd-only  3.1799 ms
+FA3 fwd+bwd   4.1112 ms
+FA4 fwd       1.0449 ms
+FA4 bwd-only  3.2798 ms
+FA4 fwd+bwd   4.3223 ms
+## run 2
+VG1 fwd Vg1               0.9518 ms
+VG1 bwd Vg1               3.0774 ms
+VG1 fwd+bwd Vg1+Vg1       4.0300 ms
+FA3 fwd       0.9413 ms
+FA3 bwd-only  3.1805 ms
+FA3 fwd+bwd   4.1180 ms
+FA4 fwd       1.0403 ms
+FA4 bwd-only  3.2824 ms
+FA4 fwd+bwd   4.3302 ms
+## run 3
+VG1 fwd Vg1               0.9520 ms
+VG1 bwd Vg1               3.0802 ms
+VG1 fwd+bwd Vg1+Vg1       4.0310 ms
+FA3 fwd       0.9404 ms
+FA3 bwd-only  3.1749 ms
+FA3 fwd+bwd   4.1185 ms
+FA4 fwd       1.0405 ms
+FA4 bwd-only  3.2770 ms
+FA4 fwd+bwd   4.3288 ms
+## run 4
+VG1 fwd Vg1               0.9518 ms
+VG1 bwd Vg1               3.0773 ms
+VG1 fwd+bwd Vg1+Vg1       4.0305 ms
+FA3 fwd       0.9399 ms
+FA3 bwd-only  3.1736 ms
+FA3 fwd+bwd   4.1238 ms
+FA4 fwd       1.0403 ms
+FA4 bwd-only  3.2818 ms
+FA4 fwd+bwd   4.3306 ms
+## run 5
+VG1 fwd Vg1               0.9540 ms
+VG1 bwd Vg1               3.0781 ms
+VG1 fwd+bwd Vg1+Vg1       4.0305 ms
+FA3 fwd       0.9448 ms
+FA3 bwd-only  3.1783 ms
+FA3 fwd+bwd   4.1193 ms
+FA4 fwd       1.0444 ms
+FA4 bwd-only  3.2827 ms
+FA4 fwd+bwd   4.3255 ms
+## run 6
+VG1 fwd Vg1               0.9547 ms
+VG1 bwd Vg1               3.0787 ms
+VG1 fwd+bwd Vg1+Vg1       4.0318 ms
+FA3 fwd       0.9448 ms
+FA3 bwd-only  3.1785 ms
+FA3 fwd+bwd   4.1219 ms
+FA4 fwd       1.0404 ms
+FA4 bwd-only  3.2803 ms
+FA4 fwd+bwd   4.3287 ms
+## run 7
+VG1 fwd Vg1               0.9520 ms
+VG1 bwd Vg1               3.0778 ms
+VG1 fwd+bwd Vg1+Vg1       4.0315 ms
+FA3 fwd       0.9455 ms
+FA3 bwd-only  3.1794 ms
+FA3 fwd+bwd   4.1198 ms
+FA4 fwd       1.0402 ms
+FA4 bwd-only  3.2846 ms
+FA4 fwd+bwd   4.3281 ms
+## run 8
+VG1 fwd Vg1               0.9519 ms
+VG1 bwd Vg1               3.0779 ms
+VG1 fwd+bwd Vg1+Vg1       4.0287 ms
+FA3 fwd       0.9457 ms
+FA3 bwd-only  3.1748 ms
+FA3 fwd+bwd   4.1209 ms
+FA4 fwd       1.0408 ms
+FA4 bwd-only  3.2811 ms
+FA4 fwd+bwd   4.3328 ms
+## run 9
+VG1 fwd Vg1               0.9549 ms
+VG1 bwd Vg1               3.0790 ms
+VG1 fwd+bwd Vg1+Vg1       4.0327 ms
+FA3 fwd       0.9399 ms
+FA3 bwd-only  3.1800 ms
+FA3 fwd+bwd   4.1227 ms
+FA4 fwd       1.0405 ms
+FA4 bwd-only  3.2804 ms
+FA4 fwd+bwd   4.3292 ms
+## run 10
+VG1 fwd Vg1               0.9527 ms
+VG1 bwd Vg1               3.0778 ms
+VG1 fwd+bwd Vg1+Vg1       4.0310 ms
+FA3 fwd       0.9449 ms
+FA3 bwd-only  3.1740 ms
+FA3 fwd+bwd   4.1236 ms
+FA4 fwd       1.0410 ms
+FA4 bwd-only  3.2812 ms
+FA4 fwd+bwd   4.3338 ms
+## run 11
+VG1 fwd Vg1               0.9548 ms
+VG1 bwd Vg1               3.0797 ms
+VG1 fwd+bwd Vg1+Vg1       4.0302 ms
+FA3 fwd       0.9441 ms
+FA3 bwd-only  3.1832 ms
+FA3 fwd+bwd   4.1125 ms
+FA4 fwd       1.0404 ms
+FA4 bwd-only  3.2800 ms
+FA4 fwd+bwd   4.3288 ms
+## run 12
+VG1 fwd Vg1               0.9520 ms
+VG1 bwd Vg1               3.0778 ms
+VG1 fwd+bwd Vg1+Vg1       4.0308 ms
+FA3 fwd       0.9404 ms
+FA3 bwd-only  3.1730 ms
+FA3 fwd+bwd   4.1182 ms
+FA4 fwd       1.0392 ms
+FA4 bwd-only  3.2803 ms
+FA4 fwd+bwd   4.3257 ms
+############ SHAPE B=2 Hq=18 Hkv=9
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.614e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.556e-03 mean_abs=8.597e-05  Values match!
+CHECK FA3 dK:  max_abs=1.953e-03 mean_abs=1.393e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=4.587e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.614e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.556e-03 mean_abs=8.597e-05  Values match!
+CHECK FA4 dK:  max_abs=1.953e-03 mean_abs=1.393e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=4.588e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.2665 ms
+VG1 bwd Vg1               0.8466 ms
+VG1 fwd+bwd Vg1+Vg1       1.1079 ms
+FA3 fwd       0.2668 ms
+FA3 bwd-only  0.8796 ms
+FA3 fwd+bwd   1.1470 ms
+FA4 fwd       0.2900 ms
+FA4 bwd-only  0.9169 ms
+FA4 fwd+bwd   1.2062 ms
+## run 2
+VG1 fwd Vg1               0.2665 ms
+VG1 bwd Vg1               0.8462 ms
+VG1 fwd+bwd Vg1+Vg1       1.1076 ms
+FA3 fwd       0.2672 ms
+FA3 bwd-only  0.8808 ms
+FA3 fwd+bwd   1.1479 ms
+FA4 fwd       0.2893 ms
+FA4 bwd-only  0.9211 ms
+FA4 fwd+bwd   1.2052 ms
+## run 3
+VG1 fwd Vg1               0.2668 ms
+VG1 bwd Vg1               0.8476 ms
+VG1 fwd+bwd Vg1+Vg1       1.1093 ms
+FA3 fwd       0.2672 ms
+FA3 bwd-only  0.8821 ms
+FA3 fwd+bwd   1.1473 ms
+FA4 fwd       0.2888 ms
+FA4 bwd-only  0.9177 ms
+FA4 fwd+bwd   1.2050 ms
+## run 4
+VG1 fwd Vg1               0.2666 ms
+VG1 bwd Vg1               0.8479 ms
+VG1 fwd+bwd Vg1+Vg1       1.1080 ms
+FA3 fwd       0.2668 ms
+FA3 bwd-only  0.8770 ms
+FA3 fwd+bwd   1.1472 ms
+FA4 fwd       0.2891 ms
+FA4 bwd-only  0.9199 ms
+FA4 fwd+bwd   1.2063 ms
+## run 5
+VG1 fwd Vg1               0.2664 ms
+VG1 bwd Vg1               0.8478 ms
+VG1 fwd+bwd Vg1+Vg1       1.1095 ms
+FA3 fwd       0.2669 ms
+FA3 bwd-only  0.8781 ms
+FA3 fwd+bwd   1.1500 ms
+FA4 fwd       0.2888 ms
+FA4 bwd-only  0.9212 ms
+FA4 fwd+bwd   1.2047 ms
+## run 6
+VG1 fwd Vg1               0.2666 ms
+VG1 bwd Vg1               0.8462 ms
+VG1 fwd+bwd Vg1+Vg1       1.1080 ms
+FA3 fwd       0.2681 ms
+FA3 bwd-only  0.8812 ms
+FA3 fwd+bwd   1.1435 ms
+FA4 fwd       0.2894 ms
+FA4 bwd-only  0.9169 ms
+FA4 fwd+bwd   1.2056 ms
+## run 7
+VG1 fwd Vg1               0.2664 ms
+VG1 bwd Vg1               0.8473 ms
+VG1 fwd+bwd Vg1+Vg1       1.1087 ms
+FA3 fwd       0.2664 ms
+FA3 bwd-only  0.8777 ms
+FA3 fwd+bwd   1.1463 ms
+FA4 fwd       0.2890 ms
+FA4 bwd-only  0.9189 ms
+FA4 fwd+bwd   1.2041 ms
+## run 8
+VG1 fwd Vg1               0.2663 ms
+VG1 bwd Vg1               0.8462 ms
+VG1 fwd+bwd Vg1+Vg1       1.1076 ms
+FA3 fwd       0.2673 ms
+FA3 bwd-only  0.8798 ms
+FA3 fwd+bwd   1.1465 ms
+FA4 fwd       0.2890 ms
+FA4 bwd-only  0.9186 ms
+FA4 fwd+bwd   1.2041 ms
+## run 9
+VG1 fwd Vg1               0.2664 ms
+VG1 bwd Vg1               0.8471 ms
+VG1 fwd+bwd Vg1+Vg1       1.1089 ms
+FA3 fwd       0.2675 ms
+FA3 bwd-only  0.8814 ms
+FA3 fwd+bwd   1.1468 ms
+FA4 fwd       0.2892 ms
+FA4 bwd-only  0.9186 ms
+FA4 fwd+bwd   1.2059 ms
+## run 10
+VG1 fwd Vg1               0.2663 ms
+VG1 bwd Vg1               0.8470 ms
+VG1 fwd+bwd Vg1+Vg1       1.1092 ms
+FA3 fwd       0.2678 ms
+FA3 bwd-only  0.8776 ms
+FA3 fwd+bwd   1.1476 ms
+FA4 fwd       0.2893 ms
+FA4 bwd-only  0.9184 ms
+FA4 fwd+bwd   1.2066 ms
+## run 11
+VG1 fwd Vg1               0.2664 ms
+VG1 bwd Vg1               0.8472 ms
+VG1 fwd+bwd Vg1+Vg1       1.1083 ms
+FA3 fwd       0.2675 ms
+FA3 bwd-only  0.8806 ms
+FA3 fwd+bwd   1.1462 ms
+FA4 fwd       0.2889 ms
+FA4 bwd-only  0.9204 ms
+FA4 fwd+bwd   1.2048 ms
+## run 12
+VG1 fwd Vg1               0.2665 ms
+VG1 bwd Vg1               0.8467 ms
+VG1 fwd+bwd Vg1+Vg1       1.1085 ms
+FA3 fwd       0.2683 ms
+FA3 bwd-only  0.8821 ms
+FA3 fwd+bwd   1.1502 ms
+FA4 fwd       0.2900 ms
+FA4 bwd-only  0.9172 ms
+FA4 fwd+bwd   1.2069 ms
+############ SHAPE B=4 Hq=18 Hkv=9
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.618e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.953e-03 mean_abs=8.660e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.400e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=4.602e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.618e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.953e-03 mean_abs=8.660e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.401e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=4.602e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.4831 ms
+VG1 bwd Vg1               1.5681 ms
+VG1 fwd+bwd Vg1+Vg1       2.0463 ms
+FA3 fwd       0.4812 ms
+FA3 bwd-only  1.6429 ms
+FA3 fwd+bwd   2.1174 ms
+FA4 fwd       0.5347 ms
+FA4 bwd-only  1.7274 ms
+FA4 fwd+bwd   2.2556 ms
+## run 2
+VG1 fwd Vg1               0.4831 ms
+VG1 bwd Vg1               1.5685 ms
+VG1 fwd+bwd Vg1+Vg1       2.0461 ms
+FA3 fwd       0.4788 ms
+FA3 bwd-only  1.6418 ms
+FA3 fwd+bwd   2.1164 ms
+FA4 fwd       0.5324 ms
+FA4 bwd-only  1.7245 ms
+FA4 fwd+bwd   2.2546 ms
+## run 3
+VG1 fwd Vg1               0.4842 ms
+VG1 bwd Vg1               1.5646 ms
+VG1 fwd+bwd Vg1+Vg1       2.0446 ms
+FA3 fwd       0.4805 ms
+FA3 bwd-only  1.6425 ms
+FA3 fwd+bwd   2.1242 ms
+FA4 fwd       0.5336 ms
+FA4 bwd-only  1.7267 ms
+FA4 fwd+bwd   2.2548 ms
+## run 4
+VG1 fwd Vg1               0.4832 ms
+VG1 bwd Vg1               1.5686 ms
+VG1 fwd+bwd Vg1+Vg1       2.0465 ms
+FA3 fwd       0.4804 ms
+FA3 bwd-only  1.6397 ms
+FA3 fwd+bwd   2.1178 ms
+FA4 fwd       0.5340 ms
+FA4 bwd-only  1.7243 ms
+FA4 fwd+bwd   2.2547 ms
+## run 5
+VG1 fwd Vg1               0.4831 ms
+VG1 bwd Vg1               1.5673 ms
+VG1 fwd+bwd Vg1+Vg1       2.0465 ms
+FA3 fwd       0.4792 ms
+FA3 bwd-only  1.6403 ms
+FA3 fwd+bwd   2.1179 ms
+FA4 fwd       0.5332 ms
+FA4 bwd-only  1.7287 ms
+FA4 fwd+bwd   2.2576 ms
+## run 6
+VG1 fwd Vg1               0.4843 ms
+VG1 bwd Vg1               1.5675 ms
+VG1 fwd+bwd Vg1+Vg1       2.0462 ms
+FA3 fwd       0.4814 ms
+FA3 bwd-only  1.6369 ms
+FA3 fwd+bwd   2.1236 ms
+FA4 fwd       0.5334 ms
+FA4 bwd-only  1.7271 ms
+FA4 fwd+bwd   2.2552 ms
+## run 7
+VG1 fwd Vg1               0.4831 ms
+VG1 bwd Vg1               1.5668 ms
+VG1 fwd+bwd Vg1+Vg1       2.0463 ms
+FA3 fwd       0.4806 ms
+FA3 bwd-only  1.6420 ms
+FA3 fwd+bwd   2.1151 ms
+FA4 fwd       0.5328 ms
+FA4 bwd-only  1.7236 ms
+FA4 fwd+bwd   2.2562 ms
+## run 8
+VG1 fwd Vg1               0.4830 ms
+VG1 bwd Vg1               1.5682 ms
+VG1 fwd+bwd Vg1+Vg1       2.0473 ms
+FA3 fwd       0.4812 ms
+FA3 bwd-only  1.6384 ms
+FA3 fwd+bwd   2.1223 ms
+FA4 fwd       0.5350 ms
+FA4 bwd-only  1.7279 ms
+FA4 fwd+bwd   2.2558 ms
+## run 9
+VG1 fwd Vg1               0.4831 ms
+VG1 bwd Vg1               1.5683 ms
+VG1 fwd+bwd Vg1+Vg1       2.0459 ms
+FA3 fwd       0.4790 ms
+FA3 bwd-only  1.6395 ms
+FA3 fwd+bwd   2.1235 ms
+FA4 fwd       0.5328 ms
+FA4 bwd-only  1.7282 ms
+FA4 fwd+bwd   2.2550 ms
+## run 10
+VG1 fwd Vg1               0.4845 ms
+VG1 bwd Vg1               1.5669 ms
+VG1 fwd+bwd Vg1+Vg1       2.0454 ms
+FA3 fwd       0.4781 ms
+FA3 bwd-only  1.6391 ms
+FA3 fwd+bwd   2.1146 ms
+FA4 fwd       0.5330 ms
+FA4 bwd-only  1.7273 ms
+FA4 fwd+bwd   2.2539 ms
+## run 11
+VG1 fwd Vg1               0.4835 ms
+VG1 bwd Vg1               1.5676 ms
+VG1 fwd+bwd Vg1+Vg1       2.0461 ms
+FA3 fwd       0.4812 ms
+FA3 bwd-only  1.6384 ms
+FA3 fwd+bwd   2.1214 ms
+FA4 fwd       0.5343 ms
+FA4 bwd-only  1.7276 ms
+FA4 fwd+bwd   2.2555 ms
+## run 12
+VG1 fwd Vg1               0.4833 ms
+VG1 bwd Vg1               1.5679 ms
+VG1 fwd+bwd Vg1+Vg1       2.0481 ms
+FA3 fwd       0.4799 ms
+FA3 bwd-only  1.6426 ms
+FA3 fwd+bwd   2.1165 ms
+FA4 fwd       0.5334 ms
+FA4 bwd-only  1.7276 ms
+FA4 fwd+bwd   2.2544 ms
+############ SHAPE B=8 Hq=18 Hkv=9
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.609e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.953e-03 mean_abs=8.634e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.405e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=4.587e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.609e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.953e-03 mean_abs=8.633e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.405e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=4.587e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.9532 ms
+VG1 bwd Vg1               3.0928 ms
+VG1 fwd+bwd Vg1+Vg1       4.0473 ms
+FA3 fwd       0.9407 ms
+FA3 bwd-only  3.2428 ms
+FA3 fwd+bwd   4.1789 ms
+FA4 fwd       1.0560 ms
+FA4 bwd-only  3.3410 ms
+FA4 fwd+bwd   4.3834 ms
+## run 2
+VG1 fwd Vg1               0.9558 ms
+VG1 bwd Vg1               3.0927 ms
+VG1 fwd+bwd Vg1+Vg1       4.0480 ms
+FA3 fwd       0.9441 ms
+FA3 bwd-only  3.2353 ms
+FA3 fwd+bwd   4.1840 ms
+FA4 fwd       1.0557 ms
+FA4 bwd-only  3.3388 ms
+FA4 fwd+bwd   4.3835 ms
+## run 3
+VG1 fwd Vg1               0.9532 ms
+VG1 bwd Vg1               3.0928 ms
+VG1 fwd+bwd Vg1+Vg1       4.0468 ms
+FA3 fwd       0.9408 ms
+FA3 bwd-only  3.2381 ms
+FA3 fwd+bwd   4.1829 ms
+FA4 fwd       1.0541 ms
+FA4 bwd-only  3.3410 ms
+FA4 fwd+bwd   4.3876 ms
+## run 4
+VG1 fwd Vg1               0.9555 ms
+VG1 bwd Vg1               3.0924 ms
+VG1 fwd+bwd Vg1+Vg1       4.0466 ms
+FA3 fwd       0.9407 ms
+FA3 bwd-only  3.2389 ms
+FA3 fwd+bwd   4.1820 ms
+FA4 fwd       1.0527 ms
+FA4 bwd-only  3.3388 ms
+FA4 fwd+bwd   4.3867 ms
+## run 5
+VG1 fwd Vg1               0.9532 ms
+VG1 bwd Vg1               3.0960 ms
+VG1 fwd+bwd Vg1+Vg1       4.0448 ms
+FA3 fwd       0.9407 ms
+FA3 bwd-only  3.2491 ms
+FA3 fwd+bwd   4.1795 ms
+FA4 fwd       1.0542 ms
+FA4 bwd-only  3.3426 ms
+FA4 fwd+bwd   4.3892 ms
+## run 6
+VG1 fwd Vg1               0.9558 ms
+VG1 bwd Vg1               3.0923 ms
+VG1 fwd+bwd Vg1+Vg1       4.0453 ms
+FA3 fwd       0.9404 ms
+FA3 bwd-only  3.2415 ms
+FA3 fwd+bwd   4.1750 ms
+FA4 fwd       1.0562 ms
+FA4 bwd-only  3.3360 ms
+FA4 fwd+bwd   4.3832 ms
+## run 7
+VG1 fwd Vg1               0.9529 ms
+VG1 bwd Vg1               3.0922 ms
+VG1 fwd+bwd Vg1+Vg1       4.0469 ms
+FA3 fwd       0.9405 ms
+FA3 bwd-only  3.2375 ms
+FA3 fwd+bwd   4.1845 ms
+FA4 fwd       1.0520 ms
+FA4 bwd-only  3.3404 ms
+FA4 fwd+bwd   4.3892 ms
+## run 8
+VG1 fwd Vg1               0.9529 ms
+VG1 bwd Vg1               3.0917 ms
+VG1 fwd+bwd Vg1+Vg1       4.0456 ms
+FA3 fwd       0.9401 ms
+FA3 bwd-only  3.2397 ms
+FA3 fwd+bwd   4.1897 ms
+FA4 fwd       1.0523 ms
+FA4 bwd-only  3.3417 ms
+FA4 fwd+bwd   4.3842 ms
+## run 9
+VG1 fwd Vg1               0.9531 ms
+VG1 bwd Vg1               3.0911 ms
+VG1 fwd+bwd Vg1+Vg1       4.0446 ms
+FA3 fwd       0.9442 ms
+FA3 bwd-only  3.2432 ms
+FA3 fwd+bwd   4.1763 ms
+FA4 fwd       1.0544 ms
+FA4 bwd-only  3.3397 ms
+FA4 fwd+bwd   4.3884 ms
+## run 10
+VG1 fwd Vg1               0.9530 ms
+VG1 bwd Vg1               3.0921 ms
+VG1 fwd+bwd Vg1+Vg1       4.0442 ms
+FA3 fwd       0.9435 ms
+FA3 bwd-only  3.2427 ms
+FA3 fwd+bwd   4.1734 ms
+FA4 fwd       1.0550 ms
+FA4 bwd-only  3.3429 ms
+FA4 fwd+bwd   4.3866 ms
+## run 11
+VG1 fwd Vg1               0.9557 ms
+VG1 bwd Vg1               3.0920 ms
+VG1 fwd+bwd Vg1+Vg1       4.0452 ms
+FA3 fwd       0.9408 ms
+FA3 bwd-only  3.2374 ms
+FA3 fwd+bwd   4.1819 ms
+FA4 fwd       1.0521 ms
+FA4 bwd-only  3.3437 ms
+FA4 fwd+bwd   4.3867 ms
+## run 12
+VG1 fwd Vg1               0.9556 ms
+VG1 bwd Vg1               3.0929 ms
+VG1 fwd+bwd Vg1+Vg1       4.0433 ms
+FA3 fwd       0.9405 ms
+FA3 bwd-only  3.2338 ms
+FA3 fwd+bwd   4.1851 ms
+FA4 fwd       1.0541 ms
+FA4 bwd-only  3.3398 ms
+FA4 fwd+bwd   4.3877 ms
+############ SHAPE B=2 Hq=24 Hkv=8
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.614e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.440e-03 mean_abs=8.677e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.686e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=5.475e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.614e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.440e-03 mean_abs=8.677e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.685e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=5.476e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.3260 ms
+VG1 bwd Vg1               1.0512 ms
+VG1 fwd+bwd Vg1+Vg1       1.3700 ms
+FA3 fwd       0.3262 ms
+FA3 bwd-only  1.0842 ms
+FA3 fwd+bwd   1.4055 ms
+FA4 fwd       0.3565 ms
+FA4 bwd-only  1.1633 ms
+FA4 fwd+bwd   1.5218 ms
+## run 2
+VG1 fwd Vg1               0.3262 ms
+VG1 bwd Vg1               1.0520 ms
+VG1 fwd+bwd Vg1+Vg1       1.3712 ms
+FA3 fwd       0.3266 ms
+FA3 bwd-only  1.0838 ms
+FA3 fwd+bwd   1.4114 ms
+FA4 fwd       0.3550 ms
+FA4 bwd-only  1.1643 ms
+FA4 fwd+bwd   1.5217 ms
+## run 3
+VG1 fwd Vg1               0.3260 ms
+VG1 bwd Vg1               1.0522 ms
+VG1 fwd+bwd Vg1+Vg1       1.3742 ms
+FA3 fwd       0.3264 ms
+FA3 bwd-only  1.0835 ms
+FA3 fwd+bwd   1.4098 ms
+FA4 fwd       0.3550 ms
+FA4 bwd-only  1.1678 ms
+FA4 fwd+bwd   1.5209 ms
+## run 4
+VG1 fwd Vg1               0.3264 ms
+VG1 bwd Vg1               1.0495 ms
+VG1 fwd+bwd Vg1+Vg1       1.3739 ms
+FA3 fwd       0.3253 ms
+FA3 bwd-only  1.0838 ms
+FA3 fwd+bwd   1.4108 ms
+FA4 fwd       0.3562 ms
+FA4 bwd-only  1.1649 ms
+FA4 fwd+bwd   1.5236 ms
+## run 5
+VG1 fwd Vg1               0.3260 ms
+VG1 bwd Vg1               1.0491 ms
+VG1 fwd+bwd Vg1+Vg1       1.3734 ms
+FA3 fwd       0.3249 ms
+FA3 bwd-only  1.0870 ms
+FA3 fwd+bwd   1.4163 ms
+FA4 fwd       0.3568 ms
+FA4 bwd-only  1.1634 ms
+FA4 fwd+bwd   1.5231 ms
+## run 6
+VG1 fwd Vg1               0.3257 ms
+VG1 bwd Vg1               1.0506 ms
+VG1 fwd+bwd Vg1+Vg1       1.3716 ms
+FA3 fwd       0.3264 ms
+FA3 bwd-only  1.0815 ms
+FA3 fwd+bwd   1.4122 ms
+FA4 fwd       0.3567 ms
+FA4 bwd-only  1.1645 ms
+FA4 fwd+bwd   1.5220 ms
+## run 7
+VG1 fwd Vg1               0.3263 ms
+VG1 bwd Vg1               1.0513 ms
+VG1 fwd+bwd Vg1+Vg1       1.3743 ms
+FA3 fwd       0.3255 ms
+FA3 bwd-only  1.0841 ms
+FA3 fwd+bwd   1.4116 ms
+FA4 fwd       0.3553 ms
+FA4 bwd-only  1.1645 ms
+FA4 fwd+bwd   1.5207 ms
+## run 8
+VG1 fwd Vg1               0.3261 ms
+VG1 bwd Vg1               1.0497 ms
+VG1 fwd+bwd Vg1+Vg1       1.3743 ms
+FA3 fwd       0.3250 ms
+FA3 bwd-only  1.0848 ms
+FA3 fwd+bwd   1.4061 ms
+FA4 fwd       0.3548 ms
+FA4 bwd-only  1.1675 ms
+FA4 fwd+bwd   1.5200 ms
+## run 9
+VG1 fwd Vg1               0.3271 ms
+VG1 bwd Vg1               1.0503 ms
+VG1 fwd+bwd Vg1+Vg1       1.3709 ms
+FA3 fwd       0.3260 ms
+FA3 bwd-only  1.0818 ms
+FA3 fwd+bwd   1.4116 ms
+FA4 fwd       0.3551 ms
+FA4 bwd-only  1.1663 ms
+FA4 fwd+bwd   1.5226 ms
+## run 10
+VG1 fwd Vg1               0.3264 ms
+VG1 bwd Vg1               1.0504 ms
+VG1 fwd+bwd Vg1+Vg1       1.3721 ms
+FA3 fwd       0.3252 ms
+FA3 bwd-only  1.0833 ms
+FA3 fwd+bwd   1.4053 ms
+FA4 fwd       0.3549 ms
+FA4 bwd-only  1.1647 ms
+FA4 fwd+bwd   1.5208 ms
+## run 11
+VG1 fwd Vg1               0.3263 ms
+VG1 bwd Vg1               1.0503 ms
+VG1 fwd+bwd Vg1+Vg1       1.3721 ms
+FA3 fwd       0.3268 ms
+FA3 bwd-only  1.0876 ms
+FA3 fwd+bwd   1.4164 ms
+FA4 fwd       0.3551 ms
+FA4 bwd-only  1.1664 ms
+FA4 fwd+bwd   1.5224 ms
+## run 12
+VG1 fwd Vg1               0.3261 ms
+VG1 bwd Vg1               1.0516 ms
+VG1 fwd+bwd Vg1+Vg1       1.3714 ms
+FA3 fwd       0.3255 ms
+FA3 bwd-only  1.0852 ms
+FA3 fwd+bwd   1.4098 ms
+FA4 fwd       0.3566 ms
+FA4 bwd-only  1.1659 ms
+FA4 fwd+bwd   1.5225 ms
+############ SHAPE B=4 Hq=24 Hkv=8
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.613e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.770e-03 mean_abs=8.649e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.716e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=5.505e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.613e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.770e-03 mean_abs=8.648e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.716e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=5.506e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.6409 ms
+VG1 bwd Vg1               2.0666 ms
+VG1 fwd+bwd Vg1+Vg1       2.7035 ms
+FA3 fwd       0.6351 ms
+FA3 bwd-only  2.1299 ms
+FA3 fwd+bwd   2.7650 ms
+FA4 fwd       0.6983 ms
+FA4 bwd-only  2.2220 ms
+FA4 fwd+bwd   2.9259 ms
+## run 2
+VG1 fwd Vg1               0.6391 ms
+VG1 bwd Vg1               2.0666 ms
+VG1 fwd+bwd Vg1+Vg1       2.7015 ms
+FA3 fwd       0.6327 ms
+FA3 bwd-only  2.1280 ms
+FA3 fwd+bwd   2.7710 ms
+FA4 fwd       0.6971 ms
+FA4 bwd-only  2.2250 ms
+FA4 fwd+bwd   2.9250 ms
+## run 3
+VG1 fwd Vg1               0.6391 ms
+VG1 bwd Vg1               2.0660 ms
+VG1 fwd+bwd Vg1+Vg1       2.7014 ms
+FA3 fwd       0.6327 ms
+FA3 bwd-only  2.1278 ms
+FA3 fwd+bwd   2.7618 ms
+FA4 fwd       0.6979 ms
+FA4 bwd-only  2.2242 ms
+FA4 fwd+bwd   2.9259 ms
+## run 4
+VG1 fwd Vg1               0.6408 ms
+VG1 bwd Vg1               2.0652 ms
+VG1 fwd+bwd Vg1+Vg1       2.7043 ms
+FA3 fwd       0.6351 ms
+FA3 bwd-only  2.1294 ms
+FA3 fwd+bwd   2.7597 ms
+FA4 fwd       0.6980 ms
+FA4 bwd-only  2.2265 ms
+FA4 fwd+bwd   2.9226 ms
+## run 5
+VG1 fwd Vg1               0.6411 ms
+VG1 bwd Vg1               2.0656 ms
+VG1 fwd+bwd Vg1+Vg1       2.7051 ms
+FA3 fwd       0.6330 ms
+FA3 bwd-only  2.1283 ms
+FA3 fwd+bwd   2.7596 ms
+FA4 fwd       0.6993 ms
+FA4 bwd-only  2.2246 ms
+FA4 fwd+bwd   2.9272 ms
+## run 6
+VG1 fwd Vg1               0.6387 ms
+VG1 bwd Vg1               2.0655 ms
+VG1 fwd+bwd Vg1+Vg1       2.7008 ms
+FA3 fwd       0.6325 ms
+FA3 bwd-only  2.1266 ms
+FA3 fwd+bwd   2.7581 ms
+FA4 fwd       0.6980 ms
+FA4 bwd-only  2.2252 ms
+FA4 fwd+bwd   2.9255 ms
+## run 7
+VG1 fwd Vg1               0.6403 ms
+VG1 bwd Vg1               2.0660 ms
+VG1 fwd+bwd Vg1+Vg1       2.7026 ms
+FA3 fwd       0.6336 ms
+FA3 bwd-only  2.1297 ms
+FA3 fwd+bwd   2.7668 ms
+FA4 fwd       0.6964 ms
+FA4 bwd-only  2.2220 ms
+FA4 fwd+bwd   2.9260 ms
+## run 8
+VG1 fwd Vg1               0.6392 ms
+VG1 bwd Vg1               2.0673 ms
+VG1 fwd+bwd Vg1+Vg1       2.7006 ms
+FA3 fwd       0.6323 ms
+FA3 bwd-only  2.1278 ms
+FA3 fwd+bwd   2.7628 ms
+FA4 fwd       0.6979 ms
+FA4 bwd-only  2.2228 ms
+FA4 fwd+bwd   2.9298 ms
+## run 9
+VG1 fwd Vg1               0.6389 ms
+VG1 bwd Vg1               2.0658 ms
+VG1 fwd+bwd Vg1+Vg1       2.7049 ms
+FA3 fwd       0.6327 ms
+FA3 bwd-only  2.1292 ms
+FA3 fwd+bwd   2.7673 ms
+FA4 fwd       0.6980 ms
+FA4 bwd-only  2.2232 ms
+FA4 fwd+bwd   2.9275 ms
+## run 10
+VG1 fwd Vg1               0.6387 ms
+VG1 bwd Vg1               2.0654 ms
+VG1 fwd+bwd Vg1+Vg1       2.7005 ms
+FA3 fwd       0.6332 ms
+FA3 bwd-only  2.1282 ms
+FA3 fwd+bwd   2.7640 ms
+FA4 fwd       0.6979 ms
+FA4 bwd-only  2.2236 ms
+FA4 fwd+bwd   2.9257 ms
+## run 11
+VG1 fwd Vg1               0.6393 ms
+VG1 bwd Vg1               2.0651 ms
+VG1 fwd+bwd Vg1+Vg1       2.7018 ms
+FA3 fwd       0.6329 ms
+FA3 bwd-only  2.1277 ms
+FA3 fwd+bwd   2.7597 ms
+FA4 fwd       0.7004 ms
+FA4 bwd-only  2.2263 ms
+FA4 fwd+bwd   2.9257 ms
+## run 12
+VG1 fwd Vg1               0.6390 ms
+VG1 bwd Vg1               2.0666 ms
+VG1 fwd+bwd Vg1+Vg1       2.7016 ms
+FA3 fwd       0.6347 ms
+FA3 bwd-only  2.1269 ms
+FA3 fwd+bwd   2.7595 ms
+FA4 fwd       0.6982 ms
+FA4 bwd-only  2.2221 ms
+FA4 fwd+bwd   2.9270 ms
+############ SHAPE B=8 Hq=24 Hkv=8
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.612e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.953e-03 mean_abs=8.635e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.683e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=5.485e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.612e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.953e-03 mean_abs=8.636e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.684e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=5.485e-05  Values match!
+## run 1
+VG1 fwd Vg1               1.2656 ms
+VG1 bwd Vg1               4.0925 ms
+VG1 fwd+bwd Vg1+Vg1       5.3606 ms
+FA3 fwd       1.2537 ms
+FA3 bwd-only  4.2222 ms
+FA3 fwd+bwd   5.4615 ms
+FA4 fwd       1.3835 ms
+FA4 bwd-only  4.3337 ms
+FA4 fwd+bwd   5.7288 ms
+## run 2
+VG1 fwd Vg1               1.2685 ms
+VG1 bwd Vg1               4.0923 ms
+VG1 fwd+bwd Vg1+Vg1       5.3524 ms
+FA3 fwd       1.2508 ms
+FA3 bwd-only  4.2256 ms
+FA3 fwd+bwd   5.4812 ms
+FA4 fwd       1.3818 ms
+FA4 bwd-only  4.3379 ms
+FA4 fwd+bwd   5.7306 ms
+## run 3
+VG1 fwd Vg1               1.2650 ms
+VG1 bwd Vg1               4.0930 ms
+VG1 fwd+bwd Vg1+Vg1       5.3579 ms
+FA3 fwd       1.2498 ms
+FA3 bwd-only  4.2217 ms
+FA3 fwd+bwd   5.4760 ms
+FA4 fwd       1.3833 ms
+FA4 bwd-only  4.3360 ms
+FA4 fwd+bwd   5.7326 ms
+## run 4
+VG1 fwd Vg1               1.2685 ms
+VG1 bwd Vg1               4.0925 ms
+VG1 fwd+bwd Vg1+Vg1       5.3538 ms
+FA3 fwd       1.2564 ms
+FA3 bwd-only  4.2263 ms
+FA3 fwd+bwd   5.4662 ms
+FA4 fwd       1.3868 ms
+FA4 bwd-only  4.3371 ms
+FA4 fwd+bwd   5.7248 ms
+## run 5
+VG1 fwd Vg1               1.2683 ms
+VG1 bwd Vg1               4.0930 ms
+VG1 fwd+bwd Vg1+Vg1       5.3539 ms
+FA3 fwd       1.2524 ms
+FA3 bwd-only  4.2202 ms
+FA3 fwd+bwd   5.4759 ms
+FA4 fwd       1.3837 ms
+FA4 bwd-only  4.3370 ms
+FA4 fwd+bwd   5.7269 ms
+## run 6
+VG1 fwd Vg1               1.2652 ms
+VG1 bwd Vg1               4.0931 ms
+VG1 fwd+bwd Vg1+Vg1       5.3618 ms
+FA3 fwd       1.2482 ms
+FA3 bwd-only  4.2290 ms
+FA3 fwd+bwd   5.4689 ms
+FA4 fwd       1.3822 ms
+FA4 bwd-only  4.3402 ms
+FA4 fwd+bwd   5.7265 ms
+## run 7
+VG1 fwd Vg1               1.2651 ms
+VG1 bwd Vg1               4.0922 ms
+VG1 fwd+bwd Vg1+Vg1       5.3626 ms
+FA3 fwd       1.2541 ms
+FA3 bwd-only  4.2240 ms
+FA3 fwd+bwd   5.4664 ms
+FA4 fwd       1.3883 ms
+FA4 bwd-only  4.3327 ms
+FA4 fwd+bwd   5.7255 ms
+## run 8
+VG1 fwd Vg1               1.2649 ms
+VG1 bwd Vg1               4.0931 ms
+VG1 fwd+bwd Vg1+Vg1       5.3544 ms
+FA3 fwd       1.2457 ms
+FA3 bwd-only  4.2197 ms
+FA3 fwd+bwd   5.4650 ms
+FA4 fwd       1.3829 ms
+FA4 bwd-only  4.3415 ms
+FA4 fwd+bwd   5.7273 ms
+## run 9
+VG1 fwd Vg1               1.2651 ms
+VG1 bwd Vg1               4.0935 ms
+VG1 fwd+bwd Vg1+Vg1       5.3541 ms
+FA3 fwd       1.2488 ms
+FA3 bwd-only  4.2313 ms
+FA3 fwd+bwd   5.4640 ms
+FA4 fwd       1.3873 ms
+FA4 bwd-only  4.3334 ms
+FA4 fwd+bwd   5.7237 ms
+## run 10
+VG1 fwd Vg1               1.2684 ms
+VG1 bwd Vg1               4.0925 ms
+VG1 fwd+bwd Vg1+Vg1       5.3615 ms
+FA3 fwd       1.2504 ms
+FA3 bwd-only  4.2263 ms
+FA3 fwd+bwd   5.4626 ms
+FA4 fwd       1.3842 ms
+FA4 bwd-only  4.3377 ms
+FA4 fwd+bwd   5.7253 ms
+## run 11
+VG1 fwd Vg1               1.2648 ms
+VG1 bwd Vg1               4.0925 ms
+VG1 fwd+bwd Vg1+Vg1       5.3528 ms
+FA3 fwd       1.2547 ms
+FA3 bwd-only  4.2207 ms
+FA3 fwd+bwd   5.4756 ms
+FA4 fwd       1.3835 ms
+FA4 bwd-only  4.3392 ms
+FA4 fwd+bwd   5.7270 ms
+## run 12
+VG1 fwd Vg1               1.2683 ms
+VG1 bwd Vg1               4.0925 ms
+VG1 fwd+bwd Vg1+Vg1       5.3561 ms
+FA3 fwd       1.2511 ms
+FA3 bwd-only  4.2277 ms
+FA3 fwd+bwd   5.4751 ms
+FA4 fwd       1.3829 ms
+FA4 bwd-only  4.3423 ms
+FA4 fwd+bwd   5.7340 ms
+############ SHAPE B=2 Hq=32 Hkv=8
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.616e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.953e-03 mean_abs=8.653e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.938e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=6.381e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.616e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.953e-03 mean_abs=8.653e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.938e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=6.382e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.4298 ms
+VG1 bwd Vg1               1.3802 ms
+VG1 fwd+bwd Vg1+Vg1       1.8084 ms
+FA3 fwd       0.4276 ms
+FA3 bwd-only  1.4224 ms
+FA3 fwd+bwd   1.8468 ms
+FA4 fwd       0.4804 ms
+FA4 bwd-only  1.5070 ms
+FA4 fwd+bwd   1.9822 ms
+## run 2
+VG1 fwd Vg1               0.4300 ms
+VG1 bwd Vg1               1.3800 ms
+VG1 fwd+bwd Vg1+Vg1       1.8071 ms
+FA3 fwd       0.4285 ms
+FA3 bwd-only  1.4224 ms
+FA3 fwd+bwd   1.8516 ms
+FA4 fwd       0.4804 ms
+FA4 bwd-only  1.5075 ms
+FA4 fwd+bwd   1.9782 ms
+## run 3
+VG1 fwd Vg1               0.4298 ms
+VG1 bwd Vg1               1.3803 ms
+VG1 fwd+bwd Vg1+Vg1       1.8084 ms
+FA3 fwd       0.4275 ms
+FA3 bwd-only  1.4191 ms
+FA3 fwd+bwd   1.8469 ms
+FA4 fwd       0.4819 ms
+FA4 bwd-only  1.5048 ms
+FA4 fwd+bwd   1.9807 ms
+## run 4
+VG1 fwd Vg1               0.4301 ms
+VG1 bwd Vg1               1.3822 ms
+VG1 fwd+bwd Vg1+Vg1       1.8060 ms
+FA3 fwd       0.4275 ms
+FA3 bwd-only  1.4185 ms
+FA3 fwd+bwd   1.8454 ms
+FA4 fwd       0.4797 ms
+FA4 bwd-only  1.5069 ms
+FA4 fwd+bwd   1.9786 ms
+## run 5
+VG1 fwd Vg1               0.4311 ms
+VG1 bwd Vg1               1.3822 ms
+VG1 fwd+bwd Vg1+Vg1       1.8061 ms
+FA3 fwd       0.4272 ms
+FA3 bwd-only  1.4197 ms
+FA3 fwd+bwd   1.8502 ms
+FA4 fwd       0.4814 ms
+FA4 bwd-only  1.5054 ms
+FA4 fwd+bwd   1.9797 ms
+## run 6
+VG1 fwd Vg1               0.4301 ms
+VG1 bwd Vg1               1.3824 ms
+VG1 fwd+bwd Vg1+Vg1       1.8093 ms
+FA3 fwd       0.4284 ms
+FA3 bwd-only  1.4195 ms
+FA3 fwd+bwd   1.8459 ms
+FA4 fwd       0.4805 ms
+FA4 bwd-only  1.5041 ms
+FA4 fwd+bwd   1.9812 ms
+## run 7
+VG1 fwd Vg1               0.4299 ms
+VG1 bwd Vg1               1.3819 ms
+VG1 fwd+bwd Vg1+Vg1       1.8064 ms
+FA3 fwd       0.4276 ms
+FA3 bwd-only  1.4217 ms
+FA3 fwd+bwd   1.8470 ms
+FA4 fwd       0.4804 ms
+FA4 bwd-only  1.5038 ms
+FA4 fwd+bwd   1.9816 ms
+## run 8
+VG1 fwd Vg1               0.4298 ms
+VG1 bwd Vg1               1.3807 ms
+VG1 fwd+bwd Vg1+Vg1       1.8059 ms
+FA3 fwd       0.4274 ms
+FA3 bwd-only  1.4206 ms
+FA3 fwd+bwd   1.8481 ms
+FA4 fwd       0.4800 ms
+FA4 bwd-only  1.5046 ms
+FA4 fwd+bwd   1.9810 ms
+## run 9
+VG1 fwd Vg1               0.4298 ms
+VG1 bwd Vg1               1.3807 ms
+VG1 fwd+bwd Vg1+Vg1       1.8082 ms
+FA3 fwd       0.4278 ms
+FA3 bwd-only  1.4216 ms
+FA3 fwd+bwd   1.8501 ms
+FA4 fwd       0.4796 ms
+FA4 bwd-only  1.5044 ms
+FA4 fwd+bwd   1.9790 ms
+## run 10
+VG1 fwd Vg1               0.4316 ms
+VG1 bwd Vg1               1.3812 ms
+VG1 fwd+bwd Vg1+Vg1       1.8090 ms
+FA3 fwd       0.4271 ms
+FA3 bwd-only  1.4235 ms
+FA3 fwd+bwd   1.8459 ms
+FA4 fwd       0.4800 ms
+FA4 bwd-only  1.5064 ms
+FA4 fwd+bwd   1.9796 ms
+## run 11
+VG1 fwd Vg1               0.4298 ms
+VG1 bwd Vg1               1.3823 ms
+VG1 fwd+bwd Vg1+Vg1       1.8054 ms
+FA3 fwd       0.4275 ms
+FA3 bwd-only  1.4202 ms
+FA3 fwd+bwd   1.8478 ms
+FA4 fwd       0.4799 ms
+FA4 bwd-only  1.5053 ms
+FA4 fwd+bwd   1.9781 ms
+## run 12
+VG1 fwd Vg1               0.4299 ms
+VG1 bwd Vg1               1.3829 ms
+VG1 fwd+bwd Vg1+Vg1       1.8063 ms
+FA3 fwd       0.4271 ms
+FA3 bwd-only  1.4188 ms
+FA3 fwd+bwd   1.8487 ms
+FA4 fwd       0.4801 ms
+FA4 bwd-only  1.5055 ms
+FA4 fwd+bwd   1.9801 ms
+############ SHAPE B=4 Hq=32 Hkv=8
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.626e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.953e-03 mean_abs=8.679e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.944e-05  Values match!
+CHECK FA3 dV:  max_abs=3.125e-02 mean_abs=6.378e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.626e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.953e-03 mean_abs=8.679e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.944e-05  Values match!
+CHECK FA4 dV:  max_abs=3.125e-02 mean_abs=6.378e-05  Values match!
+## run 1
+VG1 fwd Vg1               0.8475 ms
+VG1 bwd Vg1               2.7259 ms
+VG1 fwd+bwd Vg1+Vg1       3.5723 ms
+FA3 fwd       0.8433 ms
+FA3 bwd-only  2.8005 ms
+FA3 fwd+bwd   3.6292 ms
+FA4 fwd       0.9457 ms
+FA4 bwd-only  2.9042 ms
+FA4 fwd+bwd   3.8435 ms
+## run 2
+VG1 fwd Vg1               0.8498 ms
+VG1 bwd Vg1               2.7251 ms
+VG1 fwd+bwd Vg1+Vg1       3.5703 ms
+FA3 fwd       0.8420 ms
+FA3 bwd-only  2.8060 ms
+FA3 fwd+bwd   3.6350 ms
+FA4 fwd       0.9461 ms
+FA4 bwd-only  2.9019 ms
+FA4 fwd+bwd   3.8489 ms
+## run 3
+VG1 fwd Vg1               0.8474 ms
+VG1 bwd Vg1               2.7263 ms
+VG1 fwd+bwd Vg1+Vg1       3.5767 ms
+FA3 fwd       0.8388 ms
+FA3 bwd-only  2.8012 ms
+FA3 fwd+bwd   3.6332 ms
+FA4 fwd       0.9465 ms
+FA4 bwd-only  2.9015 ms
+FA4 fwd+bwd   3.8444 ms
+## run 4
+VG1 fwd Vg1               0.8474 ms
+VG1 bwd Vg1               2.7254 ms
+VG1 fwd+bwd Vg1+Vg1       3.5724 ms
+FA3 fwd       0.8391 ms
+FA3 bwd-only  2.7940 ms
+FA3 fwd+bwd   3.6413 ms
+FA4 fwd       0.9475 ms
+FA4 bwd-only  2.9013 ms
+FA4 fwd+bwd   3.8441 ms
+## run 5
+VG1 fwd Vg1               0.8479 ms
+VG1 bwd Vg1               2.7267 ms
+VG1 fwd+bwd Vg1+Vg1       3.5755 ms
+FA3 fwd       0.8381 ms
+FA3 bwd-only  2.7992 ms
+FA3 fwd+bwd   3.6292 ms
+FA4 fwd       0.9458 ms
+FA4 bwd-only  2.9079 ms
+FA4 fwd+bwd   3.8421 ms
+## run 6
+VG1 fwd Vg1               0.8472 ms
+VG1 bwd Vg1               2.7253 ms
+VG1 fwd+bwd Vg1+Vg1       3.5756 ms
+FA3 fwd       0.8405 ms
+FA3 bwd-only  2.8017 ms
+FA3 fwd+bwd   3.6310 ms
+FA4 fwd       0.9458 ms
+FA4 bwd-only  2.9067 ms
+FA4 fwd+bwd   3.8410 ms
+## run 7
+VG1 fwd Vg1               0.8499 ms
+VG1 bwd Vg1               2.7286 ms
+VG1 fwd+bwd Vg1+Vg1       3.5748 ms
+FA3 fwd       0.8388 ms
+FA3 bwd-only  2.8005 ms
+FA3 fwd+bwd   3.6339 ms
+FA4 fwd       0.9459 ms
+FA4 bwd-only  2.9043 ms
+FA4 fwd+bwd   3.8453 ms
+## run 8
+VG1 fwd Vg1               0.8473 ms
+VG1 bwd Vg1               2.7266 ms
+VG1 fwd+bwd Vg1+Vg1       3.5773 ms
+FA3 fwd       0.8386 ms
+FA3 bwd-only  2.7950 ms
+FA3 fwd+bwd   3.6405 ms
+FA4 fwd       0.9459 ms
+FA4 bwd-only  2.9051 ms
+FA4 fwd+bwd   3.8428 ms
+## run 9
+VG1 fwd Vg1               0.8472 ms
+VG1 bwd Vg1               2.7260 ms
+VG1 fwd+bwd Vg1+Vg1       3.5757 ms
+FA3 fwd       0.8393 ms
+FA3 bwd-only  2.8013 ms
+FA3 fwd+bwd   3.6334 ms
+FA4 fwd       0.9463 ms
+FA4 bwd-only  2.9040 ms
+FA4 fwd+bwd   3.8442 ms
+## run 10
+VG1 fwd Vg1               0.8495 ms
+VG1 bwd Vg1               2.7262 ms
+VG1 fwd+bwd Vg1+Vg1       3.5764 ms
+FA3 fwd       0.8386 ms
+FA3 bwd-only  2.7977 ms
+FA3 fwd+bwd   3.6408 ms
+FA4 fwd       0.9467 ms
+FA4 bwd-only  2.9075 ms
+FA4 fwd+bwd   3.8416 ms
+## run 11
+VG1 fwd Vg1               0.8473 ms
+VG1 bwd Vg1               2.7253 ms
+VG1 fwd+bwd Vg1+Vg1       3.5736 ms
+FA3 fwd       0.8390 ms
+FA3 bwd-only  2.8028 ms
+FA3 fwd+bwd   3.6349 ms
+FA4 fwd       0.9476 ms
+FA4 bwd-only  2.9073 ms
+FA4 fwd+bwd   3.8435 ms
+## run 12
+VG1 fwd Vg1               0.8471 ms
+VG1 bwd Vg1               2.7255 ms
+VG1 fwd+bwd Vg1+Vg1       3.5726 ms
+FA3 fwd       0.8390 ms
+FA3 bwd-only  2.8020 ms
+FA3 fwd+bwd   3.6295 ms
+FA4 fwd       0.9461 ms
+FA4 bwd-only  2.9088 ms
+FA4 fwd+bwd   3.8430 ms
+############ SHAPE B=8 Hq=32 Hkv=8
+CHECK Vg1 O:      Values match!
+CHECK Vg1 LSE:    Values match!
+CHECK Vg1  dQ:  Values match!
+CHECK Vg1  dK:  Values match!
+CHECK Vg1  dV:  Values match!
+# FA3 -> flash_attn_interface
+CHECK FA3 O :  max_abs=3.906e-03 mean_abs=2.608e-05  Values match!
+CHECK FA3 dQ:  max_abs=1.953e-03 mean_abs=8.638e-05  Values match!
+CHECK FA3 dK:  max_abs=3.906e-03 mean_abs=1.946e-05  Values match!
+CHECK FA3 dV:  max_abs=6.250e-02 mean_abs=6.362e-05  Values match!
+# FA4 -> flash_attn.cute.interface
+CHECK FA4 O :  max_abs=3.906e-03 mean_abs=2.608e-05  Values match!
+CHECK FA4 dQ:  max_abs=1.953e-03 mean_abs=8.638e-05  Values match!
+CHECK FA4 dK:  max_abs=3.906e-03 mean_abs=1.946e-05  Values match!
+CHECK FA4 dV:  max_abs=6.250e-02 mean_abs=6.363e-05  Values match!
+## run 1
+VG1 fwd Vg1               1.6821 ms
+VG1 bwd Vg1               5.4132 ms
+VG1 fwd+bwd Vg1+Vg1       7.0941 ms
+FA3 fwd       1.6541 ms
+FA3 bwd-only  5.5651 ms
+FA3 fwd+bwd   7.2239 ms
+FA4 fwd       1.8737 ms
+FA4 bwd-only  5.6940 ms
+FA4 fwd+bwd   7.5509 ms
+## run 2
+VG1 fwd Vg1               1.6820 ms
+VG1 bwd Vg1               5.4156 ms
+VG1 fwd+bwd Vg1+Vg1       7.0957 ms
+FA3 fwd       1.6587 ms
+FA3 bwd-only  5.5748 ms
+FA3 fwd+bwd   7.2099 ms
+FA4 fwd       1.8781 ms
+FA4 bwd-only  5.6936 ms
+FA4 fwd+bwd   7.5518 ms
+## run 3
+VG1 fwd Vg1               1.6860 ms
+VG1 bwd Vg1               5.4140 ms
+VG1 fwd+bwd Vg1+Vg1       7.1053 ms
+FA3 fwd       1.6590 ms
+FA3 bwd-only  5.5599 ms
+FA3 fwd+bwd   7.2084 ms
+FA4 fwd       1.8731 ms
+FA4 bwd-only  5.6943 ms
+FA4 fwd+bwd   7.5531 ms
+## run 4
+VG1 fwd Vg1               1.6861 ms
+VG1 bwd Vg1               5.4135 ms
+VG1 fwd+bwd Vg1+Vg1       7.0994 ms
+FA3 fwd       1.6538 ms
+FA3 bwd-only  5.5741 ms
+FA3 fwd+bwd   7.2121 ms
+FA4 fwd       1.8793 ms
+FA4 bwd-only  5.6978 ms
+FA4 fwd+bwd   7.5522 ms
+## run 5
+VG1 fwd Vg1               1.6861 ms
+VG1 bwd Vg1               5.4222 ms
+VG1 fwd+bwd Vg1+Vg1       7.0955 ms
+FA3 fwd       1.6584 ms
+FA3 bwd-only  5.5717 ms
+FA3 fwd+bwd   7.2131 ms
+FA4 fwd       1.8726 ms
+FA4 bwd-only  5.7008 ms
+FA4 fwd+bwd   7.5604 ms
+## run 6
+VG1 fwd Vg1               1.6828 ms
+VG1 bwd Vg1               5.4153 ms
+VG1 fwd+bwd Vg1+Vg1       7.0962 ms
+FA3 fwd       1.6587 ms
+FA3 bwd-only  5.5707 ms
+FA3 fwd+bwd   7.2082 ms
+FA4 fwd       1.8750 ms
+FA4 bwd-only  5.6962 ms
+FA4 fwd+bwd   7.5494 ms
+## run 7
+VG1 fwd Vg1               1.6833 ms
+VG1 bwd Vg1               5.4149 ms
+VG1 fwd+bwd Vg1+Vg1       7.1039 ms
+FA3 fwd       1.6585 ms
+FA3 bwd-only  5.5707 ms
+FA3 fwd+bwd   7.2115 ms
+FA4 fwd       1.8798 ms
+FA4 bwd-only  5.6969 ms
+FA4 fwd+bwd   7.5475 ms
+## run 8
+VG1 fwd Vg1               1.6828 ms
+VG1 bwd Vg1               5.4153 ms
+VG1 fwd+bwd Vg1+Vg1       7.1041 ms
+FA3 fwd       1.6551 ms
+FA3 bwd-only  5.5626 ms
+FA3 fwd+bwd   7.2213 ms
+FA4 fwd       1.8793 ms
+FA4 bwd-only  5.6979 ms
+FA4 fwd+bwd   7.5525 ms
+## run 9
+VG1 fwd Vg1               1.6838 ms
+VG1 bwd Vg1               5.4135 ms
+VG1 fwd+bwd Vg1+Vg1       7.1048 ms
+FA3 fwd       1.6588 ms
+FA3 bwd-only  5.5570 ms
+FA3 fwd+bwd   7.2226 ms
+FA4 fwd       1.8792 ms
+FA4 bwd-only  5.6939 ms
+FA4 fwd+bwd   7.5498 ms
+## run 10
+VG1 fwd Vg1               1.6834 ms
+VG1 bwd Vg1               5.4135 ms
+VG1 fwd+bwd Vg1+Vg1       7.0950 ms
+FA3 fwd       1.6541 ms
+FA3 bwd-only  5.5597 ms
+FA3 fwd+bwd   7.2162 ms
+FA4 fwd       1.8749 ms
+FA4 bwd-only  5.6944 ms
+FA4 fwd+bwd   7.5522 ms
+## run 11
+VG1 fwd Vg1               1.6863 ms
+VG1 bwd Vg1               5.4138 ms
+VG1 fwd+bwd Vg1+Vg1       7.0986 ms
+FA3 fwd       1.6538 ms
+FA3 bwd-only  5.5649 ms
+FA3 fwd+bwd   7.2244 ms
+FA4 fwd       1.8737 ms
+FA4 bwd-only  5.6926 ms
+FA4 fwd+bwd   7.5480 ms
+## run 12
+VG1 fwd Vg1               1.6865 ms
+VG1 bwd Vg1               5.4137 ms
+VG1 fwd+bwd Vg1+Vg1       7.1057 ms
+FA3 fwd       1.6585 ms
+FA3 bwd-only  5.5593 ms
+FA3 fwd+bwd   7.2256 ms
+FA4 fwd       1.8732 ms
+FA4 bwd-only  5.7007 ms
+FA4 fwd+bwd   7.5574 ms
